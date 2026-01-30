@@ -1,0 +1,20 @@
+[package]
+name = "january_os-kernel"
+version = "0.1.0"
+edition = "2024"
+authors = ["january_os Contributors"]
+license = "Apache-2.0"
+
+# Standalone package - uses custom target and -Zbuild-std
+[workspace]
+
+[dependencies]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = "z"

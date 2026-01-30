@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "arch/x86_64/boot",
+]
+exclude = [
+    "kernel",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["january_os Contributors"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+log = "0.4"
+uefi = { version = "0.36", features = ["panic_handler", "logger", "alloc", "global_allocator"] }
+
+# Profiles for all workspace members
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = "z"
