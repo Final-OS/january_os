@@ -1,0 +1,17 @@
+{
+  "name": "january_os-docs",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Documentation for january_os",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

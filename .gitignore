@@ -1,5 +1,9 @@
 # Build output
 target/
+tools/bin/
+
+# Generated files
+kernel/src/generated
 
 # IDE
 .idea/
@@ -10,3 +14,7 @@ target/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Docs
+docs/node_modules/
+docs/.vitepress/dist

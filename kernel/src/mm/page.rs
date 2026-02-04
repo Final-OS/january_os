@@ -1,0 +1,418 @@
+// ============================================================================
+// january_os - 页帧描述符 (struct page)
+//
+// 参考 Linux 内核设计，每个物理页帧都有一个对应的 Page 结构
+// ============================================================================
+
+use core::sync::atomic::{AtomicU32, AtomicI32, Ordering};
+
+// ============================================================================
+// 页帧标志位
+// ============================================================================
+
+/// 页帧标志位
+#[repr(transparent)]
+#[derive(Clone, Copy, Default)]
+pub struct PageFlags(u32);
+
+impl PageFlags {
+    /// 保留页（不可分配）
+    pub const RESERVED: u32   = 1 << 0;
+    /// 被 SLUB 使用
+    pub const SLAB: u32       = 1 << 1;
+    /// 在 Buddy 系统空闲链表中
+    pub const BUDDY: u32      = 1 << 2;
+    /// 复合页（大页的一部分）
+    pub const COMPOUND: u32   = 1 << 3;
+    /// 复合页头
+    pub const HEAD: u32       = 1 << 4;
+    /// 复合页尾
+    pub const TAIL: u32       = 1 << 5;
+    /// 脏页（已修改）
+    pub const DIRTY: u32      = 1 << 6;
+    /// 在 LRU 链表中
+    pub const LRU: u32        = 1 << 7;
+    /// 活跃页
+    pub const ACTIVE: u32     = 1 << 8;
+    /// 被锁定
+    pub const LOCKED: u32     = 1 << 9;
+    /// 正在回写
+    pub const WRITEBACK: u32  = 1 << 10;
+    /// 私有页
+    pub const PRIVATE: u32    = 1 << 11;
+    /// 页内容已更新
+    pub const UPTODATE: u32   = 1 << 12;
+    /// 匿名页
+    pub const ANON: u32       = 1 << 13;
+    /// 文件映射页
+    pub const FILEMAPPED: u32 = 1 << 14;
+    /// 交换页
+    pub const SWAPCACHE: u32  = 1 << 15;
+    
+    /// 创建空标志
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+    
+    /// 创建带初始值的标志
+    pub const fn new(bits: u32) -> Self {
+        Self(bits)
+    }
+    
+    /// 获取原始值
+    pub const fn bits(&self) -> u32 {
+        self.0
+    }
+    
+    /// 设置标志位
+    pub fn set(&mut self, flag: u32) {
+        self.0 |= flag;
+    }
+    
+    /// 清除标志位
+    pub fn clear(&mut self, flag: u32) {
+        self.0 &= !flag;
+    }
+    
+    /// 测试标志位
+    pub const fn test(&self, flag: u32) -> bool {
+        (self.0 & flag) != 0
+    }
+}
+
+// ============================================================================
+// 链表节点
+// ============================================================================
+
+/// 双向链表头
+#[repr(C)]
+pub struct ListHead {
+    pub next: *mut ListHead,
+    pub prev: *mut ListHead,
+}
+
+impl ListHead {
+    /// 创建空链表头
+    pub const fn new() -> Self {
+        Self {
+            next: core::ptr::null_mut(),
+            prev: core::ptr::null_mut(),
+        }
+    }
+    
+    /// 初始化为指向自己（空链表）
+    pub fn init(&mut self) {
+        self.next = self as *mut _;
+        self.prev = self as *mut _;
+    }
+    
+    /// 检查是否为空
+    pub fn is_empty(&self) -> bool {
+        self.next == self as *const _ as *mut _
+    }
+    
+    /// 在 head 之后插入 new
+    pub unsafe fn add(&mut self, new: *mut ListHead) {
+        unsafe {
+            let next = self.next;
+            (*new).next = next;
+            (*new).prev = self;
+            (*next).prev = new;
+            self.next = new;
+        }
+    }
+    
+    /// 从链表中删除
+    pub unsafe fn del(&mut self) {
+        unsafe {
+            let next = self.next;
+            let prev = self.prev;
+            (*prev).next = next;
+            (*next).prev = prev;
+            self.next = core::ptr::null_mut();
+            self.prev = core::ptr::null_mut();
+        }
+    }
+}
+
+impl Default for ListHead {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// 页帧描述符
+// ============================================================================
+
+/// 页帧描述符
+///
+/// 每个物理页帧都有一个对应的 Page 结构，存储该页的元数据
+#[repr(C)]
+pub struct Page {
+    /// 页帧标志
+    flags: AtomicU32,
+    
+    /// 引用计数
+    /// - 0: 空闲页
+    /// - >0: 被使用中
+    refcount: AtomicU32,
+    
+    /// 映射计数（多少页表项指向此页）
+    /// - -1: 未映射
+    /// - 0: 内核映射
+    /// - >0: 用户空间映射数
+    mapcount: AtomicI32,
+    
+    /// 所属 Zone ID
+    zone_id: u8,
+    
+    /// Buddy order（如果在空闲链表中）
+    order: u8,
+    
+    /// 保留字段（对齐）
+    _reserved: [u8; 2],
+    
+    /// 用于链表（Buddy 空闲链表、LRU 等）
+    pub lru: ListHead,
+    
+    /// 私有数据指针
+    /// - SLUB: 指向 KmemCache
+    /// - 文件页: 指向 address_space
+    private: *mut u8,
+}
+
+// Page 可以在多线程间安全共享（通过原子操作）
+unsafe impl Send for Page {}
+unsafe impl Sync for Page {}
+
+impl Page {
+    /// 创建未初始化的 Page
+    pub const fn uninit() -> Self {
+        Self {
+            flags: AtomicU32::new(0),
+            refcount: AtomicU32::new(0),
+            mapcount: AtomicI32::new(-1),
+            zone_id: 0,
+            order: 0,
+            _reserved: [0; 2],
+            lru: ListHead::new(),
+            private: core::ptr::null_mut(),
+        }
+    }
+    
+    /// 初始化 Page
+    pub fn init(&mut self, zone_id: u8) {
+        self.flags.store(0, Ordering::Relaxed);
+        self.refcount.store(0, Ordering::Relaxed);
+        self.mapcount.store(-1, Ordering::Relaxed);
+        self.zone_id = zone_id;
+        self.order = 0;
+        self.lru.init();
+        self.private = core::ptr::null_mut();
+    }
+    
+    // ========== 标志操作 ==========
+    
+    /// 获取标志
+    pub fn flags(&self) -> PageFlags {
+        PageFlags(self.flags.load(Ordering::Relaxed))
+    }
+    
+    /// 设置标志位
+    pub fn set_flag(&self, flag: u32) {
+        self.flags.fetch_or(flag, Ordering::Relaxed);
+    }
+    
+    /// 清除标志位
+    pub fn clear_flag(&self, flag: u32) {
+        self.flags.fetch_and(!flag, Ordering::Relaxed);
+    }
+    
+    /// 测试标志位
+    pub fn test_flag(&self, flag: u32) -> bool {
+        (self.flags.load(Ordering::Relaxed) & flag) != 0
+    }
+    
+    // ========== 引用计数 ==========
+    
+    /// 获取引用计数
+    pub fn refcount(&self) -> u32 {
+        self.refcount.load(Ordering::Relaxed)
+    }
+    
+    /// 增加引用计数
+    pub fn get(&self) -> u32 {
+        self.refcount.fetch_add(1, Ordering::Relaxed) + 1
+    }
+    
+    /// 减少引用计数，返回新值
+    pub fn put(&self) -> u32 {
+        let old = self.refcount.fetch_sub(1, Ordering::Relaxed);
+        debug_assert!(old > 0, "Page refcount underflow");
+        old - 1
+    }
+    
+    /// 设置引用计数为 1（新分配的页）
+    pub fn set_count_one(&self) {
+        self.refcount.store(1, Ordering::Relaxed);
+    }
+    
+    // ========== 映射计数 ==========
+    
+    /// 获取映射计数
+    pub fn mapcount(&self) -> i32 {
+        self.mapcount.load(Ordering::Relaxed)
+    }
+    
+    /// 增加映射计数
+    pub fn inc_mapcount(&self) -> i32 {
+        self.mapcount.fetch_add(1, Ordering::Relaxed) + 1
+    }
+    
+    /// 减少映射计数
+    pub fn dec_mapcount(&self) -> i32 {
+        let old = self.mapcount.fetch_sub(1, Ordering::Relaxed);
+        old - 1
+    }
+    
+    // ========== Zone 和 Order ==========
+    
+    /// 获取 Zone ID
+    pub fn zone_id(&self) -> u8 {
+        self.zone_id
+    }
+    
+    /// 设置 Zone ID
+    pub fn set_zone_id(&mut self, id: u8) {
+        self.zone_id = id;
+    }
+    
+    /// 获取 Buddy order
+    pub fn order(&self) -> u8 {
+        self.order
+    }
+    
+    /// 设置 Buddy order
+    pub fn set_order(&mut self, order: u8) {
+        self.order = order;
+    }
+    
+    // ========== 私有数据 ==========
+    
+    /// 获取私有数据指针
+    pub fn private(&self) -> *mut u8 {
+        self.private
+    }
+    
+    /// 设置私有数据指针
+    pub fn set_private(&mut self, ptr: *mut u8) {
+        self.private = ptr;
+    }
+    
+    // ========== 状态检查 ==========
+    
+    /// 是否为保留页
+    pub fn is_reserved(&self) -> bool {
+        self.test_flag(PageFlags::RESERVED)
+    }
+    
+    /// 是否在 Buddy 系统中
+    pub fn is_buddy(&self) -> bool {
+        self.test_flag(PageFlags::BUDDY)
+    }
+    
+    /// 是否被 SLUB 使用
+    pub fn is_slab(&self) -> bool {
+        self.test_flag(PageFlags::SLAB)
+    }
+    
+    /// 是否为复合页
+    pub fn is_compound(&self) -> bool {
+        self.test_flag(PageFlags::COMPOUND)
+    }
+    
+    /// 标记为保留
+    pub fn mark_reserved(&self) {
+        self.set_flag(PageFlags::RESERVED);
+    }
+    
+    /// 标记为 Buddy
+    pub fn mark_buddy(&self, order: u8) {
+        self.set_flag(PageFlags::BUDDY);
+        // order 需要可变引用，这里用 unsafe
+        unsafe {
+            let self_mut = self as *const Self as *mut Self;
+            (*self_mut).order = order;
+        }
+    }
+    
+    /// 清除 Buddy 标记
+    pub fn clear_buddy(&self) {
+        self.clear_flag(PageFlags::BUDDY);
+    }
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        Self::uninit()
+    }
+}
+
+// ============================================================================
+// 全局页帧数组
+// ============================================================================
+
+/// vmemmap 基地址（所有 Page 结构的数组）
+/// 
+/// 在初始化时设置，之后通过此地址访问任意 PFN 的 Page 结构
+pub static mut VMEMMAP_BASE: *mut Page = core::ptr::null_mut();
+
+/// 最大 PFN
+pub static mut MAX_PFN: u64 = 0;
+
+/// 初始化 vmemmap
+/// 
+/// # Safety
+/// 
+/// - base 必须指向足够大的内存区域
+/// - max_pfn 必须正确
+pub unsafe fn init_vmemmap(base: *mut Page, max_pfn: u64) {
+    unsafe {
+        VMEMMAP_BASE = base;
+        MAX_PFN = max_pfn;
+    }
+}
+
+/// PFN 转 Page 指针
+/// 
+/// # Safety
+/// 
+/// pfn 必须有效
+#[inline]
+pub unsafe fn pfn_to_page(pfn: u64) -> &'static mut Page {
+    unsafe {
+        debug_assert!(pfn < MAX_PFN, "PFN out of range");
+        &mut *VMEMMAP_BASE.add(pfn as usize)
+    }
+}
+
+/// Page 指针转 PFN
+#[inline]
+pub fn page_to_pfn(page: &Page) -> u64 {
+    unsafe {
+        let offset = (page as *const Page).offset_from(VMEMMAP_BASE);
+        debug_assert!(offset >= 0, "Invalid page pointer");
+        offset as u64
+    }
+}
+
+// ============================================================================
+// Page 大小
+// ============================================================================
+
+/// Page 结构大小
+pub const PAGE_STRUCT_SIZE: usize = core::mem::size_of::<Page>();
+
+// 编译时检查大小
+const _: () = assert!(PAGE_STRUCT_SIZE <= 64, "Page struct too large");

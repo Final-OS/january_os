@@ -1,0 +1,16 @@
+[package]
+name = "cfg"
+version = "0.1.0"
+edition = "2021"
+description = "Configuration tool for january_os"
+
+# Exclude from parent workspace
+[workspace]
+
+[[bin]]
+name = "cfg"
+path = "src/main.rs"
+
+[dependencies]
+toml = "0.9.8"
+serde = { version = "1.0", features = ["derive"] }

@@ -1,0 +1,314 @@
+// ============================================================================
+// january_os - Buddy System 物理页帧分配器
+//
+// 参考 Linux 内核实现，基于 Zone 和 struct page
+// ============================================================================
+
+use super::page::{Page, PageFlags, pfn_to_page, page_to_pfn};
+use super::zone::{Zone, GfpFlags, MAX_ORDER, get_zone, gfp_to_zone_list};
+use super::zone::{pages_per_order, get_buddy_pfn};
+use super::layout::PAGE_SIZE;
+
+// ============================================================================
+// container_of 宏
+// ============================================================================
+
+/// 从成员指针获取结构体指针
+macro_rules! container_of {
+    ($ptr:expr, $type:ty, $field:ident) => {{
+        let ptr = $ptr as *const u8;
+        let offset = core::mem::offset_of!($type, $field);
+        unsafe { (ptr.sub(offset)) as *mut $type }
+    }};
+}
+
+// ============================================================================
+// Buddy 分配器核心
+// ============================================================================
+
+/// 分配 2^order 个连续页帧
+/// 
+/// # Arguments
+/// * `order` - 分配 2^order 个页
+/// * `gfp` - 分配标志
+/// 
+/// # Returns
+/// 成功返回第一个 Page 的引用，失败返回 None
+pub fn alloc_pages(order: usize, gfp: GfpFlags) -> Option<&'static mut Page> {
+    if order >= MAX_ORDER {
+        return None;
+    }
+    
+    // 遍历合适的 Zone 列表
+    let zone_list = gfp_to_zone_list(gfp);
+    
+    for &zone_type in zone_list {
+        let zone = unsafe { get_zone(zone_type) };
+        if !zone.initialized {
+            continue;
+        }
+        
+        if let Some(page) = zone_alloc_pages(zone, order, gfp) {
+            return Some(page);
+        }
+    }
+    
+    None
+}
+
+/// 从指定 Zone 分配页帧
+fn zone_alloc_pages(zone: &mut Zone, order: usize, gfp: GfpFlags) -> Option<&'static mut Page> {
+    // 从请求的 order 开始向上查找
+    let mut current_order = order;
+    
+    while current_order < MAX_ORDER {
+        let area = &zone.free_area[current_order];
+        
+        if !area.is_empty() {
+            // 找到可用块
+            return Some(unsafe { 
+                expand_and_alloc(zone, current_order, order, gfp) 
+            });
+        }
+        
+        current_order += 1;
+    }
+    
+    None
+}
+
+/// 分裂大块并分配
+/// 
+/// # Safety
+/// 
+/// 调用者必须确保 zone.free_area[high_order] 非空
+unsafe fn expand_and_alloc(
+    zone: &mut Zone, 
+    high_order: usize, 
+    low_order: usize,
+    gfp: GfpFlags,
+) -> &'static mut Page {
+    unsafe {
+        // 从高 order 空闲链表取出一个块
+        let area = &mut zone.free_area[high_order];
+        let list_ptr = area.free_list.next;
+        
+        // 通过链表节点找到 Page
+        // Page.lru 是 ListHead，通过偏移计算 Page 地址
+        let page = container_of!(list_ptr, Page, lru);
+        
+        // 从 Buddy 系统移除
+        zone.remove_from_buddy(&mut *page, high_order);
+        
+        // 分裂：从 high_order 分裂到 low_order
+        let mut current_order = high_order;
+        let pfn = page_to_pfn(&*page);
+        
+        while current_order > low_order {
+            current_order -= 1;
+            
+            // 计算伙伴 PFN（后半部分）
+            let buddy_pfn = pfn + pages_per_order(current_order);
+            let buddy_page = pfn_to_page(buddy_pfn);
+            
+            // 将伙伴块加入空闲链表
+            zone.add_to_buddy(&mut *buddy_page, current_order);
+        }
+        
+        // 设置分配的页
+        let page = &mut *page;
+        page.set_count_one();
+        page.clear_flag(PageFlags::BUDDY);
+        
+        // 如果请求清零
+        if gfp.test(GfpFlags::ZERO) {
+            let _addr = pfn * PAGE_SIZE;
+            let _size = pages_per_order(low_order) * PAGE_SIZE;
+            // 需要通过直接映射访问物理内存来清零
+            // 这里假设有 phys_to_virt 函数
+            // core::ptr::write_bytes(phys_to_virt(addr) as *mut u8, 0, size as usize);
+        }
+        
+        // 如果是复合页，设置复合页标志
+        if gfp.test(GfpFlags::COMP) && low_order > 0 {
+            prep_compound_page(page, low_order);
+        }
+        
+        page
+    }
+}
+
+/// 释放 2^order 个连续页帧
+/// 
+/// # Safety
+/// 
+/// - page 必须是之前通过 alloc_pages 分配的
+/// - order 必须与分配时相同
+pub unsafe fn free_pages(page: &mut Page, order: usize) {
+    unsafe {
+        if order >= MAX_ORDER {
+            return;
+        }
+        
+        // 减少引用计数
+        if page.refcount() > 0 {
+            if page.put() > 0 {
+                return; // 还有其他引用
+            }
+        }
+        
+        // 清除复合页标志
+        if page.is_compound() {
+            destroy_compound_page(page, order);
+        }
+        
+        let mut pfn = page_to_pfn(page);
+        let zone = match super::zone::pfn_to_zone(pfn) {
+            Some(z) => z,
+            None => return,
+        };
+        
+        // 尝试合并伙伴
+        let mut current_order = order;
+        
+        while current_order < MAX_ORDER - 1 {
+            let buddy_pfn = get_buddy_pfn(pfn, current_order);
+            
+            // 检查伙伴是否在同一 Zone 且空闲
+            if !zone.contains_pfn(buddy_pfn) {
+                break;
+            }
+            
+            let buddy_page = pfn_to_page(buddy_pfn);
+            
+            // 检查伙伴是否在 Buddy 系统中且 order 相同
+            if !(*buddy_page).is_buddy() || (*buddy_page).order() != current_order as u8 {
+                break;
+            }
+            
+            // 从空闲链表移除伙伴
+            zone.remove_from_buddy(&mut *buddy_page, current_order);
+            
+            // 合并：使用较小的 PFN
+            pfn = pfn.min(buddy_pfn);
+            current_order += 1;
+        }
+        
+        // 将合并后的块加入空闲链表
+        let page = pfn_to_page(pfn);
+        zone.add_to_buddy(&mut *page, current_order);
+    }
+}
+
+/// 分配单个页帧
+#[inline]
+pub fn alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
+    alloc_pages(0, gfp)
+}
+
+/// 释放单个页帧
+#[inline]
+pub unsafe fn free_page(page: &mut Page) {
+    unsafe { free_pages(page, 0) }
+}
+
+// ============================================================================
+// 复合页支持
+// ============================================================================
+
+/// 准备复合页
+fn prep_compound_page(page: &mut Page, order: usize) {
+    let nr_pages = pages_per_order(order);
+    
+    // 头页
+    page.set_flag(PageFlags::HEAD | PageFlags::COMPOUND);
+    
+    // 尾页
+    for i in 1..nr_pages {
+        unsafe {
+            let pfn = page_to_pfn(page) + i;
+            let tail = pfn_to_page(pfn);
+            (*tail).set_flag(PageFlags::TAIL | PageFlags::COMPOUND);
+        }
+    }
+}
+
+/// 销毁复合页
+unsafe fn destroy_compound_page(page: &mut Page, order: usize) {
+    unsafe {
+        let nr_pages = pages_per_order(order);
+        
+        // 清除所有页的复合页标志
+        for i in 0..nr_pages {
+            let pfn = page_to_pfn(page) + i;
+            let p = pfn_to_page(pfn);
+            (*p).clear_flag(PageFlags::HEAD | PageFlags::TAIL | PageFlags::COMPOUND);
+        }
+    }
+}
+
+// ============================================================================
+// 初始化
+// ============================================================================
+
+/// 初始化 Buddy 系统
+/// 
+/// 将内存区域添加到 Buddy 系统
+/// 
+/// # Safety
+/// 
+/// - start_pfn 和 end_pfn 必须有效
+/// - Page 数组必须已初始化
+pub unsafe fn init_zone_buddy(
+    zone: &mut Zone,
+    start_pfn: u64, 
+    end_pfn: u64,
+) {
+    unsafe {
+        // 将每个页帧添加到 Buddy 系统
+        // 从最大的 order 开始，尽可能使用大块
+        
+        let mut pfn = start_pfn;
+        
+        while pfn < end_pfn {
+            // 找到当前 PFN 能使用的最大 order
+            let mut order = MAX_ORDER - 1;
+            
+            while order > 0 {
+                let block_pages = pages_per_order(order);
+                
+                // 检查：1) 对齐到 order 边界 2) 不超出范围
+                if (pfn % block_pages) == 0 && (pfn + block_pages) <= end_pfn {
+                    break;
+                }
+                order -= 1;
+            }
+            
+            let page = pfn_to_page(pfn);
+            zone.add_to_buddy(&mut *page, order);
+            
+            pfn += pages_per_order(order);
+        }
+    }
+}
+
+// ============================================================================
+// 调试和统计
+// ============================================================================
+
+/// 获取 Zone 的 Buddy 统计信息
+pub fn zone_buddy_stats(zone: &Zone) -> [u64; MAX_ORDER] {
+    let mut stats = [0u64; MAX_ORDER];
+    for (i, area) in zone.free_area.iter().enumerate() {
+        stats[i] = area.nr_free;
+    }
+    stats
+}
+
+/// 打印 Buddy 系统状态
+pub fn print_buddy_info(zone: &Zone) {
+    let stats = zone_buddy_stats(zone);
+    // 打印每个 order 的空闲块数
+    // 由调用者实现具体打印
+    let _ = stats;
+}
