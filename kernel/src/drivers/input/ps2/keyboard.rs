@@ -4,6 +4,8 @@
 
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
+use super::{send_command, wait_input_ready, write_data, wait_output_ready, read_data};
+
 // ============================================================================
 // 键盘扫描码表 (Set 1)
 // ============================================================================
@@ -58,6 +60,9 @@ const KEY_F12: u8 = 0x58;
 // 键盘状态
 // ============================================================================
 
+/// 初始化状态
+static INITIALIZED: AtomicU8 = AtomicU8::new(0);
+
 /// 修饰键状态
 static SHIFT_PRESSED: AtomicU8 = AtomicU8::new(0);
 static CTRL_PRESSED: AtomicU8 = AtomicU8::new(0);
@@ -80,6 +85,36 @@ static LAST_CHAR: AtomicU8 = AtomicU8::new(0);
 // ============================================================================
 // 键盘操作
 // ============================================================================
+
+/// 初始化 PS/2 键盘
+pub fn init() {
+    // 1. 刷新键盘缓冲区
+    while (super::read_status() & super::STATUS_OUTPUT_FULL) != 0 {
+        super::read_data();
+    }
+
+    // 2. 启用键盘端口 (Port 1)
+    // 注意：通常默认启用，但为了完整性可以发送启用命令
+    // 这里我们主要重置状态
+    
+    // 3. 重置 LEDs
+    set_leds(false, false, false);
+    
+    INITIALIZED.store(1, Ordering::Relaxed);
+}
+
+/// 设置键盘 LEDs
+pub fn set_leds(caps: bool, num: bool, scroll: bool) {
+    let mut data = 0u8;
+    if scroll { data |= 1; }
+    if num { data |= 2; }
+    if caps { data |= 4; }
+
+    wait_input_ready();
+    write_data(0xED); // Set LEDs command
+    wait_input_ready();
+    write_data(data);
+}
 
 /// 处理扫描码
 /// 

@@ -24,6 +24,8 @@ const MOUSE_CMD_SET_SCALING_2_1: u8 = 0xE7;
 const MOUSE_CMD_SET_SCALING_1_1: u8 = 0xE6;
 
 // PS/2 控制器命令
+const PS2_CMD_READ_CONFIG: u8 = 0x20;
+const PS2_CMD_WRITE_CONFIG: u8 = 0x60;
 const PS2_CMD_ENABLE_AUX_DEVICE: u8 = 0xA8;
 const PS2_CMD_DISABLE_AUX_DEVICE: u8 = 0xA7;
 const PS2_CMD_WRITE_TO_AUX: u8 = 0xD4;
@@ -73,35 +75,51 @@ static INITIALIZED: AtomicU8 = AtomicU8::new(0);
 
 /// 初始化 PS/2 鼠标
 pub fn init() {
-    // 禁用辅助设备
-    send_command(PS2_CMD_DISABLE_AUX_DEVICE);
+    // 1. 启用辅助设备端口 (Port 2)
+    send_command(PS2_CMD_ENABLE_AUX_DEVICE);
     wait_input_ready();
 
-    // 发送复位命令到鼠标
+    // 2. 读取配置字节 (Compaq Status Byte)
+    send_command(PS2_CMD_READ_CONFIG);
+    wait_output_ready();
+    let mut config = ps2_read_data();
+
+    // 3. 修改配置:
+    //    - Bit 1: Enable IRQ 12 (Mouse)
+    //    - Bit 5: Disable Mouse Clock (0 = Enabled) -> 清除该位以启用时钟
+    config |= 0x02;  // Enable IRQ 12
+    config &= !0x20; // Enable Mouse Clock
+
+    // 4. 写回配置字节
+    send_command(PS2_CMD_WRITE_CONFIG);
+    wait_input_ready();
+    write_data(config);
+    wait_input_ready();
+
+    // 5. 复位鼠标
     send_to_mouse(MOUSE_CMD_RESET);
     wait_output_ready();
-    let ack = ps2_read_data(); // 应该收到 0xFA (ACK)
+    let ack = ps2_read_data(); // 0xFA
     wait_output_ready();
-    let bat_ok = ps2_read_data(); // 应该收到 0xAA (BAT OK)
+    let bat_ok = ps2_read_data(); // 0xAA
     wait_output_ready();
-    let device_id = ps2_read_data(); // 应该收到 0x00 (标准鼠标)
+    let _device_id = ps2_read_data(); // 0x00
 
     if ack != 0xFA || bat_ok != 0xAA {
-        // 初始化失败，但不继续
-        return;
+        // 尝试继续，即使复位返回值不完全符合预期
     }
 
-    // 设置默认参数
+    // 6. 设置默认参数
     send_to_mouse(MOUSE_CMD_SET_DEFAULTS);
     read_ack();
 
-    // 启用鼠标
-    send_to_mouse(MOUSE_CMD_ENABLE);
+    // 7. 设置流模式
+    send_to_mouse(MOUSE_CMD_SET_STREAM_MODE);
     read_ack();
 
-    // 启用辅助设备
-    send_command(PS2_CMD_ENABLE_AUX_DEVICE);
-    wait_input_ready();
+    // 8. 启用数据报告
+    send_to_mouse(MOUSE_CMD_ENABLE);
+    read_ack();
 
     INITIALIZED.store(1, Ordering::Relaxed);
 }
@@ -119,33 +137,33 @@ pub fn handle_interrupt(data: u8) {
     }
 
     let state = PACKET_STATE.load(Ordering::Relaxed);
-    let new_state = match state {
-        0 => PacketState::Byte1,   // Idle -> Byte1
-        1 => PacketState::Byte2,   // Byte1 -> Byte2
-        2 => PacketState::Byte3,   // Byte2 -> Byte3
-        _ => PacketState::Byte1,    // Byte3 -> Byte1 (意外情况)
-    };
-
-    match new_state {
-        PacketState::Byte1 => {
-            PACKET_BYTE1.store(data, Ordering::Relaxed);
-            PACKET_STATE.store(PacketState::Byte1 as u8, Ordering::Relaxed);
+    
+    // 简单的状态机
+    match state {
+        0 => { // Idle -> Byte1
+             // 检查 Byte 1 的 Bit 3 是否为 1 (Always 1)
+             // 这有助于同步
+             if (data & 0x08) != 0 {
+                 PACKET_BYTE1.store(data, Ordering::Relaxed);
+                 PACKET_STATE.store(PacketState::Byte2 as u8, Ordering::Relaxed);
+             }
         }
-        PacketState::Byte2 => {
+        1 => { // Byte1 -> Byte2
             PACKET_BYTE2.store(data, Ordering::Relaxed);
-            PACKET_STATE.store(PacketState::Byte2 as u8, Ordering::Relaxed);
-        }
-        PacketState::Byte3 => {
-            PACKET_BYTE3.store(data, Ordering::Relaxed);
             PACKET_STATE.store(PacketState::Byte3 as u8, Ordering::Relaxed);
-
-            // 完整数据包接收完成，解析并处理
+        }
+        2 => { // Byte2 -> Byte3
+            PACKET_BYTE3.store(data, Ordering::Relaxed);
+            
+            // 处理完整数据包
             process_packet();
-
-            // 重置状态
+            
+            // 回到等待 Byte1
             PACKET_STATE.store(PacketState::Idle as u8, Ordering::Relaxed);
         }
-        _ => {}
+        _ => {
+            PACKET_STATE.store(PacketState::Idle as u8, Ordering::Relaxed);
+        }
     }
 }
 
@@ -154,11 +172,6 @@ fn process_packet() {
     let byte1 = PACKET_BYTE1.load(Ordering::Relaxed);
     let byte2 = PACKET_BYTE2.load(Ordering::Relaxed);
     let byte3 = PACKET_BYTE3.load(Ordering::Relaxed);
-
-    // 检查数据包标志位 (bit 3 of byte1 必须为 1)
-    if byte1 & 0x08 == 0 {
-        return; // 无效数据包
-    }
 
     // 解析按钮状态
     let left = byte1 & 0x01 != 0;
@@ -169,24 +182,28 @@ fn process_packet() {
     MIDDLE_BUTTON.store(middle as u8, Ordering::Relaxed);
     RIGHT_BUTTON.store(right as u8, Ordering::Relaxed);
 
-    // 解析 X/Y 增量 (使用符号扩展处理 9 位有符号数)
-    let delta_x = extend_sign((byte3 & 0x0F) as u16 | ((byte2 as u16) << 4));
-    let delta_y = extend_sign(((byte3 & 0xF0) as u16) >> 4 | ((byte1 as u16) << 4));
+    // 解析 X/Y 增量
+    let x_sign = (byte1 & 0x10) != 0;
+    let y_sign = (byte1 & 0x20) != 0;
+    
+    let mut dx = byte2 as i16;
+    let mut dy = byte3 as i16;
 
-    MOUSE_DELTA_X.store(delta_x, Ordering::Relaxed);
-    MOUSE_DELTA_Y.store(delta_y, Ordering::Relaxed);
+    if x_sign {
+        dx |= 0xFF00u16 as i16;
+    }
+    if y_sign {
+        dy |= 0xFF00u16 as i16;
+    }
+    
+    // PS/2 Y 轴向上为正，屏幕向下为正
+    // 许多系统在这里取反 Y 轴
+    
+    MOUSE_DELTA_X.store(dx, Ordering::Relaxed);
+    MOUSE_DELTA_Y.store(dy, Ordering::Relaxed);
 
     // 增加事件计数
     EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// 将 12 位有符号数扩展为 16 位
-fn extend_sign(value: u16) -> i16 {
-    if value & 0x800 != 0 {
-        (value as i16) | (0xF000u16 as i16)
-    } else {
-        value as i16
-    }
 }
 
 // ============================================================================
@@ -220,8 +237,7 @@ pub fn delta_x() -> i16 {
 
 /// 获取 Y 轴移动增量
 ///
-/// 注意：PS/2 鼠标 Y 轴方向与屏幕坐标系相反
-/// 向上移动鼠标会产生负值
+/// 返回原始 PS/2 数据 (向上为正)
 pub fn delta_y() -> i16 {
     MOUSE_DELTA_Y.load(Ordering::Relaxed)
 }
@@ -290,31 +306,17 @@ pub fn set_resolution(res: u8) -> bool {
     read_ack()
 }
 
-/// 读取鼠标数据（远程模式）
+/// 读取鼠标数据（远程模式，不通过中断）
 pub fn read_mouse_data() -> (bool, bool, bool, i16, i16) {
-    if INITIALIZED.load(Ordering::Relaxed) == 0 {
-        return (false, false, false, 0, 0);
-    }
-
-    send_to_mouse(MOUSE_CMD_READ_DATA);
-    if !read_ack() {
-        return (false, false, false, 0, 0);
-    }
-
-    // 读取 3 字节数据包
-    wait_output_ready();
-    let byte1 = ps2_read_data();
-    wait_output_ready();
-    let byte2 = ps2_read_data();
-    wait_output_ready();
-    let byte3 = ps2_read_data();
-
-    let left = byte1 & 0x01 != 0;
-    let middle = byte1 & 0x04 != 0;
-    let right = byte1 & 0x02 != 0;
-
-    let delta_x = extend_sign((byte3 & 0x0F) as u16 | ((byte2 as u16) << 4));
-    let delta_y = extend_sign(((byte3 & 0xF0) as u16) >> 4 | ((byte1 as u16) << 4));
-
-    (left, middle, right, delta_x, delta_y)
+    // 此函数在中断驱动模式下通常不使用
+    // 但如果处于远程模式，可以主动查询
+    
+    // 简单实现：返回最后一次中断更新的数据
+    let left = left_button();
+    let middle = middle_button();
+    let right = right_button();
+    let dx = delta_x();
+    let dy = delta_y();
+    
+    (left, middle, right, dx, dy)
 }

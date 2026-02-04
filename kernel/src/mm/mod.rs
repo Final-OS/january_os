@@ -61,7 +61,7 @@ pub mod address;
 pub mod buddy;
 pub mod fault;
 pub mod heap;
-pub mod init;
+pub mod setup; // Internal module, exposed via re-exports
 pub mod iommu;
 pub mod layout;
 pub mod memblock;
@@ -81,7 +81,7 @@ pub mod paging;
 // 初始化相关
 // ============================================================================
 
-pub use init::{
+pub use setup::{
     MmInitStage, init_stage,
     init_memblock, init_buddy_system, init_slub, finish_mm_init,
     MemoryRegionInfo,

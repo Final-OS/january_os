@@ -194,7 +194,7 @@ impl Write for Serial {
 // ============================================================================
 
 /// 初始化 COM1
-pub fn serial_init() {
+pub fn init() {
     let com1 = Serial::new(COM1_PORT);
     com1.init(38400);
 }

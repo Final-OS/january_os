@@ -91,6 +91,8 @@ pub const IRQ_BASE: u8 = 32;
 pub const IRQ_TIMER: u8 = IRQ_BASE + 0;
 /// Keyboard IRQ
 pub const IRQ_KEYBOARD: u8 = IRQ_BASE + 1;
+/// Mouse IRQ
+pub const IRQ_MOUSE: u8 = IRQ_BASE + 12;
 /// COM1 串口 IRQ
 pub const IRQ_COM1: u8 = IRQ_BASE + 4;
 /// Spurious interrupt

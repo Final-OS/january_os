@@ -48,7 +48,7 @@ pub use idt::{
     GENERAL_PROTECTION, PAGE_FAULT, X87_FPU_ERROR,
     ALIGNMENT_CHECK, MACHINE_CHECK, SIMD_EXCEPTION,
     VIRTUALIZATION, CONTROL_PROTECTION,
-    IRQ_BASE, IRQ_TIMER, IRQ_KEYBOARD, IRQ_COM1, IRQ_SPURIOUS,
+    IRQ_BASE, IRQ_TIMER, IRQ_KEYBOARD, IRQ_MOUSE, IRQ_COM1, IRQ_SPURIOUS,
 };
 
 pub use apic::{
@@ -126,6 +126,10 @@ pub unsafe fn init(info: &InterruptInitInfo) -> Result<(), &'static str> {
         // 键盘是边沿触发、高电平有效
         ioapic_set_irq(1, IRQ_KEYBOARD, 0, false, false);
         ioapic_unmask_irq(1);
+
+        // 设置鼠标中断 (IRQ 12 -> vector 0x2C)
+        ioapic_set_irq(12, IRQ_MOUSE, 0, false, false);
+        ioapic_unmask_irq(12);
         
         // 设置串口中断 (IRQ 4 -> vector 0x24)
         ioapic_set_irq(4, IRQ_COM1, 0, false, false);
@@ -209,6 +213,9 @@ unsafe fn init_idt() -> Result<(), &'static str> {
     ));
     idt.set_handler(IRQ_KEYBOARD, IdtEntry::interrupt(
         handlers::keyboard_handler as u64
+    ));
+    idt.set_handler(IRQ_MOUSE, IdtEntry::interrupt(
+        handlers::mouse_handler as u64
     ));
     idt.set_handler(IRQ_COM1, IdtEntry::interrupt(
         handlers::serial_handler as u64

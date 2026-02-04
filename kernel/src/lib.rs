@@ -22,6 +22,7 @@ pub mod config {
 }
 
 // 模块声明
+pub mod error;
 pub mod arch;
 pub mod drivers;
 pub mod interrupt;

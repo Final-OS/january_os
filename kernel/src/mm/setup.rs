@@ -41,6 +41,7 @@ use super::zone::{Zone, ZoneType, ZONES, mark_zones_initialized};
 use super::buddy::init_zone_buddy;
 use super::slub::init_kmalloc_caches;
 use super::layout::PAGE_SIZE;
+use crate::error::{KernelError, KernelResult};
 
 // ============================================================================
 // 初始化阶段
@@ -105,9 +106,9 @@ pub unsafe fn init_memblock(
     regions: &[MemoryRegionInfo],
     kernel_start: u64,
     kernel_end: u64,
-) -> Result<(), &'static str> {
+) -> KernelResult<()> {
     if memblock_initialized() {
-        return Err("Memblock already initialized");
+        return Err(KernelError::AlreadyExists);
     }
 
     // 初始化 memblock
@@ -150,17 +151,17 @@ pub unsafe fn init_buddy_system(
     _regions: &[MemoryRegionInfo],
     max_pfn: u64,
     _direct_map_offset: u64,
-) -> Result<(), &'static str> {
+) -> KernelResult<()> {
     unsafe {
         if INIT_STAGE != MmInitStage::Memblock {
-            return Err("Must be in Memblock stage");
+            return Err(KernelError::InvalidParam);
         }
         
         // 1. 使用 memblock 分配 struct page 数组
         let page_array_size = (max_pfn as usize) * PAGE_STRUCT_SIZE;
         let page_array_phys = memblock_alloc(page_array_size as u64, 64);
         if page_array_phys == 0 {
-            return Err("Failed to allocate page array");
+            return Err(KernelError::NoMemory);
         }
         
         // 转换为虚拟地址
@@ -258,10 +259,10 @@ pub unsafe fn init_buddy_system(
 // ============================================================================
 
 /// 初始化 SLUB 分配器
-pub unsafe fn init_slub() -> Result<(), &'static str> {
+pub unsafe fn init_slub() -> KernelResult<()> {
     unsafe {
         if INIT_STAGE != MmInitStage::Buddy {
-            return Err("Must be in Buddy stage");
+            return Err(KernelError::InvalidParam);
         }
         
         init_kmalloc_caches();

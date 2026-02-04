@@ -257,6 +257,27 @@ pub extern "x86-interrupt" fn keyboard_handler(frame: InterruptFrame) {
     super::apic::local_apic_eoi();
 }
 
+/// Mouse 中断处理程序
+pub extern "x86-interrupt" fn mouse_handler(frame: InterruptFrame) {
+    // 读取数据
+    let data: u8;
+    unsafe {
+        asm!(
+            "in al, 0x60",
+            out("al") data,
+            options(nostack, preserves_flags)
+        );
+    }
+    
+    let _ = frame;
+    
+    // 处理鼠标数据
+    crate::drivers::input::mouse_handle_interrupt(data);
+    
+    // 发送 EOI
+    super::apic::local_apic_eoi();
+}
+
 /// 串口 (COM1) 中断处理程序
 pub extern "x86-interrupt" fn serial_handler(frame: InterruptFrame) {
     let _ = frame;

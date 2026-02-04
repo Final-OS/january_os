@@ -43,7 +43,7 @@ pub mod fbcon;
 // 导出串口接口
 pub use serial::{
     Serial, COM1_PORT,
-    serial_init, serial_write, serial_read,
+    serial_write, serial_read,
     serial_enable_rx_interrupt, serial_interrupt_handler,
     serial_read_char, serial_has_input, serial_try_read,
     SerialWriter,
@@ -67,7 +67,7 @@ pub use pty::{
 
 /// 初始化 TTY 子系统
 pub fn init() {
-    serial_init();
+    serial::init();
     console::init();
     pty::init();
 }

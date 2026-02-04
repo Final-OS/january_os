@@ -29,6 +29,7 @@
 //! 5. Memblock 不再使用（但保留的内存仍然有效）
 
 use core::cmp::{min, max};
+use crate::error::{KernelError, KernelResult};
 
 // ============================================================================
 // 常量配置
@@ -192,7 +193,7 @@ pub fn memblock_initialized() -> bool {
 ///
 /// # Returns
 /// 成功返回 Ok(()), 失败返回错误信息
-pub fn memblock_add(base: u64, size: u64) -> Result<(), &'static str> {
+pub fn memblock_add(base: u64, size: u64) -> KernelResult<()> {
     unsafe {
         memblock_add_range(&mut (*core::ptr::addr_of_mut!(MEMBLOCK)).memory, base, size, MemblockFlags::NONE)
     }
@@ -203,7 +204,7 @@ pub fn memblock_add(base: u64, size: u64) -> Result<(), &'static str> {
 /// # Arguments
 /// * `base` - 区域起始物理地址
 /// * `size` - 区域大小
-pub fn memblock_reserve(base: u64, size: u64) -> Result<(), &'static str> {
+pub fn memblock_reserve(base: u64, size: u64) -> KernelResult<()> {
     unsafe {
         memblock_add_range(&mut (*core::ptr::addr_of_mut!(MEMBLOCK)).reserved, base, size, MemblockFlags::NONE)
     }
@@ -263,7 +264,7 @@ pub fn memblock_alloc_zeroed(size: u64, align: u64) -> u64 {
 /// 释放 memblock 中的保留内存
 /// 
 /// 注意：这只是从 reserved 列表中移除，不影响 memory 列表
-pub fn memblock_free(base: u64, size: u64) -> Result<(), &'static str> {
+pub fn memblock_free(base: u64, size: u64) -> KernelResult<()> {
     unsafe {
         memblock_remove_range(&mut (*core::ptr::addr_of_mut!(MEMBLOCK)).reserved, base, size)
     }
@@ -426,12 +427,12 @@ fn memblock_add_range(
     base: u64,
     size: u64,
     flags: MemblockFlags,
-) -> Result<(), &'static str> {
+) -> KernelResult<()> {
     if size == 0 {
         return Ok(());
     }
 
-    let end = base.checked_add(size).ok_or("Address overflow")?;
+    let end = base.checked_add(size).ok_or(KernelError::InvalidAddress)?;
 
     // 查找插入位置并检查重叠
     let mut insert_idx = type_.cnt;
@@ -452,7 +453,7 @@ fn memblock_add_range(
 
     // 检查是否还有空间
     if type_.cnt >= type_.max {
-        return Err("Memblock region limit reached");
+        return Err(KernelError::NoMemory);
     }
 
     // 插入新区域
@@ -478,7 +479,7 @@ fn memblock_merge_regions(
     base: u64,
     size: u64,
     _flags: MemblockFlags,
-) -> Result<(), &'static str> {
+) -> KernelResult<()> {
     let end = base + size;
 
     for i in 0..type_.cnt {
@@ -503,7 +504,7 @@ fn memblock_merge_regions(
         }
     }
 
-    Err("Failed to merge region")
+    Err(KernelError::Failed)
 }
 
 /// 合并相邻区域
@@ -539,7 +540,7 @@ fn memblock_remove_range(
     type_: &mut MemblockType,
     base: u64,
     size: u64,
-) -> Result<(), &'static str> {
+) -> KernelResult<()> {
     if size == 0 {
         return Ok(());
     }
@@ -572,7 +573,7 @@ fn memblock_remove_range(
         } else if base > reg_base && end < reg_end {
             // 中间打洞，需要分成两个区域
             if type_.cnt >= type_.max {
-                return Err("Cannot split: region limit reached");
+                return Err(KernelError::NoMemory);
             }
 
             // 修改当前区域为前半部分

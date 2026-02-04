@@ -23,6 +23,7 @@ pub mod hid;
 
 // 导出 PS/2 键盘接口
 pub use ps2::keyboard::{
+    init as keyboard_init,
     handle_scancode, read_char, has_char, buffer_len,
     last_scancode, last_char,
     is_shift_pressed, is_ctrl_pressed, is_alt_pressed,
@@ -49,6 +50,9 @@ pub use hid::{
 pub fn init() {
     // 初始化 USB HID
     let _ = hid::init();
+
+    // 初始化 PS/2 键盘
+    keyboard_init();
 
     // 初始化 PS/2 鼠标
     mouse_init();

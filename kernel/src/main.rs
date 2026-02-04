@@ -29,6 +29,7 @@ pub mod config {
 }
 
 // 导入内核库模块
+mod error;
 mod arch;
 mod drivers;
 mod interrupt;
@@ -37,7 +38,7 @@ mod sync;
 
 // 使用驱动模块
 use drivers::acpi;
-use drivers::tty::{serial_init, serial_enable_rx_interrupt, serial_try_read, SerialWriter};
+use drivers::tty::{serial, serial_enable_rx_interrupt, serial_try_read, SerialWriter};
 use drivers::tty::fbcon::{self, FbConsoleWriter};
 
 use core::fmt::Write;
@@ -152,7 +153,7 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
     // 必须首先清零 BSS 段
     zero_bss();
     
-    serial_init();
+    serial::init();
 
     // 验证 BootInfo
     if boot_info_ptr.is_null() {
@@ -370,6 +371,9 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
     // 启用串口接收中断
     serial_enable_rx_interrupt();
     
+    // 初始化输入设备 (PS/2 鼠标等)
+    drivers::input::init();
+    
     interrupt::enable_interrupts();
     
     kprintln!("      Bus: {} MHz | Timer: {} Hz | Interrupts: ENABLED",
@@ -497,19 +501,40 @@ fn execute_command(cmd: &[u8]) {
                 .sum();
             kprintln!("Memory Status:");
             kprintln!("  Free pages:  {}", total_free);
-            kprintln!("  Free memory: {} MB", (total_free * 4) / 1024);
+            kprintln!("  Heap size:   {} MB", config::KERNEL_HEAP_INIT_SIZE / 1024 / 1024);
+        }
+        "mouse" => {
+            kprintln!("Mouse Test Mode (Press any key to exit)");
+            let mut last_count = drivers::input::mouse_event_count();
+            while interrupt::read_char().is_none() {
+                let current_count = drivers::input::mouse_event_count();
+                if current_count > last_count {
+                     last_count = current_count;
+                     let dx = drivers::input::delta_x();
+                     let dy = drivers::input::delta_y();
+                     let l = drivers::input::left_button();
+                     let r = drivers::input::right_button();
+                     let m = drivers::input::middle_button();
+                     kprintln!("[{}] Mouse: X={:<4} Y={:<4} L={} M={} R={}", current_count, dx, dy, l, m, r);
+                }
+                // 简单的防抖/延时
+                for _ in 0..1000 { core::hint::spin_loop(); }
+            }
+            kprintln!("Exited mouse test mode.");
         }
         "help" => {
-            kprintln!("Commands:");
-            kprintln!("  shutdown  - Power off the system");
-            kprintln!("  reboot    - Restart the system");
-            kprintln!("  status    - Show uptime");
-            kprintln!("  iommu     - Show IOMMU status");
-            kprintln!("  mem       - Show memory status");
-            kprintln!("  help      - Show this help");
+            kprintln!("Available commands:");
+            kprintln!("  shutdown - Power off system");
+            kprintln!("  reboot   - Restart system");
+            kprintln!("  status   - Show system status");
+            kprintln!("  iommu    - Show IOMMU status");
+            kprintln!("  mem      - Show memory usage");
+            kprintln!("  mouse    - Test mouse input");
+            kprintln!("  help     - Show this help message");
         }
         _ => {
-            kprintln!("Unknown command: {}", cmd_str);
+            kprintln!("Unknown command: '{}'", cmd_str);
+            kprintln!("Type 'help' for available commands.");
         }
     }
 }
