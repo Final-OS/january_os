@@ -408,33 +408,40 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
     kprint!("> ");
 
     // 命令缓冲区
-    let mut cmd_buf = [0u8; 64];
+    let mut cmd_buf = [0u8; 256];
     let mut cmd_len = 0usize;
 
     // 主循环
     loop {
+        let mut activity = false;
+
         // 检查键盘输入 (PS/2)
         while let Some(c) = interrupt::read_char() {
             handle_input(c, &mut cmd_buf, &mut cmd_len);
+            activity = true;
         }
         
         // 检查串口输入 (COM1)
         while let Some(c) = serial_try_read() {
             handle_input(c, &mut cmd_buf, &mut cmd_len);
+            activity = true;
         }
         
         // 轮询 USB 事件
+        // 注意：虽然我们启用了 xHCI 中断，但定期轮询可以确保不错过事件
         drivers::usb::poll();
         
-        // 短暂等待
-        for _ in 0..10000 {
-            core::hint::spin_loop();
+        // 如果没有活动，挂起 CPU 直到下一个中断 (HLT)
+        // 这样可以降低 CPU 占用率和功耗
+        // 任何中断（如时钟、键盘、USB）都会唤醒 CPU
+        if !activity {
+            interrupt::halt_with_interrupts();
         }
     }
 }
 
 /// 处理输入字符
-fn handle_input(c: u8, cmd_buf: &mut [u8; 64], cmd_len: &mut usize) {
+fn handle_input(c: u8, cmd_buf: &mut [u8; 256], cmd_len: &mut usize) {
     match c {
         8 | 127 => { // Backspace 或 DEL
             if *cmd_len > 0 {
@@ -454,7 +461,7 @@ fn handle_input(c: u8, cmd_buf: &mut [u8; 64], cmd_len: &mut usize) {
             kprint!("> ");
         }
         c if c >= 32 && c < 127 => {
-            if *cmd_len < 63 {
+            if *cmd_len < 255 {
                 cmd_buf[*cmd_len] = c;
                 *cmd_len += 1;
                 kprint!("{}", c as char);
@@ -494,6 +501,12 @@ fn execute_command(cmd: &[u8]) {
         "drivers" => {
             execute_drivers_command(args);
         }
+        "pci" => {
+            execute_pci_command();
+        }
+        "usb" => {
+            execute_usb_command();
+        }
         "help" => {
             kprintln!("Available commands:");
             kprintln!("  shutdown   - Power off system");
@@ -501,6 +514,8 @@ fn execute_command(cmd: &[u8]) {
             kprintln!("  status     - Show system status");
             kprintln!("  drivers    - Driver management commands");
             kprintln!("  mm         - Memory management commands");
+            kprintln!("  pci        - Show PCI devices");
+            kprintln!("  usb        - Show USB devices");
             kprintln!("  help       - Show this help message");
             kprintln!("Type 'drivers help' or 'mm help' for more info.");
         }
@@ -604,6 +619,15 @@ fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
             kprintln!("Input Devices Status:");
             kprintln!("  PS/2 Mouse ID: {:#x}", drivers::input::mouse_device_id());
             kprintln!("  PS/2 Keyboard: Initialized");
+
+            // HID Status
+            kprintln!("  HID Keyboard:  {}", if drivers::input::hid::keyboard::is_present() { "Present" } else { "Not Present" });
+            let (k_head, k_tail) = drivers::input::hid::keyboard::buffer_status();
+            kprintln!("    Buffer: {}/{} (Head/Tail)", k_head, k_tail);
+
+            kprintln!("  HID Mouse:     {}", if drivers::input::hid::mouse::is_present() { "Present" } else { "Not Present" });
+            let (m_head, m_tail) = drivers::input::hid::mouse::buffer_status();
+            kprintln!("    Buffer: {}/{} (Head/Tail)", m_head, m_tail);
         }
         "mouse" => {
             kprintln!("Mouse Test Mode (ID: {:#x}) (Press any key to exit)", drivers::input::mouse_device_id());
@@ -647,6 +671,20 @@ fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
             kprintln!("  interrupt - Show interrupt status");
         }
     }
+}
+
+fn execute_pci_command() {
+    kprintln!("PCI Devices:");
+    drivers::pci::scan_bus(&mut |addr, header| {
+         kprintln!("  {:02x}:{:02x}.{} {:04x}:{:04x} Class {:02x} Sub {:02x} ProgIF {:02x}",
+             addr.bus, addr.device, addr.function,
+             header.vendor_id, header.device_id,
+             header.class_code, header.subclass, header.prog_if);
+    });
+}
+
+fn execute_usb_command() {
+    drivers::usb::xhci::dump_devices();
 }
 
 /// ACPI 关机

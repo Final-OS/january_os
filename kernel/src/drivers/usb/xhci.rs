@@ -1105,6 +1105,36 @@ impl XhciController {
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// 列出所有连接的 USB 设备
+pub fn dump_devices() {
+    unsafe {
+        if let Some(xhci) = &*core::ptr::addr_of!(XHCI_CONTROLLER) {
+            crate::kprintln!("USB Devices (Max Slots: {}):", xhci.max_slots);
+            let mut found = false;
+            // 遍历所有可能的 Slot
+            for i in 1..=xhci.max_slots {
+                 if i as usize >= xhci.slots.len() {
+                     break;
+                 }
+                 if let Some(slot) = &xhci.slots[i as usize] {
+                     let type_str = match slot.device_type {
+                         DeviceType::Keyboard => "HID Keyboard",
+                         DeviceType::Mouse => "HID Mouse",
+                         DeviceType::Unknown => "Unknown Device",
+                     };
+                     crate::kprintln!("  Slot {}: {}", i, type_str);
+                     found = true;
+                 }
+            }
+            if !found {
+                crate::kprintln!("  No devices connected.");
+            }
+        } else {
+            crate::kprintln!("USB xHCI Controller not initialized.");
+        }
+    }
+}
+
 /// 轮询 USB 事件
 pub fn poll() {
     unsafe {

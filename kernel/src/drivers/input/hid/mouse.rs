@@ -256,6 +256,18 @@ pub fn poll() {
     // TODO: 实际轮询 USB 设备
 }
 
+/// 检查鼠标是否存在
+pub fn is_present() -> bool {
+    unsafe { (*core::ptr::addr_of!(GLOBAL_MOUSE)).is_some() }
+}
+
+/// 获取缓冲区状态 (head, tail)
+pub fn buffer_status() -> (usize, usize) {
+    let head = MOUSE_EVENT_HEAD.load(Ordering::Relaxed);
+    let tail = MOUSE_EVENT_TAIL.load(Ordering::Relaxed);
+    (head, tail)
+}
+
 /// 推送鼠标事件
 fn push_mouse_event(event: MouseEvent) {
     let head = MOUSE_EVENT_HEAD.load(Ordering::Relaxed);

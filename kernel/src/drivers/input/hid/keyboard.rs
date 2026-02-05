@@ -441,6 +441,18 @@ pub fn poll() {
     // 这需要 USB 主机控制器驱动支持
 }
 
+/// 检查键盘是否存在
+pub fn is_present() -> bool {
+    unsafe { (*core::ptr::addr_of!(GLOBAL_KEYBOARD)).is_some() }
+}
+
+/// 获取缓冲区状态 (head, tail)
+pub fn buffer_status() -> (usize, usize) {
+    let head = KEY_EVENT_HEAD.load(Ordering::Relaxed);
+    let tail = KEY_EVENT_TAIL.load(Ordering::Relaxed);
+    (head, tail)
+}
+
 /// 推送按键事件
 fn push_key_event(event: KeyEvent) {
     // 1. 推送到事件缓冲区 (如果未满)
