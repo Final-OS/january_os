@@ -5,6 +5,9 @@
 // ============================================================================
 
 use crate::config;
+use crate::mm::buddy::alloc_page;
+use crate::mm::zone::GFP_KERNEL_ZERO;
+use crate::mm::page::page_to_pfn;
 
 // ============================================================================
 // 页表条目标志位 (x86_64 特定)
@@ -148,6 +151,15 @@ impl PageTableEntry {
             self.0 |= PTE_WRITABLE;
         } else {
             self.0 &= !PTE_WRITABLE;
+        }
+    }
+    
+    /// 设置用户态可访问位
+    pub fn set_user(&mut self, user: bool) {
+        if user {
+            self.0 |= PTE_USER;
+        } else {
+            self.0 &= !PTE_USER;
         }
     }
     
@@ -364,6 +376,170 @@ impl PageTableManager {
         let (entry, _level, page_size) = self.translate(virt_addr)?;
         let offset_mask = page_size - 1;
         Some(entry.phys_addr() + (virt_addr & offset_mask))
+    }
+
+    /// 刷新单个 TLB 条目
+    pub fn flush_tlb(&self, virt_addr: u64) {
+        unsafe {
+            core::arch::asm!(
+                "invlpg [{}]",
+                in(reg) virt_addr,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+    
+    /// 刷新整个 TLB (重新加载 CR3)
+    pub fn flush_tlb_all(&self) {
+        unsafe {
+            core::arch::asm!(
+                "mov {tmp}, cr3",
+                "mov cr3, {tmp}",
+                tmp = out(reg) _,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+
+    /// 映射虚拟地址到物理地址
+    /// 
+    /// # Safety
+    /// 
+    /// - 需要确保分配内存成功
+    pub unsafe fn map_page(&mut self, virt: u64, phys: u64, flags: u64) -> bool {
+        let direct_map_offset = self.direct_map_offset;
+        let pml4_phys = self.pml4_phys;
+        
+        let phys_to_virt = |p: u64| direct_map_offset + p;
+
+        let pml4 = &mut *(phys_to_virt(pml4_phys) as *mut PageTable);
+        let pml4_idx = pml4_index(virt);
+        let pml4_entry = &mut pml4.entries[pml4_idx];
+        
+        if !pml4_entry.is_present() {
+            let page = match alloc_page(GFP_KERNEL_ZERO) {
+                Some(p) => p,
+                None => {
+                    return false;
+                },
+            };
+            let pfn = page_to_pfn(page);
+            let table_phys = pfn * config::PAGE_SIZE;
+            
+            pml4_entry.set_phys_addr(table_phys);
+            pml4_entry.set_present(true);
+            pml4_entry.set_writable(true);
+            pml4_entry.set_user(true); 
+        }
+        
+        let pdpt = &mut *(phys_to_virt(pml4_entry.phys_addr()) as *mut PageTable);
+        let pdpt_idx = pdpt_index(virt);
+        let pdpt_entry = &mut pdpt.entries[pdpt_idx];
+        
+        if !pdpt_entry.is_present() {
+            let page = match alloc_page(GFP_KERNEL_ZERO) {
+                Some(p) => p,
+                None => {
+                    return false;
+                },
+            };
+            let pfn = page_to_pfn(page);
+            let table_phys = pfn * config::PAGE_SIZE;
+            
+            pdpt_entry.set_phys_addr(table_phys);
+            pdpt_entry.set_present(true);
+            pdpt_entry.set_writable(true);
+            pdpt_entry.set_user(true);
+        }
+        
+        let pd = &mut *(phys_to_virt(pdpt_entry.phys_addr()) as *mut PageTable);
+        let pd_idx = pd_index(virt);
+        let pd_entry = &mut pd.entries[pd_idx];
+        
+        if !pd_entry.is_present() {
+            let page = match alloc_page(GFP_KERNEL_ZERO) {
+                Some(p) => p,
+                None => {
+                    return false;
+                },
+            };
+            let pfn = page_to_pfn(page);
+            let table_phys = pfn * config::PAGE_SIZE;
+            
+            pd_entry.set_phys_addr(table_phys);
+            pd_entry.set_present(true);
+            pd_entry.set_writable(true);
+            pd_entry.set_user(true);
+        }
+        
+        let pt = &mut *(phys_to_virt(pd_entry.phys_addr()) as *mut PageTable);
+        let pt_idx = pt_index(virt);
+        let pt_entry = &mut pt.entries[pt_idx];
+        
+        *pt_entry = PageTableEntry::new(phys, flags);
+        
+        self.flush_tlb(virt);
+        
+        true
+    }
+
+    /// 取消映射虚拟地址
+    /// 
+    /// 成功返回 true，如果未映射返回 false
+    pub unsafe fn unmap_page(&mut self, virt: u64) -> bool {
+        let direct_map_offset = self.direct_map_offset;
+        let pml4_phys = self.pml4_phys;
+        
+        let phys_to_virt = |p: u64| direct_map_offset + p;
+
+        let pml4 = &mut *(phys_to_virt(pml4_phys) as *mut PageTable);
+        let pml4_idx = pml4_index(virt);
+        let pml4_entry = &mut pml4.entries[pml4_idx];
+        
+        if !pml4_entry.is_present() {
+            return false;
+        }
+
+        let pdpt = &mut *(phys_to_virt(pml4_entry.phys_addr()) as *mut PageTable);
+        let pdpt_idx = pdpt_index(virt);
+        let pdpt_entry = &mut pdpt.entries[pdpt_idx];
+
+        if !pdpt_entry.is_present() {
+            return false;
+        }
+        
+        if pdpt_entry.is_huge() {
+            *pdpt_entry = PageTableEntry::empty();
+            self.flush_tlb(virt);
+            return true;
+        }
+
+        let pd = &mut *(phys_to_virt(pdpt_entry.phys_addr()) as *mut PageTable);
+        let pd_idx = pd_index(virt);
+        let pd_entry = &mut pd.entries[pd_idx];
+
+        if !pd_entry.is_present() {
+            return false;
+        }
+        
+        if pd_entry.is_huge() {
+            *pd_entry = PageTableEntry::empty();
+            self.flush_tlb(virt);
+            return true;
+        }
+
+        let pt = &mut *(phys_to_virt(pd_entry.phys_addr()) as *mut PageTable);
+        let pt_idx = pt_index(virt);
+        let pt_entry = &mut pt.entries[pt_idx];
+
+        if !pt_entry.is_present() {
+            return false;
+        }
+
+        *pt_entry = PageTableEntry::empty();
+        self.flush_tlb(virt);
+        
+        true
     }
     
     /// 获取 PML4 中存在的条目数量

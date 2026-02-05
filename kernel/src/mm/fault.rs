@@ -9,6 +9,7 @@ use super::vma::{Vma, VmFlags, Mm};
 use super::page::{Page, PageFlags, pfn_to_page, page_to_pfn};
 use super::zone::GfpFlags;
 use super::buddy::{alloc_page, free_page};
+use super::paging::PageTableManager;
 
 // ============================================================================
 // 页错误类型
@@ -265,8 +266,14 @@ fn handle_anonymous_fault(ctx: &FaultContext, vma: &Vma) -> FaultResult {
     let phys = page_to_pfn(page) * PAGE_SIZE;
     let pte_flags = vma.vm_flags.to_pte_flags();
     
-    // TODO: 实际映射到页表
-    // map_page(ctx.mm, address, phys, pte_flags);
+    // 实际映射到页表
+    unsafe {
+        let mut pt_mgr = PageTableManager::new((*ctx.mm).pgd, ctx.direct_map_offset);
+        if !pt_mgr.map_page(address, phys, pte_flags) {
+            free_page(page);
+            return FaultResult::Oom;
+        }
+    }
     
     FaultResult::Retry
 }
@@ -289,42 +296,65 @@ fn handle_write_protection(ctx: &FaultContext, vma: &Vma) -> FaultResult {
     
     let address = ctx.address & !(PAGE_SIZE - 1);
     
-    // 获取当前页
-    // TODO: 从页表获取当前物理页
-    // let old_page = get_page_at(ctx.mm, address);
-    
-    // 如果只有一个引用，直接修改权限
-    // if old_page.refcount() == 1 {
-    //     make_page_writable(ctx.mm, address);
-    //     return FaultResult::Retry;
-    // }
+    unsafe {
+        let mut pt_mgr = PageTableManager::new((*ctx.mm).pgd, ctx.direct_map_offset);
+        let old_phys = match pt_mgr.translate_addr(address) {
+            Some(p) => p & !(PAGE_SIZE - 1),
+            None => return FaultResult::Sigsegv,
+        };
+        
+        let old_page = pfn_to_page(old_phys / PAGE_SIZE);
+        
+        // 如果只有一个引用，直接修改权限
+        if old_page.refcount() == 1 {
+            let pte_flags = vma.vm_flags.to_pte_flags();
+            pt_mgr.map_page(address, old_phys, pte_flags);
+            return FaultResult::Retry;
+        }
+    }
     
     // 否则执行 COW
     do_cow_fault(ctx, vma, address)
 }
 
 /// 执行 Copy-on-Write
-fn do_cow_fault(_ctx: &FaultContext, vma: &Vma, address: u64) -> FaultResult {
+fn do_cow_fault(ctx: &FaultContext, vma: &Vma, address: u64) -> FaultResult {
     // 1. 分配新页
     let new_page = match alloc_page(GfpFlags::new(GfpFlags::USER)) {
         Some(p) => p,
         None => return FaultResult::Oom,
     };
     
-    // 2. 复制内容
-    // TODO: 从旧页复制到新页
-    // let old_phys = get_phys_at(ctx.mm, address);
-    // copy_page(new_page_virt, old_page_virt);
-    
-    // 3. 更新映射
     let new_phys = page_to_pfn(new_page) * PAGE_SIZE;
-    let pte_flags = vma.vm_flags.to_pte_flags();
     
-    // TODO: 更新页表映射
-    // remap_page(ctx.mm, address, new_phys, pte_flags);
-    
-    // 4. 减少旧页引用
-    // put_page(old_page);
+    unsafe {
+        let mut pt_mgr = PageTableManager::new((*ctx.mm).pgd, ctx.direct_map_offset);
+        
+        // 2. 复制内容
+        let old_phys = match pt_mgr.translate_addr(address) {
+            Some(p) => p & !(PAGE_SIZE - 1),
+            None => {
+                free_page(new_page);
+                return FaultResult::Sigsegv;
+            }
+        };
+        
+        // 需要虚拟地址进行复制
+        let old_virt = pt_mgr.phys_to_virt(old_phys);
+        let new_virt = pt_mgr.phys_to_virt(new_phys);
+        
+        copy_page(new_virt, old_virt);
+        
+        // 3. 更新映射
+        let pte_flags = vma.vm_flags.to_pte_flags();
+        pt_mgr.map_page(address, new_phys, pte_flags);
+        
+        // 4. 减少旧页引用
+        let old_page = pfn_to_page(old_phys / PAGE_SIZE);
+        if old_page.put() == 0 {
+            free_page(old_page);
+        }
+    }
     
     FaultResult::Retry
 }

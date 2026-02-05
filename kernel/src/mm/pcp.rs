@@ -5,6 +5,7 @@
 // ============================================================================
 
 use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
+use crate::interrupt::apic::local_apic_id;
 use super::page::{Page, ListHead};
 use super::zone::{Zone, ZoneType, GfpFlags, get_zone, NR_ZONES};
 use crate::config;
@@ -255,12 +256,15 @@ pub fn pcp_initialized() -> bool {
     PCP_INITIALIZED.load(Ordering::Relaxed)
 }
 
-/// 获取当前 CPU ID (简化：始终返回 0)
+/// 获取当前 CPU ID
 #[inline]
 fn current_cpu() -> usize {
-    // TODO: 实现真正的 CPU ID 获取
-    // 可通过 APIC ID 或 GS 段寄存器获取
-    0
+    let id = local_apic_id() as usize;
+    if id < MAX_CPUS {
+        id
+    } else {
+        0 // Fallback for invalid APIC ID
+    }
 }
 
 // ============================================================================

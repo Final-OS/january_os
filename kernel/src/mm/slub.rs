@@ -149,32 +149,32 @@ impl KmemCache {
     
     /// 从 partial slab 分配
     fn alloc_from_partial(&self) -> Option<*mut u8> {
-        loop {
-            let page_ptr = self.partial.load(Ordering::Acquire);
-            if page_ptr.is_null() {
-                return None;
-            }
-            
+        let mut page_ptr = self.partial.load(Ordering::Acquire);
+        
+        while !page_ptr.is_null() {
             unsafe {
                 let page = &mut *page_ptr;
-                let slab = page.private() as *mut SlabPage;
                 
-                if (*slab).freelist.is_null() {
-                    // 这个 slab 已满，尝试下一个
-                    // TODO: 实现 slab 链表遍历
-                    return None;
+                // 使用 page.lru.prev 存储 freelist 头指针
+                let free_head = page.lru.prev as *mut FreePointer;
+                
+                if !free_head.is_null() {
+                    // 从 freelist 取出一个对象
+                    let next_free = (*free_head).next;
+                    page.lru.prev = next_free as *mut _;
+                    
+                    self.allocated.fetch_add(1, Ordering::Relaxed);
+                    
+                    return Some(free_head as *mut u8);
                 }
                 
-                // 从 freelist 取出一个对象
-                let obj = (*slab).freelist;
-                (*slab).freelist = (*obj).next;
-                (*slab).inuse += 1;
-                
-                self.allocated.fetch_add(1, Ordering::Relaxed);
-                
-                return Some(obj as *mut u8);
+                // 尝试下一个 page
+                // page.lru.next 存储下一个 page 的指针
+                page_ptr = page.lru.next as *mut Page;
             }
         }
+        
+        None
     }
     
     /// 分配新的 slab
@@ -218,6 +218,9 @@ impl KmemCache {
             } else {
                 core::ptr::null_mut()
             };
+            
+            // 使用 page.lru.prev 存储 freelist 头指针
+            (*page).lru.prev = second_obj as *mut _;
             
             // 添加到 partial 链表
             self.add_to_partial(page);
@@ -263,14 +266,10 @@ impl KmemCache {
         // 将对象添加回 freelist
         let obj = ptr as *mut FreePointer;
         
-        // 简化实现：直接添加到 partial 链表的第一个 slab
-        let partial = self.partial.load(Ordering::Acquire);
-        if !partial.is_null() {
-            // 将对象插入到页的 freelist（通过 lru.prev 临时存储）
-            let free_head = (*partial).lru.prev as *mut FreePointer;
-            (*obj).next = free_head;
-            (*partial).lru.prev = obj as *mut _;
-        }
+        // 使用 page.lru.prev 作为 freelist 头指针
+        let free_head = (*page).lru.prev as *mut FreePointer;
+        (*obj).next = free_head;
+        (*page).lru.prev = obj as *mut _;
         
         self.allocated.fetch_sub(1, Ordering::Relaxed);
     }

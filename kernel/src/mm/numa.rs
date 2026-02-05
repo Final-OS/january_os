@@ -6,6 +6,7 @@
 
 use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use crate::sync::Once;
+use crate::interrupt::apic::local_apic_id;
 use super::zone::{Zone, ZoneType, NR_ZONES, MAX_ORDER, FreeArea};
 use super::page::ListHead;
 use super::layout::PAGE_SIZE;
@@ -180,6 +181,10 @@ static NUMA_INIT: Once = Once::new();
 /// 是否为 NUMA 系统 (false = UMA)
 static IS_NUMA: AtomicBool = AtomicBool::new(false);
 
+/// APIC ID 到 NUMA 节点的映射
+/// 假设最大 APIC ID 为 255
+static mut APIC_TO_NODE: [u32; 256] = [0; 256];
+
 // ============================================================================
 // 节点访问
 // ============================================================================
@@ -197,9 +202,12 @@ pub unsafe fn get_node_data(node_id: u32) -> &'static mut PgData {
 /// 获取当前 CPU 的本地节点
 #[inline]
 pub fn numa_node_id() -> u32 {
-    // TODO: 实现真正的 NUMA 节点检测
-    // 可以通过 CPUID 或 ACPI SRAT 表获取
-    0
+    let apic_id = local_apic_id() as usize;
+    if apic_id < 256 {
+        unsafe { APIC_TO_NODE[apic_id] }
+    } else {
+        0
+    }
 }
 
 /// 获取在线节点数
@@ -282,6 +290,19 @@ pub unsafe fn init_numa(nodes: &[NumaNodeInfo]) {
     for info in nodes.iter() {
         if (info.node_id as usize) >= MAX_NUMNODES {
             continue;
+        }
+        
+        // 更新 CPU 到节点的映射
+        let mut mask = info.cpu_mask;
+        let mut apic_id = 0;
+        while mask > 0 {
+            if mask & 1 != 0 {
+                if apic_id < 256 {
+                    APIC_TO_NODE[apic_id] = info.node_id;
+                }
+            }
+            mask >>= 1;
+            apic_id += 1;
         }
         
         let node = &mut NODE_DATA[info.node_id as usize];

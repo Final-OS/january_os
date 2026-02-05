@@ -7,7 +7,7 @@
 use super::page::{Page, PageFlags, pfn_to_page, page_to_pfn};
 use super::zone::{Zone, GfpFlags, MAX_ORDER, get_zone, gfp_to_zone_list};
 use super::zone::{pages_per_order, get_buddy_pfn};
-use super::layout::PAGE_SIZE;
+use super::layout::{PAGE_SIZE, DIRECT_MAP_OFFSET};
 
 // ============================================================================
 // container_of 宏
@@ -122,11 +122,11 @@ unsafe fn expand_and_alloc(
         
         // 如果请求清零
         if gfp.test(GfpFlags::ZERO) {
-            let _addr = pfn * PAGE_SIZE;
-            let _size = pages_per_order(low_order) * PAGE_SIZE;
-            // 需要通过直接映射访问物理内存来清零
-            // 这里假设有 phys_to_virt 函数
-            // core::ptr::write_bytes(phys_to_virt(addr) as *mut u8, 0, size as usize);
+            let addr = pfn * PAGE_SIZE;
+            let size = pages_per_order(low_order) * PAGE_SIZE;
+            // 通过直接映射访问物理内存来清零
+            let virt = DIRECT_MAP_OFFSET + addr;
+            core::ptr::write_bytes(virt as *mut u8, 0, size as usize);
         }
         
         // 如果是复合页，设置复合页标志

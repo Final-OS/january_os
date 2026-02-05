@@ -7,6 +7,7 @@
 
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::panic::Location;
 use crate::sync::OnceCell;
 use super::layout::PAGE_SIZE;
 use super::page::{Page, ListHead, pfn_to_page, page_to_pfn};
@@ -87,8 +88,8 @@ pub struct VmStruct {
     _pad: u32,
     /// 链表节点
     pub list: ListHead,
-    /// 调用者地址 (调试用)
-    pub caller: u64,
+    /// 调用者信息 (调试用)
+    pub caller: Option<&'static Location<'static>>,
 }
 
 impl VmStruct {
@@ -101,15 +102,16 @@ impl VmStruct {
             nr_pages: 0,
             _pad: 0,
             list: ListHead::new(),
-            caller: 0,
+            caller: None,
         }
     }
     
-    pub fn init(&mut self, addr: u64, size: u64) {
+    pub fn init(&mut self, addr: u64, size: u64, caller: Option<&'static Location<'static>>) {
         self.addr = addr;
         self.size = size;
         self.flags = VmFlags::new(VmFlags::ALLOC | VmFlags::INUSE);
         self.list.init();
+        self.caller = caller;
     }
 }
 
@@ -173,6 +175,7 @@ pub fn vmalloc_initialized() -> bool {
 /// 
 /// # Returns
 /// 成功返回虚拟地址，失败返回 null
+#[track_caller]
 pub fn vmalloc(size: usize) -> *mut u8 {
     if size == 0 || !vmalloc_initialized() {
         return ptr::null_mut();
@@ -182,6 +185,7 @@ pub fn vmalloc(size: usize) -> *mut u8 {
 }
 
 /// 分配并清零的虚拟连续内存
+#[track_caller]
 pub fn vzalloc(size: usize) -> *mut u8 {
     let ptr = vmalloc(size);
     if !ptr.is_null() {
@@ -213,6 +217,7 @@ pub fn vfree(addr: *mut u8) {
 }
 
 /// 内部分配函数
+#[track_caller]
 fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
     // 计算需要的页数
     let size = page_align_up(size as u64);
@@ -240,7 +245,7 @@ fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
         }
         
         // 初始化 VmStruct
-        area.init(vaddr, size);
+        area.init(vaddr, size, Some(Location::caller()));
         area.nr_pages = nr_pages;
         
         // 分配物理页并映射
@@ -350,9 +355,9 @@ fn unmap_vmalloc_page(virt: u64) {
         return;
     }
     
-    // TODO: 使用页表管理器取消映射
-    // unsafe { (*state.page_table_mgr).unmap_page(virt) }
-    let _ = virt;
+    // 使用页表管理器取消映射
+    unsafe { (*state.page_table_mgr).unmap_page(virt); }
+    // let _ = virt;
 }
 
 /// 获取 vmalloc 虚拟地址对应的物理地址
@@ -380,6 +385,7 @@ const fn page_align_up(size: u64) -> u64 {
 // ============================================================================
 
 /// 将物理地址映射到 vmalloc 区域 (IO 重映射)
+#[track_caller]
 pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
     if size == 0 {
         return ptr::null_mut();
@@ -417,7 +423,7 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
         }
         
         // 初始化 VmStruct
-        area.init(vaddr, page_align_size);
+        area.init(vaddr, page_align_size, Some(Location::caller()));
         area.nr_pages = nr_pages;
         area.flags.set(VmFlags::IOREMAP);
         
@@ -437,7 +443,7 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
         let phys = phys_base + i * PAGE_SIZE;
         let virt = vm_start + i * PAGE_SIZE;
         
-        if !map_vmalloc_page(virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_CACHE) {
+        if !map_vmalloc_page(virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NO_CACHE) {
             crate::kprintln!("ioremap: map_vmalloc_page failed at virt={:#x} phys={:#x}", virt, phys);
             vfree(vm_ptr);
             return ptr::null_mut();
@@ -485,4 +491,32 @@ pub fn vmalloc_stats() -> VmallocStats {
     }
     
     stats
+}
+
+/// 打印所有 vmalloc 分配信息 (用于检测泄漏)
+pub fn vmalloc_dump_info() {
+    crate::kprintln!("=== vmalloc dump ===");
+    unsafe {
+        for i in 0..MAX_VMALLOC_AREAS {
+            let area = &VMALLOC_AREAS[i];
+            if area.flags.contains(VmFlags::INUSE) {
+                crate::kprintln!(
+                    "VA: {:#x} - {:#x} ({}) | Pages: {} | Caller: {}",
+                    area.addr,
+                    area.addr + area.size,
+                    area.size,
+                    area.nr_pages,
+                    if let Some(loc) = area.caller {
+                        loc.file()
+                    } else {
+                        "unknown"
+                    },
+                );
+                if let Some(loc) = area.caller {
+                    crate::kprintln!("    at {}:{}", loc.file(), loc.line());
+                }
+            }
+        }
+    }
+    crate::kprintln!("====================");
 }
