@@ -66,11 +66,14 @@ USE_KVM = $(if $(filter on auto,$(QEMU_KVM)),$(if $(KVM_OK),-enable-kvm,),)
 
 # IOMMU 需要 Q35 机器类型和 kernel-irqchip=split
 MACHINE_OPTS = $(if $(filter q35,$(QEMU_MACHINE)),-machine q35$(if $(filter true,$(QEMU_IOMMU)),$(comma)kernel-irqchip=split,),-machine $(QEMU_MACHINE))
-IOMMU_OPTS = $(if $(filter true,$(QEMU_IOMMU)),-device intel-iommu$(comma)intremap=on,)
+IOMMU_OPTS = $(if $(filter true,$(QEMU_IOMMU)),-device intel-iommu,)
 comma := ,
 
 QEMU_OPTS = -m $(QEMU_MEMORY) -smp $(QEMU_SMP) $(if $(QEMU_CPU),-cpu $(QEMU_CPU),) $(USE_KVM) \
             $(MACHINE_OPTS) $(IOMMU_OPTS) \
+            -device qemu-xhci,id=xhci \
+            -device usb-mouse,bus=xhci.0 \
+            -device usb-kbd,bus=xhci.0 \
             -drive if=pflash,format=raw,readonly=on,file=$(OVMF) \
             -drive format=raw,file=fat:rw:$(ESP_DIR)
 
@@ -114,6 +117,11 @@ run: build
 	@echo "==> $(QEMU_CMD): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, KVM=$(if $(USE_KVM),on,off)"
 	@echo "==> Serial console (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -nographic
+
+run-gui: build
+	@echo "==> $(QEMU_CMD): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, KVM=$(if $(USE_KVM),on,off)"
+	@echo "==> GUI console (Ctrl+A X to exit QEMU)"
+	@$(QEMU_CMD) $(QEMU_OPTS) -serial stdio
 
 debug: build
 	@echo "==> GDB server on :1234 (Ctrl+A X to exit QEMU)"

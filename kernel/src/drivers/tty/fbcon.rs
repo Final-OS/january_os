@@ -96,6 +96,16 @@ fn convert_color(rgb: u32) -> u32 {
 // 初始化
 // ============================================================================
 
+/// 获取 Framebuffer 信息 (width, height, stride, format)
+pub fn info() -> (u32, u32, u32, u32) {
+    (
+        FB_WIDTH.load(Ordering::Relaxed),
+        FB_HEIGHT.load(Ordering::Relaxed),
+        FB_STRIDE.load(Ordering::Relaxed),
+        FB_FORMAT.load(Ordering::Relaxed),
+    )
+}
+
 /// 初始化 framebuffer 控制台
 /// 
 /// # 参数

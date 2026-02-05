@@ -235,11 +235,12 @@ const CTE_T_SHIFT: u64 = 2;
 const CTE_T_UNTRANSLATED: u64 = 0 << CTE_T_SHIFT;
 /// Translation Type: Both translated and untranslated
 const CTE_T_PASSTHROUGH: u64 = 2 << CTE_T_SHIFT;
-/// Address Width (bits 6:4)
-const CTE_AW_SHIFT: u64 = 4;
+/// Address Width (bits 2:0 of high qword)
+const CTE_AW_SHIFT: u64 = 0;
 /// 48-bit AGAW (4-level page table)
 const CTE_AW_48: u64 = 2 << CTE_AW_SHIFT;
-/// Second Level Page Table Pointer 掩码 (bits 63:12 of high qword)
+/// Second Level Page Table Pointer 掩码 (bits 63:12 of high qword) - Wait, SLPTPTR is in LOW qword for legacy?
+/// Let's correct the comments and usage
 const CTE_SLPTPTR_MASK: u64 = !0xFFF;
 /// Domain ID (bits 23:8 of high qword)
 const CTE_DID_SHIFT: u64 = 8;
@@ -466,11 +467,11 @@ impl VtdUnit {
             ptr::write_bytes(self.root_table_virt as *mut u8, 0, PAGE_SIZE as usize);
         }
         
-        // 为 Translate 模式设置默认 Domain 0
-        if self.translation_mode == TranslationMode::Translate {
-            // 为 bus 0 创建 Context Table
-            self.setup_context_for_bus(0)?;
-        }
+        // 为所有模式设置 Context Table
+        // 即使是 Passthrough 模式，我们也需要有效的 Context Entry 来标记 Translation Type = Pass-through
+        // 这里简化：假设只有一个 PCI Segment Group (0)，只设置 Bus 0
+        // 实际上应该根据 ACPI DMAR 表中的 Scope 来设置
+        self.setup_context_for_bus(0)?;
         
         Ok(())
     }
@@ -495,13 +496,19 @@ impl VtdUnit {
             // High 64 bits: Reserved
             ptr::write_volatile(rte_ptr.add(1), 0);
         }
-        
-        // 为所有 devfn 设置 Context Entry (指向 Domain 0 的页表)
-        // 这里简化：先分配一个空的二级页表
-        let slpt_phys = self.alloc_page()?;
-        let slpt_virt = slpt_phys + self.direct_map_offset;
-        unsafe {
-            ptr::write_bytes(slpt_virt as *mut u8, 0, PAGE_SIZE as usize);
+
+        // 如果是 Translate 模式，需要分配二级页表
+        let slpt_phys = if self.translation_mode == TranslationMode::Translate {
+             self.alloc_page()?
+        } else {
+            0
+        };
+
+        if self.translation_mode == TranslationMode::Translate {
+             let slpt_virt = slpt_phys + self.direct_map_offset;
+             unsafe {
+                ptr::write_bytes(slpt_virt as *mut u8, 0, PAGE_SIZE as usize);
+             }
         }
         
         // 为 bus 0 的所有设备设置 Context Entry
@@ -510,13 +517,26 @@ impl VtdUnit {
             let cte_ptr = (ctx_table_virt + cte_offset) as *mut u64;
             
             unsafe {
-                // Low 64 bits: Present + Translation Type + Address Width
-                let low = CTE_PRESENT | CTE_T_UNTRANSLATED | CTE_AW_48;
-                ptr::write_volatile(cte_ptr, low);
-                
-                // High 64 bits: Second Level Page Table Pointer + Domain ID
-                let high = (slpt_phys & CTE_SLPTPTR_MASK) | (0 << CTE_DID_SHIFT);
-                ptr::write_volatile(cte_ptr.add(1), high);
+                if self.translation_mode == TranslationMode::Passthrough {
+                        // Passthrough 模式：Translation Type = Pass-through (10b)
+                        // Low 64 bits: Present + Translation Type + FPD
+                        let low = CTE_PRESENT | CTE_T_PASSTHROUGH | CTE_FPD;
+                        ptr::write_volatile(cte_ptr, low);
+                        
+                        // High 64 bits: Address Width + Domain ID
+                        // AW is bits 2:0 in High Qword
+                        let high = CTE_AW_48 | (0 << CTE_DID_SHIFT);
+                        ptr::write_volatile(cte_ptr.add(1), high);
+                    } else {
+                        // Translate 模式：Translation Type = Untranslated (00b) + SLPTPTR
+                        // Low 64 bits: Present + Translation Type + SLPTPTR
+                        let low = CTE_PRESENT | CTE_T_UNTRANSLATED | (slpt_phys & CTE_SLPTPTR_MASK);
+                        ptr::write_volatile(cte_ptr, low);
+                        
+                        // High 64 bits: Address Width + Domain ID
+                        let high = CTE_AW_48 | (0 << CTE_DID_SHIFT);
+                        ptr::write_volatile(cte_ptr.add(1), high);
+                    }
             }
         }
         

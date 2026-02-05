@@ -383,6 +383,22 @@ impl UsbKeyboard {
 // 全局状态
 // ============================================================================
 
+static mut GLOBAL_KEYBOARD: Option<UsbKeyboard> = None;
+
+/// 处理 Boot 协议报告 (供外部驱动调用)
+pub fn handle_boot_report(report: BootKeyboardReport) {
+    unsafe {
+        if (*core::ptr::addr_of!(GLOBAL_KEYBOARD)).is_none() {
+            // 初始化默认实例
+            GLOBAL_KEYBOARD = Some(UsbKeyboard::new(0, 0, 0));
+        }
+        
+        if let Some(kbd) = &mut *core::ptr::addr_of_mut!(GLOBAL_KEYBOARD) {
+            kbd.process_report(&report);
+        }
+    }
+}
+
 /// 事件缓冲区大小
 const EVENT_BUFFER_SIZE: usize = 64;
 
@@ -427,19 +443,21 @@ pub fn poll() {
 
 /// 推送按键事件
 fn push_key_event(event: KeyEvent) {
+    // 1. 推送到事件缓冲区 (如果未满)
     let head = KEY_EVENT_HEAD.load(Ordering::Relaxed);
     let next_head = (head + 1) % EVENT_BUFFER_SIZE;
     
     if next_head != KEY_EVENT_TAIL.load(Ordering::Relaxed) {
         unsafe {
-            KEY_EVENT_BUFFER[head] = event;
+            // 使用 addr_of_mut! 避免 static_mut_refs
+            (*core::ptr::addr_of_mut!(KEY_EVENT_BUFFER))[head] = event;
         }
         KEY_EVENT_HEAD.store(next_head, Ordering::Relaxed);
-        
-        // 如果有 ASCII 字符，也推送到字符缓冲区
-        if let Some(c) = event.ascii {
-            push_char(c);
-        }
+    }
+    
+    // 2. 独立推送到字符缓冲区 (即使事件缓冲区已满)
+    if let Some(c) = event.ascii {
+        push_char(c);
     }
 }
 

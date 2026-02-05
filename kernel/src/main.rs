@@ -110,22 +110,6 @@ pub struct BootInfo {
 const BOOTINFO_MAGIC: u64 = 0x4A414E5F4F530000;
 
 // ============================================================================
-// 输出宏 - 同时输出到串口和 Framebuffer 控制台
-// ============================================================================
-
-macro_rules! kprint {
-    ($($arg:tt)*) => {{
-        let _ = write!(SerialWriter, $($arg)*);
-        let _ = write!(FbConsoleWriter, $($arg)*);
-    }};
-}
-
-macro_rules! kprintln {
-    () => { kprint!("\n") };
-    ($($arg:tt)*) => {{ kprint!($($arg)*); kprint!("\n"); }};
-}
-
-// ============================================================================
 // 内核入口点
 // ============================================================================
 
@@ -253,6 +237,15 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
     mm::init_vma();
     mm::init_uma();
 
+    // 初始化 vmalloc
+    {
+        use alloc::boxed::Box;
+        let pml4_phys = info.pml4_phys_addr;
+        let pt_mgr = unsafe { mm::paging::PageTableManager::new(pml4_phys, direct_map) };
+        let pt_mgr_ptr = Box::leak(Box::new(pt_mgr));
+        unsafe { mm::vmalloc::init_vmalloc(direct_map, pt_mgr_ptr) };
+    }
+
     let total_free = mm::ZoneType::iter()
         .map(|zt| mm::get_zone(zt))
         .filter(|z| z.initialized)
@@ -300,7 +293,7 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
     if info.acpi_rsdp_addr != 0 {
         if acpi::init(info.acpi_rsdp_addr).is_ok() {
             // MADT
-            if let Some(madt) = acpi::get_table::<acpi::Madt>(acpi::MADT_SIGNATURE) {
+            if let Some(madt) = acpi::find_table::<acpi::Madt>() {
                 let madt_info = acpi::parse_madt(madt);
                 cpu_count = madt_info.cpu_count;
                 local_apic_addr = madt_info.local_apic_address;
@@ -310,7 +303,7 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
                 }
             }
             // DMAR
-            if acpi::get_table::<acpi::Dmar>(acpi::DMAR_SIGNATURE).is_some() {
+            if acpi::find_table::<acpi::Dmar>().is_some() {
                 has_iommu = true;
             }
             kprintln!("      {} CPUs | APIC: {:#x} | IOMMU: {}",
@@ -360,9 +353,16 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
     kprintln!("      Type: {} | Mode: {}", iommu_type, trans_mode);
 
     // ========================================================================
+    // 输入设备初始化
+    // ========================================================================
+    kprintln!("[6/7] USB & Input Devices");
+    drivers::usb::init();
+    drivers::input::init();
+
+    // ========================================================================
     // Timer 和中断启用
     // ========================================================================
-    kprintln!("[6/6] Timer & Interrupts");
+    kprintln!("[7/7] Timer & Interrupts");
     
     let timer_freq = interrupt::calibrate_timer();
     const TIMER_HZ: u32 = 100;
@@ -370,9 +370,6 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
     
     // 启用串口接收中断
     serial_enable_rx_interrupt();
-    
-    // 初始化输入设备 (PS/2 鼠标等)
-    drivers::input::init();
     
     interrupt::enable_interrupts();
     
@@ -426,6 +423,9 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
             handle_input(c, &mut cmd_buf, &mut cmd_len);
         }
         
+        // 轮询 USB 事件
+        drivers::usb::poll();
+        
         // 短暂等待
         for _ in 0..10000 {
             core::hint::spin_loop();
@@ -469,7 +469,11 @@ fn execute_command(cmd: &[u8]) {
     let cmd_str = core::str::from_utf8(cmd).unwrap_or("");
     let cmd_str = cmd_str.trim();
     
-    match cmd_str {
+    let mut parts = cmd_str.split_whitespace();
+    let command = parts.next().unwrap_or("");
+    let args = parts;
+
+    match command {
         "" => {}
         "shutdown" | "poweroff" => {
             kprintln!("Shutting down...");
@@ -484,16 +488,33 @@ fn execute_command(cmd: &[u8]) {
                 interrupt::timer_ticks(),
                 interrupt::timer_ticks() / 100);
         }
-        "iommu" => {
-            let stats = mm::iommu_stats();
-            kprintln!("IOMMU Status:");
-            kprintln!("  Enabled:     {}", stats.enabled);
-            kprintln!("  Type:        {:?}", stats.iommu_type);
-            kprintln!("  Translation: {:?}", stats.translation_mode);
-            kprintln!("  Units:       {}", stats.nr_units);
-            kprintln!("  Mapped:      {} pages", stats.mapped_pages);
+        "mm" => {
+            execute_mm_command(args);
         }
-        "mem" => {
+        "drivers" => {
+            execute_drivers_command(args);
+        }
+        "help" => {
+            kprintln!("Available commands:");
+            kprintln!("  shutdown   - Power off system");
+            kprintln!("  reboot     - Restart system");
+            kprintln!("  status     - Show system status");
+            kprintln!("  drivers    - Driver management commands");
+            kprintln!("  mm         - Memory management commands");
+            kprintln!("  help       - Show this help message");
+            kprintln!("Type 'drivers help' or 'mm help' for more info.");
+        }
+        _ => {
+            kprintln!("Unknown command: '{}'. Type 'help' for available commands.", command);
+        }
+    }
+}
+
+fn execute_mm_command(mut args: core::str::SplitWhitespace) {
+    let subcommand = args.next().unwrap_or("help");
+    
+    match subcommand {
+        "status" => {
             let total_free: u64 = mm::ZoneType::iter()
                 .map(|zt| unsafe { mm::get_zone(zt) })
                 .filter(|z| z.initialized)
@@ -503,8 +524,89 @@ fn execute_command(cmd: &[u8]) {
             kprintln!("  Free pages:  {}", total_free);
             kprintln!("  Heap size:   {} MB", config::KERNEL_HEAP_INIT_SIZE / 1024 / 1024);
         }
+        "memblock" => {
+            kprintln!("Memblock Status:");
+            kprintln!("  Phys Mem Size: {} bytes", mm::memblock_phys_mem_size());
+            kprintln!("  Reserved Size: {} bytes", mm::memblock_reserved_size());
+            kprintln!("  Free Size:     {} bytes", mm::memblock_free_size());
+            
+            kprintln!("Memory Regions:");
+            for i in 0..mm::memblock_memory_region_count() {
+                if let Some(region) = mm::memblock_memory_region(i) {
+                     kprintln!("  [{}] {:#x} - {:#x} ({} bytes)", 
+                        i, region.base, region.end(), region.size);
+                }
+            }
+            
+            kprintln!("Reserved Regions:");
+            for i in 0..mm::memblock_reserved_region_count() {
+                if let Some(region) = mm::memblock_reserved_region(i) {
+                     kprintln!("  [{}] {:#x} - {:#x} ({} bytes)", 
+                        i, region.base, region.end(), region.size);
+                }
+            }
+        }
+        "iommu" => {
+            let stats = mm::iommu_stats();
+            kprintln!("IOMMU Status:");
+            kprintln!("  Enabled:     {}", stats.enabled);
+            kprintln!("  Type:        {:?}", stats.iommu_type);
+            kprintln!("  Translation: {:?}", stats.translation_mode);
+            kprintln!("  Units:       {}", stats.nr_units);
+            kprintln!("  Mapped:      {} pages", stats.mapped_pages);
+        }
+        "help" | _ => {
+            kprintln!("Usage: mm <subcommand>");
+            kprintln!("Subcommands:");
+            kprintln!("  status    - Show general memory usage");
+            kprintln!("  memblock  - Show early memory map (memblock)");
+            kprintln!("  iommu     - Show IOMMU status");
+        }
+    }
+}
+
+fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
+    let subcommand = args.next().unwrap_or("help");
+    
+    match subcommand {
+        "acpi" => {
+            kprintln!("ACPI Tables:");
+            drivers::acpi::dump_tables();
+        }
+        "cpu" => {
+            if let Some(madt) = drivers::acpi::find_table::<drivers::acpi::Madt>() {
+                kprintln!("CPU Information (from MADT):");
+                kprintln!("  Local APIC Address: {:#x}", madt.local_apic_addr());
+                kprintln!("  Has 8259 PIC: {}", madt.has_8259_pic());
+                
+                let mut cpu_count = 0;
+                for entry in madt.entries() {
+                    if let drivers::acpi::MadtEntry::LocalApic(lapic) = entry {
+                        kprintln!("  CPU #{}: APIC ID={}, Enabled={}, OnlineCapable={}", 
+                            cpu_count, lapic.apic_id, lapic.is_enabled(), lapic.is_online_capable());
+                        cpu_count += 1;
+                    }
+                }
+                kprintln!("  Total CPUs found: {}", cpu_count);
+            } else {
+                kprintln!("MADT table not found!");
+            }
+        }
+        "video" => {
+            let (w, h, s, f) = drivers::tty::fbcon::info();
+            kprintln!("Video Status:");
+            kprintln!("  Resolution:  {}x{}", w, h);
+            kprintln!("  Stride:      {} pixels", s);
+            kprintln!("  Format:      {:?} ({})", 
+                if f == 0 { "RGB" } else if f == 1 { "BGR" } else { "Other" }, f);
+        }
+        "input" => {
+            kprintln!("Input Devices Status:");
+            kprintln!("  PS/2 Mouse ID: {:#x}", drivers::input::mouse_device_id());
+            kprintln!("  PS/2 Keyboard: Initialized");
+        }
         "mouse" => {
-            kprintln!("Mouse Test Mode (Press any key to exit)");
+            kprintln!("Mouse Test Mode (ID: {:#x}) (Press any key to exit)", drivers::input::mouse_device_id());
             let mut last_count = drivers::input::mouse_event_count();
             while interrupt::read_char().is_none() {
                 let current_count = drivers::input::mouse_event_count();
@@ -522,19 +624,27 @@ fn execute_command(cmd: &[u8]) {
             }
             kprintln!("Exited mouse test mode.");
         }
-        "help" => {
-            kprintln!("Available commands:");
-            kprintln!("  shutdown - Power off system");
-            kprintln!("  reboot   - Restart system");
-            kprintln!("  status   - Show system status");
-            kprintln!("  iommu    - Show IOMMU status");
-            kprintln!("  mem      - Show memory usage");
-            kprintln!("  mouse    - Test mouse input");
-            kprintln!("  help     - Show this help message");
+        "interrupt" => {
+            kprintln!("Interrupt Status:");
+            kprintln!("  CPU Interrupts: {}", if interrupt::interrupts_enabled() { "Enabled" } else { "Disabled" });
+            kprintln!("  Local APIC ID:  {}", interrupt::local_apic_id());
+            kprintln!("  Timer Ticks:    {}", interrupt::timer_ticks());
+            
+            kprintln!("IDT Vectors:");
+            kprintln!("  Timer:    {}", interrupt::IRQ_TIMER);
+            kprintln!("  Keyboard: {}", interrupt::IRQ_KEYBOARD);
+            kprintln!("  Mouse:    {}", interrupt::IRQ_MOUSE);
+            kprintln!("  COM1:     {}", interrupt::IRQ_COM1);
         }
-        _ => {
-            kprintln!("Unknown command: '{}'", cmd_str);
-            kprintln!("Type 'help' for available commands.");
+        "help" | _ => {
+            kprintln!("Usage: drivers <subcommand>");
+            kprintln!("Subcommands:");
+            kprintln!("  acpi      - Show ACPI tables");
+            kprintln!("  cpu       - Show CPU information");
+            kprintln!("  video     - Show video status");
+            kprintln!("  input     - Show input devices status");
+            kprintln!("  mouse     - Mouse test mode");
+            kprintln!("  interrupt - Show interrupt status");
         }
     }
 }

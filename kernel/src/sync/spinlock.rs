@@ -4,7 +4,7 @@
 
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// 自旋锁
 ///
@@ -13,6 +13,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 pub struct SpinLock<T> {
     locked: AtomicBool,
     data: UnsafeCell<T>,
+    // 调试信息
+    owner: AtomicU32,
+    name: &'static str,
 }
 
 // SpinLock 可以安全地在线程间共享
@@ -25,6 +28,18 @@ impl<T> SpinLock<T> {
         Self {
             locked: AtomicBool::new(false),
             data: UnsafeCell::new(data),
+            owner: AtomicU32::new(u32::MAX),
+            name: "SpinLock",
+        }
+    }
+
+    /// 创建一个带名称的自旋锁（用于调试死锁）
+    pub const fn with_name(data: T, name: &'static str) -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            data: UnsafeCell::new(data),
+            owner: AtomicU32::new(u32::MAX),
+            name,
         }
     }
 
@@ -33,16 +48,37 @@ impl<T> SpinLock<T> {
     /// 如果锁已被持有，则自旋等待直到锁可用。
     /// 返回一个 RAII 守卫，在 drop 时自动释放锁。
     pub fn lock(&self) -> SpinLockGuard<T> {
+        let me = if crate::interrupt::apic_initialized() {
+            crate::interrupt::local_apic_id()
+        } else {
+            0
+        };
+
+        // 递归死锁检测
+        if self.locked.load(Ordering::Relaxed) && self.owner.load(Ordering::Relaxed) == me {
+            panic!("SpinLock::lock: Deadlock detected! Recursive locking by CPU {} on '{}'", me, self.name);
+        }
+
         // 自旋直到获取锁
+        let mut count = 0;
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
+            // 超时死锁检测 (~10ms - 100ms)
+            count += 1;
+            if count > 10_000_000 {
+                let owner = self.owner.load(Ordering::Relaxed);
+                panic!("SpinLock::lock: Deadlock detected! Timeout waiting for '{}' (held by CPU {}) on CPU {}", 
+                    self.name, owner, me);
+            }
+
             // 自旋等待时使用 PAUSE 指令减少 CPU 功耗
             core::hint::spin_loop();
         }
 
+        self.owner.store(me, Ordering::Relaxed);
         SpinLockGuard { lock: self }
     }
 
@@ -50,11 +86,23 @@ impl<T> SpinLock<T> {
     ///
     /// 如果锁可用则获取并返回 Some，否则立即返回 None。
     pub fn try_lock(&self) -> Option<SpinLockGuard<T>> {
+        let me = if crate::interrupt::apic_initialized() {
+            crate::interrupt::local_apic_id()
+        } else {
+            0
+        };
+
+        if self.locked.load(Ordering::Relaxed) && self.owner.load(Ordering::Relaxed) == me {
+            // 递归，直接失败
+            return None;
+        }
+
         if self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
+            self.owner.store(me, Ordering::Relaxed);
             Some(SpinLockGuard { lock: self })
         } else {
             None
@@ -67,6 +115,7 @@ impl<T> SpinLock<T> {
     ///
     /// 调用者必须确保当前确实持有锁。
     pub unsafe fn force_unlock(&self) {
+        self.owner.store(u32::MAX, Ordering::Relaxed);
         self.locked.store(false, Ordering::Release);
     }
 }
@@ -94,6 +143,7 @@ impl<T> DerefMut for SpinLockGuard<'_, T> {
 
 impl<T> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
+        self.lock.owner.store(u32::MAX, Ordering::Relaxed);
         self.lock.locked.store(false, Ordering::Release);
     }
 }

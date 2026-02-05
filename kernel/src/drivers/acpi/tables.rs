@@ -108,6 +108,12 @@ impl SdtHeader {
     }
 }
 
+/// ACPI 表 Trait
+pub trait AcpiTable {
+    /// 获取表签名
+    fn signature() -> &'static [u8; 4];
+}
+
 /// XSDT (Extended System Description Table)
 ///
 /// 包含指向其他 ACPI 表的 64 位指针数组

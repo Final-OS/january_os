@@ -203,6 +203,22 @@ impl UsbMouse {
 // 全局状态
 // ============================================================================
 
+static mut GLOBAL_MOUSE: Option<UsbMouse> = None;
+
+/// 处理 Boot 协议报告 (供外部驱动调用)
+pub fn handle_boot_report(report: BootMouseReport) {
+    unsafe {
+        if (*core::ptr::addr_of!(GLOBAL_MOUSE)).is_none() {
+            // 初始化默认实例
+            GLOBAL_MOUSE = Some(UsbMouse::new(0, 0, 0));
+        }
+        
+        if let Some(mouse) = &mut *core::ptr::addr_of_mut!(GLOBAL_MOUSE) {
+            mouse.process_report(&report);
+        }
+    }
+}
+
 /// 事件缓冲区大小
 const EVENT_BUFFER_SIZE: usize = 64;
 
@@ -247,13 +263,14 @@ fn push_mouse_event(event: MouseEvent) {
     
     if next_head != MOUSE_EVENT_TAIL.load(Ordering::Relaxed) {
         unsafe {
-            MOUSE_EVENT_BUFFER[head] = event;
+            // 使用 addr_of_mut! 避免 static_mut_refs
+            (*core::ptr::addr_of_mut!(MOUSE_EVENT_BUFFER))[head] = event;
         }
         MOUSE_EVENT_HEAD.store(next_head, Ordering::Relaxed);
-        
-        // 更新按钮状态
-        MOUSE_BUTTONS.store(event.buttons, Ordering::Relaxed);
     }
+    
+    // 始终更新按钮状态
+    MOUSE_BUTTONS.store(event.buttons, Ordering::Relaxed);
 }
 
 /// 读取鼠标事件

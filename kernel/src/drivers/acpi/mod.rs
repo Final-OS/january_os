@@ -100,37 +100,80 @@ pub fn init(rsdp_addr: u64) -> Result<(), &'static str> {
         return Err("Invalid XSDT/RSDT address");
     }
 
-    // 设置状态（只会执行一次）
+    // 保存状态
     ACPI_STATE.set(AcpiState {
         xsdt_addr: sdt_addr,
         revision: rsdp.revision,
-    }).map_err(|_| "ACPI already initialized")?;
+    });
 
     Ok(())
 }
 
-/// 检查 ACPI 是否已初始化
-pub fn initialized() -> bool {
-    ACPI_STATE.is_initialized()
-}
+/// 打印所有 ACPI 表
+pub fn dump_tables() {
+    let state = match ACPI_STATE.get() {
+        Some(s) => s,
+        None => {
+            crate::kprintln!("ACPI not initialized");
+            return;
+        }
+    };
+    let xsdt_addr = state.xsdt_addr;
 
-/// 获取 ACPI 版本
-pub fn revision() -> u8 {
-    ACPI_STATE.get().map(|s| s.revision).unwrap_or(0)
-}
+    crate::kprintln!("ACPI Revision: {}", state.revision);
+    crate::kprintln!("XSDT/RSDT Address: {:#x}", state.xsdt_addr);
 
-// ============================================================================
-// 表查找
-// ============================================================================
+    unsafe {
+        let xsdt_virt = phys_to_virt(xsdt_addr);
+        let header = &*(xsdt_virt as *const SdtHeader);
+
+        // Copy fields to avoid unaligned access
+        let revision = header.revision;
+        let length = header.length;
+        
+        let is_xsdt = &header.signature == b"XSDT";
+        
+        if is_xsdt {
+            crate::kprintln!("XSDT (v{}) Length: {}", revision, length);
+        } else {
+            crate::kprintln!("RSDT (v{}) Length: {}", revision, length);
+        }
+
+        let entry_size = if is_xsdt { 8 } else { 4 };
+        let entries_size = length as usize - core::mem::size_of::<SdtHeader>();
+        let entry_count = entries_size / entry_size;
+
+        let entries_start = xsdt_virt + core::mem::size_of::<SdtHeader>() as u64;
+        
+        for i in 0..entry_count {
+            let entry_addr = if is_xsdt {
+                let ptr = (entries_start + (i * 8) as u64) as *const u64;
+                *ptr
+            } else {
+                let ptr = (entries_start + (i * 4) as u64) as *const u32;
+                *ptr as u64
+            };
+
+            if entry_addr == 0 {
+                continue;
+            }
+
+            let table_virt = phys_to_virt(entry_addr);
+            let table_header = &*(table_virt as *const SdtHeader);
+            
+            // Copy fields to avoid unaligned access
+            let sig = table_header.signature;
+            let len = table_header.length;
+            let sig_str = core::str::from_utf8(&sig).unwrap_or("????");
+            
+            crate::kprintln!("  [{}] {} @ {:#x} (len: {})", 
+                i, sig_str, entry_addr, len);
+        }
+    }
+}
 
 /// 查找 ACPI 表
-///
-/// # Arguments
-/// * `signature` - 表签名（4 字节 ASCII）
-///
-/// # Returns
-/// 成功返回表的物理地址，未找到返回 None
-pub fn find_table(signature: &[u8; 4]) -> Option<u64> {
+pub fn find_table<T: AcpiTable>() -> Option<&'static T> {
     let state = ACPI_STATE.get()?;
     let xsdt_addr = state.xsdt_addr;
 
@@ -169,8 +212,8 @@ pub fn find_table(signature: &[u8; 4]) -> Option<u64> {
             let table_virt = phys_to_virt(entry_addr);
             let table_header = &*(table_virt as *const SdtHeader);
 
-            if &table_header.signature == signature {
-                return Some(entry_addr);
+            if &table_header.signature == T::signature() {
+                return Some(&*(table_virt as *const T));
             }
         }
     }
@@ -178,23 +221,7 @@ pub fn find_table(signature: &[u8; 4]) -> Option<u64> {
     None
 }
 
-/// 获取表并验证
-pub fn get_table<T: AcpiTable>(signature: &[u8; 4]) -> Option<&'static T> {
-    let phys = find_table(signature)?;
-    let virt = phys_to_virt(phys);
-    
-    unsafe {
-        let header = &*(virt as *const SdtHeader);
-        
-        // 验证校验和
-        if !validate_checksum(virt as *const u8, header.length as usize) {
-            return None;
-        }
-        
-        Some(&*(virt as *const T))
-    }
-}
-
+// Removed get_table
 /// ACPI 表 trait
 pub trait AcpiTable {
     /// 获取表签名
@@ -224,48 +251,7 @@ fn validate_checksum(data: *const u8, length: usize) -> bool {
 // 调试
 // ============================================================================
 
-/// 打印所有 ACPI 表
-pub fn dump_tables() {
-    let state = match ACPI_STATE.get() {
-        Some(s) => s,
-        None => return,
-    };
-    let xsdt_addr = state.xsdt_addr;
-
-    unsafe {
-        let xsdt_virt = phys_to_virt(xsdt_addr);
-        let header = &*(xsdt_virt as *const SdtHeader);
-
-        let is_xsdt = &header.signature == b"XSDT";
-        let entry_size = if is_xsdt { 8 } else { 4 };
-        let entries_size = header.length as usize - core::mem::size_of::<SdtHeader>();
-        let entry_count = entries_size / entry_size;
-
-        let entries_start = xsdt_virt + core::mem::size_of::<SdtHeader>() as u64;
-        
-        for i in 0..entry_count {
-            let entry_addr = if is_xsdt {
-                let ptr = (entries_start + (i * 8) as u64) as *const u64;
-                *ptr
-            } else {
-                let ptr = (entries_start + (i * 4) as u64) as *const u32;
-                *ptr as u64
-            };
-
-            if entry_addr == 0 {
-                continue;
-            }
-
-            let table_virt = phys_to_virt(entry_addr);
-            let table_header = &*(table_virt as *const SdtHeader);
-            
-            // 签名转字符串
-            let sig = core::str::from_utf8(&table_header.signature).unwrap_or("????");
-            let _ = sig; // 由调用者打印
-        }
-    }
-}
-
+// Removed duplicate dump_tables
 // ============================================================================
 // FADT (Fixed ACPI Description Table) - 电源管理
 // ============================================================================
@@ -315,11 +301,16 @@ pub struct Fadt {
     // ... 更多字段省略
 }
 
+
+impl AcpiTable for Fadt {
+    fn signature() -> &'static [u8; 4] {
+        b"FACP"
+    }
+}
+
 /// 获取 FADT 表
 pub fn get_fadt() -> Option<&'static Fadt> {
-    let phys = find_table(b"FACP")?;  // FADT 签名是 "FACP"
-    let virt = phys_to_virt(phys);
-    unsafe { Some(&*(virt as *const Fadt)) }
+    find_table::<Fadt>()
 }
 
 /// 获取关机信息（用于调试）

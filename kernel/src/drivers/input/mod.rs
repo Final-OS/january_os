@@ -24,10 +24,23 @@ pub mod hid;
 // 导出 PS/2 键盘接口
 pub use ps2::keyboard::{
     init as keyboard_init,
-    handle_scancode, read_char, has_char, buffer_len,
+    handle_scancode, buffer_len,
     last_scancode, last_char,
     is_shift_pressed, is_ctrl_pressed, is_alt_pressed,
 };
+
+/// 读取一个字符 (优先检查 USB 键盘，然后是 PS/2 键盘)
+pub fn read_char() -> Option<u8> {
+    if let Some(c) = hid::keyboard::read_char() {
+        return Some(c);
+    }
+    ps2::keyboard::read_char()
+}
+
+/// 检查是否有字符可读
+pub fn has_char() -> bool {
+    hid::keyboard::has_char() || ps2::keyboard::has_char()
+}
 
 // 导出 PS/2 鼠标接口
 pub use ps2::mouse::{
@@ -37,6 +50,7 @@ pub use ps2::mouse::{
     delta_x, delta_y,
     event_count as mouse_event_count, has_event as mouse_has_event,
     set_sample_rate, set_resolution,
+    device_id as mouse_device_id,
 };
 
 // 导出 USB HID 接口

@@ -271,7 +271,7 @@ pub struct IommuStats {
 /// 尝试初始化 Intel VT-d
 fn try_init_vtd(mgr: &mut IommuManager, direct_map_offset: u64) -> bool {
     // 从 ACPI DMAR 表获取 VT-d 信息
-    let dmar = match crate::acpi::get_table::<crate::acpi::Dmar>(crate::acpi::DMAR_SIGNATURE) {
+    let dmar = match crate::acpi::find_table::<crate::acpi::Dmar>() {
         Some(d) => d,
         None => return false,
     };

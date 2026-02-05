@@ -69,9 +69,17 @@ static EVENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// 初始化状态
 static INITIALIZED: AtomicU8 = AtomicU8::new(0);
 
+/// 鼠标设备 ID
+static MOUSE_ID: AtomicU8 = AtomicU8::new(0);
+
 // ============================================================================
 // 鼠标初始化
 // ============================================================================
+
+/// 获取鼠标设备 ID
+pub fn device_id() -> u8 {
+    MOUSE_ID.load(Ordering::Relaxed)
+}
 
 /// 初始化 PS/2 鼠标
 pub fn init() {
@@ -103,7 +111,8 @@ pub fn init() {
     wait_output_ready();
     let bat_ok = ps2_read_data(); // 0xAA
     wait_output_ready();
-    let _device_id = ps2_read_data(); // 0x00
+    let device_id = ps2_read_data(); // 0x00
+    MOUSE_ID.store(device_id, Ordering::Relaxed);
 
     if ack != 0xFA || bat_ok != 0xAA {
         // 尝试继续，即使复位返回值不完全符合预期

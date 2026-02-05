@@ -56,12 +56,54 @@ if is_shift_pressed() {
 }
 ```
 
-### USB HID (部分实现)
+### USB HID (Boot Protocol)
+
+内核实现了基本的 USB HID Boot Protocol 支持，可以无缝处理 USB 键盘和鼠标输入。
+
+#### API
 
 ```rust
-pub fn usb_hid_init()
-pub fn handle_hid_report(report: &[u8])
+// 初始化 USB 鼠标/键盘驱动
+pub fn usb_mouse_init()
+pub fn usb_keyboard_init()
+
+// 处理 Boot Protocol 报告 (供 xHCI 驱动调用)
+pub fn handle_boot_report(report: BootReport)
 ```
+
+#### 事件处理
+
+USB 键盘事件通过 `KeyEvent` 结构体传递，并自动整合到系统的字符输入流中。
+
+```rust
+pub struct KeyEvent {
+    pub scancode: u8,
+    pub pressed: bool,
+    pub modifiers: Modifiers,
+    pub ascii: Option<u8>,
+}
+```
+
+USB 鼠标事件通过 `MouseEvent` 结构体传递：
+
+```rust
+pub struct MouseEvent {
+    pub event_type: MouseEventType, // Move, ButtonDown, ButtonUp, Scroll
+    pub dx: i32,
+    pub dy: i32,
+    pub scroll: i32,
+    pub button: Option<MouseButton>,
+    pub buttons: u8,
+}
+```
+
+#### 缓冲区管理
+
+为了避免高频事件阻塞输入，USB 输入驱动采用了事件缓冲区与字符缓冲区解耦的设计：
+1. **事件缓冲区**：存储原始按键/鼠标事件，用于低级处理。
+2. **字符缓冲区**：存储解码后的 ASCII 字符，供 Shell 等上层应用消费。
+
+即使事件缓冲区已满（例如未被消费），字符输入仍能正常写入字符缓冲区，确保 Shell 交互的流畅性。
 
 ## PS/2 端口
 

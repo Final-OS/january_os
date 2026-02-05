@@ -51,8 +51,6 @@ pub use serial::{
 
 // 导出控制台接口
 pub use console::{
-    Console, Cell, CharAttr,
-    FramebufferInfo, init_framebuffer, framebuffer_initialized,
     VtParser, VtState, VtAction,
     ANSI_COLORS, ansi_to_rgb,
     MAX_CONSOLES, DEFAULT_FG, DEFAULT_BG,
@@ -68,6 +66,6 @@ pub use pty::{
 /// 初始化 TTY 子系统
 pub fn init() {
     serial::init();
-    console::init();
+    // console 由 main.rs 中的 fbcon::init() 初始化
     pty::init();
 }

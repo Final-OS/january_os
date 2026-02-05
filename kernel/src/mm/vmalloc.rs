@@ -12,7 +12,7 @@ use super::layout::PAGE_SIZE;
 use super::page::{Page, ListHead, pfn_to_page, page_to_pfn};
 use super::zone::GfpFlags;
 use super::buddy::{alloc_page, free_page};
-use super::paging::PageTableManager;
+use super::paging::{PageTableManager, PTE_PRESENT, PTE_WRITABLE, PTE_GLOBAL, PTE_NO_CACHE};
 
 // ============================================================================
 // 常量
@@ -259,7 +259,7 @@ fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
             let virt = vaddr + (i as u64) * PAGE_SIZE;
             
             // 映射页面
-            if !map_vmalloc_page(virt, phys) {
+            if !map_vmalloc_page(virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL) {
                 // 映射失败
                 free_page(page);
                 __vfree(area);
@@ -288,10 +288,12 @@ unsafe fn __vfree(area: &mut VmStruct) {
             // 取消映射
             unmap_vmalloc_page(virt);
             
-            // 释放物理页
-            let pfn = phys / PAGE_SIZE;
-            let page = pfn_to_page(pfn);
-            free_page(page);
+            // 释放物理页 (仅当不是 IO 映射时)
+            if !area.flags.contains(VmFlags::IOREMAP) {
+                let pfn = phys / PAGE_SIZE;
+                let page = pfn_to_page(pfn);
+                free_page(page);
+            }
         }
     }
     
@@ -323,22 +325,18 @@ fn allocate_vm_area(size: u64) -> u64 {
 }
 
 /// 映射 vmalloc 页面
-fn map_vmalloc_page(virt: u64, phys: u64) -> bool {
+fn map_vmalloc_page(virt: u64, phys: u64, flags: u64) -> bool {
     let state = match VMALLOC_STATE.get() {
         Some(s) => s,
         None => return false,
     };
     
     if state.page_table_mgr.is_null() {
+        crate::kprintln!("map_vmalloc_page: page_table_mgr is null");
         return false;
     }
     
-    // TODO: 使用页表管理器映射页面
-    // 当前简化：假设映射成功
-    // unsafe { (*state.page_table_mgr).map_page(virt, phys, flags) }
-    let _ = (virt, phys);
-    
-    true
+    unsafe { (*state.page_table_mgr).map_page(virt, phys, flags) }
 }
 
 /// 取消映射 vmalloc 页面
@@ -368,11 +366,7 @@ fn get_vmalloc_phys(virt: u64) -> Option<u64> {
         return None;
     }
     
-    // TODO: 使用页表管理器翻译地址
-    // unsafe { (*state.page_table_mgr).translate_addr(virt) }
-    let _ = virt;
-    
-    None
+    unsafe { (*state.page_table_mgr).translate_addr(virt) }
 }
 
 /// 页对齐 (向上)
@@ -385,39 +379,72 @@ const fn page_align_up(size: u64) -> u64 {
 // ioremap (IO 内存映射)
 // ============================================================================
 
-/// 映射 IO 内存到内核虚拟地址空间
-/// 
-/// # Arguments
-/// * `phys_addr` - 物理地址
-/// * `size` - 大小
-/// 
-/// # Returns
-/// 虚拟地址
+/// 将物理地址映射到 vmalloc 区域 (IO 重映射)
 pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
-    if size == 0 || !vmalloc_initialized() {
+    if size == 0 {
         return ptr::null_mut();
     }
     
-    let size = page_align_up(size as u64);
-    let vaddr = allocate_vm_area(size);
+    // 对齐到页边界
+    let offset = phys_addr & (PAGE_SIZE - 1);
+    let phys_base = phys_addr & !(PAGE_SIZE - 1);
+    let page_align_size = (size as u64 + offset + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let nr_pages = (page_align_size / PAGE_SIZE) as u32;
     
-    if vaddr == 0 {
-        return ptr::null_mut();
-    }
-    
-    // 映射物理页面 (不可缓存)
-    let nr_pages = size / PAGE_SIZE;
-    for i in 0..nr_pages {
-        let virt = vaddr + i * PAGE_SIZE;
-        let phys = phys_addr + i * PAGE_SIZE;
+    // 分配 vmalloc 区域 (但不分配物理页)
+    let vm_ptr = unsafe {
+        // 找一个空闲的 VmStruct
+        let mut area_ptr: *mut VmStruct = ptr::null_mut();
+        for i in 0..MAX_VMALLOC_AREAS {
+            if !VMALLOC_AREAS[i].flags.contains(VmFlags::ALLOC) {
+                area_ptr = &mut VMALLOC_AREAS[i];
+                break;
+            }
+        }
         
-        if !map_vmalloc_page(virt, phys) {
-            // TODO: 清理已映射的页面
+        if area_ptr.is_null() {
+            crate::kprintln!("ioremap: No free VmStruct");
+            return ptr::null_mut();
+        }
+        
+        let area = &mut *area_ptr;
+        
+        // 分配虚拟地址空间
+        let vaddr = allocate_vm_area(page_align_size);
+        if vaddr == 0 {
+            crate::kprintln!("ioremap: allocate_vm_area failed");
+            return ptr::null_mut();
+        }
+        
+        // 初始化 VmStruct
+        area.init(vaddr, page_align_size);
+        area.nr_pages = nr_pages;
+        area.flags.set(VmFlags::IOREMAP);
+        
+        VMALLOC_AREA_COUNT.fetch_add(1, Ordering::Relaxed);
+        
+        vaddr as *mut u8
+    };
+    
+    if vm_ptr.is_null() {
+        return ptr::null_mut();
+    }
+    
+    let vm_start = vm_ptr as u64;
+    
+    // 映射每一页
+    for i in 0..(page_align_size / PAGE_SIZE) {
+        let phys = phys_base + i * PAGE_SIZE;
+        let virt = vm_start + i * PAGE_SIZE;
+        
+        if !map_vmalloc_page(virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_CACHE) {
+            crate::kprintln!("ioremap: map_vmalloc_page failed at virt={:#x} phys={:#x}", virt, phys);
+            vfree(vm_ptr);
             return ptr::null_mut();
         }
     }
     
-    vaddr as *mut u8
+    unsafe { vm_ptr.add(offset as usize) }
 }
 
 /// 取消 IO 内存映射

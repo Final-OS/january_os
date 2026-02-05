@@ -5,7 +5,7 @@
 
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// 互斥锁
 ///
@@ -14,6 +14,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 pub struct Mutex<T> {
     locked: AtomicBool,
     data: UnsafeCell<T>,
+    // 调试信息
+    owner: AtomicU32,
+    name: &'static str,
 }
 
 unsafe impl<T: Send> Sync for Mutex<T> {}
@@ -25,6 +28,18 @@ impl<T> Mutex<T> {
         Self {
             locked: AtomicBool::new(false),
             data: UnsafeCell::new(data),
+            owner: AtomicU32::new(u32::MAX),
+            name: "Mutex",
+        }
+    }
+
+    /// 创建一个带名称的互斥锁（用于调试死锁）
+    pub const fn with_name(data: T, name: &'static str) -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            data: UnsafeCell::new(data),
+            owner: AtomicU32::new(u32::MAX),
+            name,
         }
     }
 
@@ -32,23 +47,42 @@ impl<T> Mutex<T> {
     ///
     /// 如果锁被持有，则自旋等待。
     pub fn lock(&self) -> MutexGuard<T> {
+        let me = if crate::interrupt::apic_initialized() {
+            crate::interrupt::local_apic_id()
+        } else {
+            0
+        };
+
+        // 递归死锁检测
+        if self.locked.load(Ordering::Relaxed) && self.owner.load(Ordering::Relaxed) == me {
+            panic!("Mutex::lock: Deadlock detected! Recursive locking by CPU {} on '{}'", me, self.name);
+        }
+
         // 快速路径：尝试直接获取
         if self.locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
+            self.owner.store(me, Ordering::Relaxed);
             return MutexGuard { mutex: self };
         }
 
         // 慢速路径：自旋等待
-        self.lock_slow()
+        self.lock_slow(me)
     }
 
     #[cold]
-    fn lock_slow(&self) -> MutexGuard<T> {
+    fn lock_slow(&self, me: u32) -> MutexGuard<T> {
+        let mut count = 0;
         loop {
             // 等待锁释放
             while self.locked.load(Ordering::Relaxed) {
+                count += 1;
+                if count > 10_000_000 {
+                     let owner = self.owner.load(Ordering::Relaxed);
+                     panic!("Mutex::lock: Deadlock detected! Timeout waiting for '{}' (held by CPU {}) on CPU {}", 
+                        self.name, owner, me);
+                }
                 core::hint::spin_loop();
             }
 
@@ -57,6 +91,7 @@ impl<T> Mutex<T> {
                 .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
+                self.owner.store(me, Ordering::Relaxed);
                 return MutexGuard { mutex: self };
             }
         }
@@ -64,10 +99,21 @@ impl<T> Mutex<T> {
 
     /// 尝试获取锁（非阻塞）
     pub fn try_lock(&self) -> Option<MutexGuard<T>> {
+        let me = if crate::interrupt::apic_initialized() {
+            crate::interrupt::local_apic_id()
+        } else {
+            0
+        };
+
+        if self.locked.load(Ordering::Relaxed) && self.owner.load(Ordering::Relaxed) == me {
+            return None;
+        }
+
         if self.locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
+            self.owner.store(me, Ordering::Relaxed);
             Some(MutexGuard { mutex: self })
         } else {
             None
@@ -99,6 +145,7 @@ impl<T> Mutex<T> {
     ///
     /// 调用者必须确保当前确实持有锁。
     pub unsafe fn force_unlock(&self) {
+        self.owner.store(u32::MAX, Ordering::Relaxed);
         self.locked.store(false, Ordering::Release);
     }
 }
@@ -124,6 +171,7 @@ impl<T> DerefMut for MutexGuard<'_, T> {
 
 impl<T> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
+        self.mutex.owner.store(u32::MAX, Ordering::Relaxed);
         self.mutex.locked.store(false, Ordering::Release);
     }
 }
