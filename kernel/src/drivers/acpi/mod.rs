@@ -39,11 +39,14 @@
 
 mod tables;
 mod madt;
+mod fadt;
 mod dmar;
 mod srat;
+mod aml;
 
 pub use tables::*;
 pub use madt::*;
+pub use fadt::*;
 pub use dmar::*;
 pub use srat::*;
 
@@ -199,63 +202,8 @@ pub fn dump_tables() {
 // 电源管理 (FADT)
 // ============================================================================
 
-/// FADT (Fixed ACPI Description Table)
-#[repr(C, packed)]
-pub struct Fadt {
-    pub header: SdtHeader,
-    pub firmware_ctrl: u32,
-    pub dsdt: u32,
-    pub reserved: u8,
-    pub preferred_pm_profile: u8,
-    pub sci_int: u16,
-    pub smi_cmd: u32,
-    pub acpi_enable: u8,
-    pub acpi_disable: u8,
-    pub s4bios_req: u8,
-    pub pstate_cnt: u8,
-    pub pm1a_evt_blk: u32,
-    pub pm1b_evt_blk: u32,
-    pub pm1a_cnt_blk: u32,
-    pub pm1b_cnt_blk: u32,
-    pub pm2_cnt_blk: u32,
-    pub pm_tmr_blk: u32,
-    pub gpe0_blk: u32,
-    pub gpe1_blk: u32,
-    pub pm1_evt_len: u8,
-    pub pm1_cnt_len: u8,
-    pub pm2_cnt_len: u8,
-    pub pm_tmr_len: u8,
-    pub gpe0_blk_len: u8,
-    pub gpe1_blk_len: u8,
-    pub gpe1_base: u8,
-    pub cst_cnt: u8,
-    pub p_lvl2_lat: u16,
-    pub p_lvl3_lat: u16,
-    pub flush_size: u16,
-    pub flush_stride: u16,
-    pub duty_offset: u8,
-    pub duty_width: u8,
-    pub day_alarm: u8,
-    pub mon_alarm: u8,
-    pub century: u8,
-    pub iapc_boot_arch: u16,
-    pub reserved2: u8,
-    pub flags: u32,
-    pub reset_reg: GenericAddress,
-    pub reset_value: u8,
-    pub reserved3: [u8; 3],
-    pub x_firmware_ctrl: u64,
-    pub x_dsdt: u64,
-    pub x_pm1a_evt_blk: GenericAddress,
-    pub x_pm1b_evt_blk: GenericAddress,
-    pub x_pm1a_cnt_blk: GenericAddress,
-    pub x_pm1b_cnt_blk: GenericAddress,
-    // ... 更多字段省略 ...
-}
+// FADT definition moved to fadt.rs
 
-impl AcpiTable for Fadt {
-    fn signature() -> &'static [u8; 4] { b"FACP" }
-}
 
 /// 获取关机所需的 PM1a/PM1b 端口地址
 pub fn get_shutdown_info() -> Option<(u32, u32)> {
@@ -276,24 +224,54 @@ pub fn get_shutdown_info() -> Option<(u32, u32)> {
     None
 }
 
+/// 获取 DSDT 表头和物理地址
+fn get_dsdt() -> Option<(&'static SdtHeader, u64)> {
+    if let Some(fadt) = find_table::<Fadt>() {
+        let dsdt_addr = if fadt.header.revision >= 2 && fadt.x_dsdt != 0 {
+            fadt.x_dsdt
+        } else {
+            fadt.dsdt as u64
+        };
+        
+        if dsdt_addr == 0 { return None; }
+        
+        let virt_addr = dsdt_addr + crate::config::DIRECT_MAP_OFFSET;
+        let header = unsafe { &*(virt_addr as *const SdtHeader) };
+        return Some((header, dsdt_addr));
+    }
+    None
+}
+
 /// 尝试通过 ACPI 关机
 pub fn acpi_shutdown() -> Result<(), &'static str> {
     let (pm1a, pm1b) = get_shutdown_info().ok_or("FADT not found or invalid PM1a_CNT")?;
     
-    // SLP_TYP_S5 通常是 5 (101b)
-    // SLP_EN 是 bit 13
-    // 需要将 SLP_TYP_S5 << 10 | SLP_EN 写入 PM1a_CNT
+    // 尝试从 DSDT 查找 _S5_ 包
+    let mut slp_typ_a = 5; // QEMU 默认值
+    let mut slp_typ_b = 5;
+    let mut s5_found = false;
+
+    if let Some((dsdt, dsdt_phys)) = get_dsdt() {
+        if let Some(s5) = unsafe { aml::parse_s5(dsdt_phys, dsdt.length as usize) } {
+            slp_typ_a = s5.pm1a_cnt_val;
+            slp_typ_b = s5.pm1b_cnt_val;
+            s5_found = true;
+            crate::info!("ACPI: Found _S5_ (PM1a_TYP={}, PM1b_TYP={})", slp_typ_a, slp_typ_b);
+        }
+    }
     
-    // 注意：这里的 SLP_TYP 值实际上应该从 DSDT 的 \_S5 包中获取
-    // 但对于 QEMU 和大多数标准 PC，SLP_TYP_S5 通常是 0 或 5
-    // QEMU 似乎期望 SLP_TYP = 5
+    if !s5_found {
+         crate::warn!("ACPI: _S5_ not found in DSDT, using default QEMU values (5)");
+    }
     
-    let shutdown_val: u16 = (5 << 10) | (1 << 13);
+    // SLP_TYP << 10 | SLP_EN (1 << 13)
+    let shutdown_val_a: u16 = (slp_typ_a << 10) | (1 << 13);
+    let shutdown_val_b: u16 = (slp_typ_b << 10) | (1 << 13);
     
     unsafe {
-        core::arch::asm!("out dx, ax", in("dx") pm1a as u16, in("ax") shutdown_val);
+        core::arch::asm!("out dx, ax", in("dx") pm1a as u16, in("ax") shutdown_val_a);
         if pm1b != 0 {
-            core::arch::asm!("out dx, ax", in("dx") pm1b as u16, in("ax") shutdown_val);
+            core::arch::asm!("out dx, ax", in("dx") pm1b as u16, in("ax") shutdown_val_b);
         }
     }
     

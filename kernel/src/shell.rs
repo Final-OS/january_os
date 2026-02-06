@@ -120,6 +120,9 @@ fn execute_command(cmd: &[u8]) {
         "usb" => {
             execute_usb_command();
         }
+        "test" => {
+            execute_test_command(args);
+        }
         "help" => {
             kprintln!("Available commands:");
             kprintln!("  shutdown   - Power off system");
@@ -129,6 +132,7 @@ fn execute_command(cmd: &[u8]) {
             kprintln!("  mm         - Memory management commands");
             kprintln!("  pci        - Show PCI devices");
             kprintln!("  usb        - Show USB devices");
+            kprintln!("  test       - Run system tests");
             kprintln!("  help       - Show this help message");
             kprintln!("Type 'drivers help' or 'mm help' for more info.");
         }
@@ -299,4 +303,24 @@ fn execute_pci_command() {
 
 fn execute_usb_command() {
     drivers::usb::xhci::dump_devices();
+}
+
+fn execute_test_command(mut args: core::str::SplitWhitespace) {
+    let subcommand = args.next().unwrap_or("help");
+    
+    match subcommand {
+        "timer" => {
+            info!("Testing timer (3 seconds)...");
+            let start = interrupt::timer_ticks();
+            while interrupt::timer_ticks() < start + 300 {
+                interrupt::halt_with_interrupts();
+            }
+            crate::ok!("Timer test passed: {} ticks", interrupt::timer_ticks() - start);
+        }
+        "help" | _ => {
+            kprintln!("Usage: test <subcommand>");
+            kprintln!("Subcommands:");
+            kprintln!("  timer     - Test timer for 3 seconds");
+        }
+    }
 }

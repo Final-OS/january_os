@@ -36,7 +36,7 @@ pub use arch::{
 };
 
 // Re-export arch modules
-pub use arch::{gdt, idt, handlers, apic, pit};
+pub use arch::{gdt, idt, handlers, apic, tsc};
 
 // Re-export specific items for compatibility/convenience
 pub use gdt::{
@@ -74,9 +74,8 @@ pub use apic::{
     ICR_SHORTHAND_NONE, ICR_SHORTHAND_SELF, ICR_SHORTHAND_ALL, ICR_SHORTHAND_ALL_BUT_SELF,
 };
 
-pub use pit::{
-    pit_set_frequency, pit_get_ticks, pit_tick,
-    PIT_FREQUENCY,
+pub use tsc::{
+    rdtsc, rdtscp, tsc_frequency, calibrate_tsc,
 };
 
 pub use handlers::{

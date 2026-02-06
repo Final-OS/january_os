@@ -40,11 +40,11 @@ const LAPIC_LINT1: u32 = 0x360;
 /// LVT Error
 const LAPIC_ERROR: u32 = 0x370;
 /// Timer Initial Count
-const LAPIC_TIMER_ICR: u32 = 0x380;
+pub const LAPIC_TIMER_ICR: u32 = 0x380;
 /// Timer Current Count
-const LAPIC_TIMER_CCR: u32 = 0x390;
+pub const LAPIC_TIMER_CCR: u32 = 0x390;
 /// Timer Divide Configuration
-const LAPIC_TIMER_DCR: u32 = 0x3E0;
+pub const LAPIC_TIMER_DCR: u32 = 0x3E0;
 
 // MSR Constants
 const IA32_APIC_BASE: u32 = 0x1B;
@@ -99,6 +99,8 @@ const SPURIOUS_VECTOR: u32 = 0xFF;
 const TIMER_PERIODIC: u32 = 0x20000;
 /// Timer 模式 - 一次性
 const TIMER_ONE_SHOT: u32 = 0x00000;
+/// Timer 屏蔽位
+const TIMER_MASKED: u32 = 0x10000;
 
 /// Timer 分频因子
 const TIMER_DIV_1: u32 = 0xB;
@@ -394,9 +396,48 @@ pub fn calibrate_timer() -> u64 {
     if !apic_initialized() {
         return 0;
     }
+
+    // 尝试使用 TSC 校准
+    let tsc_freq = super::tsc::tsc_frequency();
+    let ticks_per_sec = if tsc_freq > 0 {
+        // 使用 TSC 测量 100ms
+        crate::info!("APIC: Calibrating timer using TSC...");
+        
+        // 1. 设置 APIC Timer
+        // 分频: 16
+        lapic_write(LAPIC_TIMER_DCR, TIMER_DIV_16);
+        // 模式: One-Shot, Masked (不触发中断)
+        lapic_write(LAPIC_TIMER, TIMER_ONE_SHOT | TIMER_MASKED);
+        
+        // 2. 准备开始
+        let start_tsc = super::tsc::rdtsc();
+        let wait_ticks = tsc_freq / 10; // 100ms
+        
+        // 3. 启动 APIC Timer (倒计时从最大值开始)
+        lapic_write(LAPIC_TIMER_ICR, 0xFFFFFFFF);
+        
+        // 4. 等待 100ms
+        loop {
+            if super::tsc::rdtsc() - start_tsc >= wait_ticks {
+                break;
+            }
+        }
+        
+        // 5. 读取剩余计数
+        let current_count = lapic_read(LAPIC_TIMER_CCR);
+        stop_apic_timer();
+        
+        let elapsed = 0xFFFFFFFF - current_count;
+        let freq = elapsed as u64 * 10;
+        
+        crate::ok!("APIC: Timer frequency: {} Hz ({} MHz)", freq, freq / 1_000_000);
+        freq
+    } else {
+        crate::warn!("APIC: TSC not calibrated, using fallback frequency");
+        // Fallback: 假设 APIC 频率为 10MHz
+        10_000_000 
+    };
     
-    // 使用 PIT 校准
-    let ticks_per_sec = super::pit::calibrate_apic_timer();
     APIC_TIMER_TICKS_PER_SEC.store(ticks_per_sec, Ordering::SeqCst);
     
     ticks_per_sec

@@ -326,8 +326,10 @@ fn init_drivers() {
 }
 
 fn init_timer_and_enable_interrupts() {
-    info!("Calibrating Timer & Enabling Interrupts...");
-    
+    // 1. 校准 TSC (System Clock)
+    interrupt::calibrate_tsc();
+
+    // 2. 校准 APIC Timer (Scheduler/Tick)
     let timer_freq = interrupt::calibrate_timer();
     const TIMER_HZ: u32 = 100;
     interrupt::init_apic_timer(interrupt::IRQ_TIMER, TIMER_HZ);
@@ -370,12 +372,6 @@ fn print_system_summary(info: &BootInfo, acpi_config: &acpi::AcpiConfig) {
     kprintln!("  \x1b[37mDisks:\x1b[0m      \x1b[33m{}\x1b[0m", info.disk_count);
     kprintln!();
 
-    // Timer 测试
-    info!("Testing timer (3 seconds)...");
-    let start = interrupt::timer_ticks();
-    while interrupt::timer_ticks() < start + 300 {
-        interrupt::halt_with_interrupts();
-    }
-    ok!("Timer test passed: {} ticks", interrupt::timer_ticks() - start);
+    // Timer 测试 (已移至 shell 'test timer' 命令)
     kprintln!();
 }

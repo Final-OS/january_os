@@ -6,7 +6,7 @@ pub mod apic;
 pub mod gdt;
 pub mod idt;
 pub mod handlers;
-pub mod pit;
+pub mod tsc;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::mm;

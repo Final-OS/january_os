@@ -27,8 +27,8 @@ const PIT_CMD_CHANNEL0_SQUARE: u8 = 0x36;
 const PIT_CMD_CHANNEL0_ONESHOT: u8 = 0x30;
 /// PIT 命令: 通道 2, lo/hi, 单次模式
 const PIT_CMD_CHANNEL2_ONESHOT: u8 = 0xB0;
-/// PIT 命令: 回读计数器值
-const PIT_CMD_READBACK: u8 = 0xE2;
+/// PIT 命令: 回读计数器值 (Channel 2)
+const PIT_CMD_READBACK: u8 = 0xE8;
 
 // ============================================================================
 // 端口 I/O
@@ -111,6 +111,10 @@ pub fn pit_wait_us(us: u32) {
     let cycles = (us as u64 * PIT_FREQUENCY as u64) / 1_000_000;
     
     unsafe {
+        // 启用 Channel 2 (Gate 2 = 1, Speaker = 0)
+        let port_b = inb(0x61);
+        outb(0x61, (port_b | 1) & !2);
+
         // 设置通道 2 为单次模式
         outb(PIT_COMMAND, PIT_CMD_CHANNEL2_ONESHOT);
         io_delay();
@@ -132,6 +136,9 @@ pub fn pit_wait_us(us: u32) {
                 break;
             }
         }
+        
+        // 恢复 Port B (关闭 Gate 2)
+        outb(0x61, port_b & !1);
     }
 }
 
@@ -158,22 +165,20 @@ pub fn calibrate_apic_timer() -> u64 {
     
     unsafe {
         // 设置分频
-        let timer_dcr = 0xFEE00000u64 + crate::config::DIRECT_MAP_OFFSET + 0x3E0;
-        core::ptr::write_volatile(timer_dcr as *mut u32, APIC_TIMER_DIV);
+        apic::lapic_write(apic::LAPIC_TIMER_DCR, APIC_TIMER_DIV);
         
         // 设置初始计数为最大值
-        let timer_icr = 0xFEE00000u64 + crate::config::DIRECT_MAP_OFFSET + 0x380;
-        core::ptr::write_volatile(timer_icr as *mut u32, 0xFFFFFFFF);
+        apic::lapic_write(apic::LAPIC_TIMER_ICR, 0xFFFFFFFF);
         
         // 使用 PIT 等待指定时间
         pit_wait_ms(CALIBRATE_MS);
         
         // 读取当前计数
-        let timer_ccr = 0xFEE00000u64 + crate::config::DIRECT_MAP_OFFSET + 0x390;
-        let elapsed = 0xFFFFFFFF - core::ptr::read_volatile(timer_ccr as *const u32);
+        let current_count = apic::lapic_read(apic::LAPIC_TIMER_CCR);
+        let elapsed = 0xFFFFFFFF - current_count;
         
         // 停止 Timer
-        core::ptr::write_volatile(timer_icr as *mut u32, 0);
+        apic::lapic_write(apic::LAPIC_TIMER_ICR, 0);
         
         // 计算每秒 tick 数
         // elapsed 是 CALIBRATE_MS 毫秒内的 tick 数
