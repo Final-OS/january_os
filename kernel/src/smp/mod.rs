@@ -33,9 +33,9 @@ pub fn init(direct_map_base: u64, expected_cpus: usize) {
 fn boot_aps(madt: &Madt, direct_map_base: u64, expected_cpus: usize) {
     let bsp_lapic_id = interrupt::local_apic_id();
     
-    // 1. Prepare trampoline
+    // 1. Prepare SMP environment (Trampoline or ACPI Wakeup)
     unsafe {
-        arch::prepare_trampoline(direct_map_base);
+        arch::prepare_smp(madt, direct_map_base);
     }
 
     // 2. Iterate CPUs

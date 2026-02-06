@@ -262,8 +262,9 @@ fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
             kprintln!("Exited mouse test mode.");
         }
         "interrupt" => {
+            let int_enabled = interrupt::interrupts_enabled();
             kprintln!("Interrupt Status:");
-            kprintln!("  CPU Interrupts: {}", if interrupt::interrupts_enabled() { "Enabled" } else { "Disabled" });
+            kprintln!("  CPU Interrupts: {}", if int_enabled { "Enabled" } else { "Disabled" });
             kprintln!("  Local APIC ID:  {}", interrupt::local_apic_id());
             kprintln!("  Timer Ticks:    {}", interrupt::timer_ticks());
             

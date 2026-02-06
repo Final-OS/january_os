@@ -104,6 +104,10 @@ build-kernel: $(CFG)
 	@mkdir -p $(KERNEL_DIR)/src/generated
 	@$(CFG) generate $(KERNEL_DIR)/src/generated/config.rs
 	@echo "mod config; pub use config::*;" > $(KERNEL_DIR)/src/generated/mod.rs
+	@if [ "$(ARCH)" = "x86_64" ]; then \
+		echo "==> Compiling trampoline (x86_64)..."; \
+		nasm -f bin -o $(KERNEL_DIR)/src/smp/arch/x86_64/trampoline.bin $(KERNEL_DIR)/src/smp/arch/x86_64/trampoline.asm; \
+	fi
 	@echo "==> Building kernel ($(KERNEL_TARGET))..."
 	@cd $(KERNEL_DIR) && CARGO_TARGET_DIR=$(BUILD_DIR) RUSTFLAGS="$(RUSTFLAGS)" \
 		cargo build --release --target $(KERNEL_TARGET) \
@@ -133,6 +137,7 @@ debug: build
 clean:
 	@cargo clean
 	@rm -rf $(ESP_DIR) $(KERNEL_BIN) $(KERNEL_DIR)/src/generated
+	@rm -f $(KERNEL_DIR)/src/smp/arch/x86_64/trampoline.bin
 	@rm -rf $(TOOLS_BIN) /tmp/january_os_tools
 
 # ==============================================================================
