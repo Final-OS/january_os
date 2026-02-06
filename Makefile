@@ -169,10 +169,10 @@ install-deps: $(CFG)
 	rustup component add rust-src llvm-tools-preview
 	cargo install cargo-binutils
 	@echo ""
-	@echo "==> Install QEMU and OVMF:"
-	@echo "  Ubuntu/Debian: sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv ovmf mtools xorriso"
-	@echo "  Fedora:        sudo dnf install qemu-system-x86 qemu-system-arm qemu-system-riscv edk2-ovmf mtools xorriso"
-	@echo "  Arch:          sudo pacman -S qemu-full edk2-ovmf mtools xorriso"
+	@echo "==> Install QEMU, OVMF and tools:"
+	@echo "  Ubuntu/Debian: sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv ovmf mtools xorriso nasm"
+	@echo "  Fedora:        sudo dnf install qemu-system-x86 qemu-system-arm qemu-system-riscv edk2-ovmf mtools xorriso nasm"
+	@echo "  Arch:          sudo pacman -S qemu-full edk2-ovmf mtools xorriso nasm"
 
 # ==============================================================================
 # 配置显示
