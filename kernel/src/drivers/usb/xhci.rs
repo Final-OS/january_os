@@ -3,8 +3,9 @@
 //! xHCI 是 USB 3.0+ 的主机控制器标准接口
 
 use crate::drivers::pci::{self, PciAddress, PciHeader};
-use crate::{kprintln, kprint};
+use crate::{kprintln, kprint, info, ok, warn, error, debug};
 use crate::mm::vmalloc::{ioremap, iounmap};
+use crate::interrupt::arch::x86_64::idt::IRQ_XHCI;
 use crate::mm::buddy::alloc_pages;
 use crate::mm::page::page_to_pfn;
 use crate::mm::zone::{GfpFlags, GFP_KERNEL_ZERO};
@@ -490,7 +491,7 @@ impl XhciController {
         let cc = (trb.status >> 24) & 0xFF;
         
         if cc != TRB_CC_SUCCESS && cc != TRB_CC_SHORT_PACKET {
-             kprintln!("USB: Transfer Event Failed Slot {} DCI {} CC {}", slot_id, dci, cc);
+             warn!("USB: Transfer Event Failed Slot {} DCI {} CC {}", slot_id, dci, cc);
              return;
         }
         
@@ -543,11 +544,7 @@ impl XhciController {
                              },
                              _ => {
                                  // Just print for now
-                                 kprint!("USB Input [Slot {}]: ", slot_id);
-                                 for b in slice {
-                                     kprint!("{:02x} ", b);
-                                 }
-                                 kprintln!();
+                                 debug!("USB Input [Slot {}]: {:02x?}", slot_id, slice);
                              }
                          }
                      }
@@ -1250,6 +1247,19 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     
     // 6. 重置控制器
     reset_controller(op_regs);
+
+    // 启用 MSI/MSI-X 中断
+    if pci::enable_msi(addr, IRQ_XHCI) {
+        ok!("USB: xHCI MSI Enabled (Vector {})", IRQ_XHCI);
+    } else {
+        // Try MSI-X
+        // Note: mmio_base corresponds to BAR0, which covers most xHCI MSI-X tables
+        if pci::msix::enable_msix(addr, mmio_base, IRQ_XHCI) {
+            ok!("USB: xHCI MSI-X Enabled (Vector {})", IRQ_XHCI);
+        } else {
+            warn!("USB: Failed to enable MSI/MSI-X for xHCI");
+        }
+    }
     
     // 7. 构造控制器实例
     let mut controller = XhciController {
@@ -1289,10 +1299,19 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     // 10. 检查端口状态
     check_ports(&mut controller);
     
+    // Enable Global Interrupts (USBCMD_INTE)
+    // Interrupts are enabled at Interrupter level in init_memory_structures (IMAN_IE)
+    // Now we enable them at Controller level.
+    let usbcmd = &mut (*controller.op_regs).usbcmd;
+    let mut cmd = read_volatile(usbcmd);
+    cmd |= USBCMD_INTE; // Enable Interrupter
+    write_volatile(usbcmd, cmd);
+    ok!("USB: xHCI Interrupts Enabled (USBCMD_INTE)");
+    
     // 保存控制器实例
     XHCI_CONTROLLER = Some(controller);
     
-    kprintln!("USB: xHCI Controller Initialized");
+    ok!("USB: xHCI Controller Initialized");
 }
 
 unsafe fn check_ports(xhci: &mut XhciController) {
@@ -1300,7 +1319,7 @@ unsafe fn check_ports(xhci: &mut XhciController) {
     // Port Register Set is at offset 0x400 from Operational Registers Base
     let port_base = op_base.add(0x400); 
     
-    kprintln!("USB: Checking {} ports...", xhci.max_ports);
+    info!("USB: Checking {} ports...", xhci.max_ports);
 
     for i in 0..xhci.max_ports {
         let port_sc_addr = port_base.add((i as usize) * 0x10) as *mut u32;
@@ -1308,11 +1327,11 @@ unsafe fn check_ports(xhci: &mut XhciController) {
         
         if (port_sc & PORTSC_CCS) != 0 {
                     let speed = (port_sc >> 10) & 0xF;
-                    kprintln!("USB: Port {} Connected (Status: {:#x}, Speed: {})", i + 1, port_sc, speed);
+                    info!("USB: Port {} Connected (Status: {:#x}, Speed: {})", i + 1, port_sc, speed);
                     
                     // Reset Port to enable it
                     if (port_sc & PORTSC_PED) == 0 {
-                        kprintln!("USB: Resetting Port {}...", i + 1);
+                        debug!("USB: Resetting Port {}...", i + 1);
                         let mut new_sc = port_sc | PORTSC_PR;
                         // 清除状态位 (Write 1 to Clear)
                         new_sc &= !(PORTSC_CSC | PORTSC_PRC); // 不要写 1 到这些位，否则会清除它们? 
@@ -1332,11 +1351,11 @@ unsafe fn check_ports(xhci: &mut XhciController) {
                             if (sc & PORTSC_PRC) != 0 {
                                 // Clear PRC
                                 write_volatile(port_sc_addr, (sc & !change_bits) | PORTSC_PRC);
-                                kprintln!("USB: Port {} Reset Complete (Status: {:#x})", i + 1, sc);
+                                ok!("USB: Port {} Reset Complete (Status: {:#x})", i + 1, sc);
                                 
                                 // Try to enable slot for this port
                                 if let Some(slot_id) = xhci.enable_slot() {
-                                    kprintln!("USB: Port {} Slot ID: {}", i + 1, slot_id);
+                                    info!("USB: Port {} Slot ID: {}", i + 1, slot_id);
                                     // Next step: Address Device
                                     if xhci.address_device(slot_id, (i + 1) as u8, speed) {
                                         xhci.configure_device(slot_id);
@@ -1473,7 +1492,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     }
     
     // 2. 重置控制器 (Set RESET bit)
-    kprintln!("USB: Resetting xHCI...");
+    debug!("USB: Resetting xHCI...");
     cmd = read_volatile(usbcmd);
     cmd |= USBCMD_RESET;
     write_volatile(usbcmd, cmd);
@@ -1482,7 +1501,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     timeout = 1000;
     while (read_volatile(usbcmd) & USBCMD_RESET) != 0 {
         if timeout == 0 {
-            kprintln!("USB: Timeout waiting for xHCI reset");
+            warn!("USB: Timeout waiting for xHCI reset");
             break;
         }
         for _ in 0..10000 { core::hint::spin_loop(); }
@@ -1493,12 +1512,41 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     timeout = 1000;
     while (read_volatile(usbsts) & USBSTS_CNR) != 0 {
         if timeout == 0 {
-            kprintln!("USB: Timeout waiting for xHCI ready");
+            warn!("USB: Timeout waiting for xHCI ready");
             break;
         }
         for _ in 0..10000 { core::hint::spin_loop(); }
         timeout -= 1;
     }
     
-    kprintln!("USB: xHCI Reset Complete");
+    debug!("USB: xHCI Reset Complete");
+}
+
+// Function moved to pci/msix.rs
+
+/// xHCI 中断处理函数
+pub fn handle_interrupt() {
+    unsafe {
+        if let Some(xhci) = &mut *core::ptr::addr_of_mut!(XHCI_CONTROLLER) {
+            // 1. Clear IP bit (Interrupt Pending) in IMAN (Write 1 to clear)
+            let ir_set = addr_of_mut!((*xhci.rt_regs).irs) as *mut InterrupterRegisters;
+            let ir0 = &mut *ir_set;
+            let iman = read_volatile(&ir0.iman);
+            if (iman & 1) != 0 {
+                write_volatile(&mut ir0.iman, iman | 1);
+            }
+            
+            // 2. Process Event Ring
+            // Loop until no more events
+            while let Some(trb) = xhci.poll_event() {
+                 let trb_type = (trb.control >> 10) & 0x3F;
+                 if trb_type == TRB_TYPE_TRANSFER_EVENT {
+                     xhci.handle_transfer_event(&trb);
+                 } else {
+                     // Log other events?
+                     // debug!("USB: IRQ Event Type {}", trb_type);
+                 }
+            }
+        }
+    }
 }

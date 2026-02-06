@@ -27,7 +27,7 @@ use uefi::boot::{self, MemoryType};
 use uefi::mem::memory_map::MemoryMap;
 use uefi::prelude::*;
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
-use uefi::proto::console::text::Output;
+use uefi::proto::console::text::{Output, Color};
 use uefi::proto::media::block::BlockIO;
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode};
 use uefi::proto::media::fs::SimpleFileSystem;
@@ -288,65 +288,104 @@ use paging_consts::*;
 #[entry]
 fn main() -> Status {
     // 显示启动信息
+    set_color(Color::Cyan);
     println_uefi("========================================");
     println_uefi("  january_os UEFI Bootloader v0.1.0");
     println_uefi("  Architecture: x86_64");
     println_uefi("========================================");
+    reset_color();
     println_uefi("");
 
     // 第一步：初始化图形
-    println_uefi("[1/8] Initializing graphics (GOP)...");
+    set_color(Color::Green);
+    print_uefi("[1/8] ");
+    reset_color();
+    println_uefi("Initializing graphics (GOP)...");
     let framebuffer = setup_graphics();
     print_uefi("      Resolution: ");
+    set_color(Color::Yellow);
     print_dec(framebuffer.width as u64);
     print_uefi("x");
     print_dec(framebuffer.height as u64);
+    reset_color();
     println_uefi("");
 
     // 第二步：加载内核
-    println_uefi("[2/8] Loading kernel...");
+    set_color(Color::Green);
+    print_uefi("[2/8] ");
+    reset_color();
+    println_uefi("Loading kernel...");
     println_uefi("      Opening filesystem...");
     let kernel_size = load_kernel();
     print_uefi("      Kernel size: ");
+    set_color(Color::Yellow);
     print_dec(kernel_size as u64);
+    reset_color();
     println_uefi(" bytes");
 
     // 第三步：扫描存储设备
-    println_uefi("[3/8] Scanning storage devices...");
+    set_color(Color::Green);
+    print_uefi("[3/8] ");
+    reset_color();
+    println_uefi("Scanning storage devices...");
     let (disk_count, boot_disk) = scan_disks();
     print_uefi("      Found ");
+    set_color(Color::Yellow);
     print_dec(disk_count as u64);
+    reset_color();
     println_uefi(" disk(s)");
 
     // 第四步：获取 ACPI RSDP
-    println_uefi("[4/8] Locating ACPI tables...");
+    set_color(Color::Green);
+    print_uefi("[4/8] ");
+    reset_color();
+    println_uefi("Locating ACPI tables...");
     let (acpi_rsdp, acpi_version) = find_acpi_rsdp();
     if acpi_rsdp != 0 {
-        print_uefi("      RSDP at 0x");
+        print_uefi("      RSDP at ");
+        set_color(Color::Yellow);
+        print_uefi("0x");
         print_hex(acpi_rsdp);
+        reset_color();
         print_uefi(" (ACPI ");
+        set_color(Color::Yellow);
         print_dec(acpi_version as u64);
         println_uefi(".0)");
+        reset_color();
     } else {
+        set_color(Color::Red);
         println_uefi("      ACPI not found!");
+        reset_color();
     }
 
     // 第五步：获取 SMBIOS
-    println_uefi("[5/8] Locating SMBIOS...");
+    set_color(Color::Green);
+    print_uefi("[5/8] ");
+    reset_color();
+    println_uefi("Locating SMBIOS...");
     let (smbios_addr, smbios_version) = find_smbios();
     if smbios_addr != 0 {
-        print_uefi("      SMBIOS at 0x");
+        print_uefi("      SMBIOS at ");
+        set_color(Color::Yellow);
+        print_uefi("0x");
         print_hex(smbios_addr);
+        reset_color();
         println_uefi("");
     } else {
         println_uefi("      SMBIOS not found");
     }
 
     // 第六步：获取运行时服务
-    println_uefi("[6/8] Getting UEFI Runtime Services...");
+    set_color(Color::Green);
+    print_uefi("[6/8] ");
+    reset_color();
+    println_uefi("Getting UEFI Runtime Services...");
     let runtime_services = get_runtime_services();
-    print_uefi("      Runtime Services at 0x");
+    print_uefi("      Runtime Services at ");
+    set_color(Color::Yellow);
+    print_uefi("0x");
     print_hex(runtime_services);
+    reset_color();
     println_uefi("");
 
     // 设置命令行（可以从 UEFI 变量读取或使用默认值）
@@ -358,17 +397,31 @@ fn main() -> Status {
         }
     }
 
-    println_uefi("[7/8] Setting up page tables...");
-    print_uefi("      Kernel virtual address: 0x");
+    set_color(Color::Green);
+    print_uefi("[7/8] ");
+    reset_color();
+    println_uefi("Setting up page tables...");
+    print_uefi("      Kernel virtual address: ");
+    set_color(Color::Yellow);
+    print_uefi("0x");
     print_hex(KERNEL_VIRT_ADDR);
+    reset_color();
     println_uefi("");
-    print_uefi("      Direct map offset: 0x");
+    print_uefi("      Direct map offset: ");
+    set_color(Color::Yellow);
+    print_uefi("0x");
     print_hex(DIRECT_MAP_OFFSET);
+    reset_color();
     println_uefi("");
 
-    println_uefi("[8/8] Exiting boot services...");
+    set_color(Color::Green);
+    print_uefi("[8/8] ");
+    reset_color();
+    println_uefi("Exiting boot services...");
     println_uefi("");
+    set_color(Color::Cyan);
     println_uefi("Jumping to kernel...");
+    reset_color();
     println_uefi("");
 
     // 短暂延迟让用户看到信息
@@ -462,6 +515,18 @@ fn main() -> Status {
 fn println_uefi(s: &str) {
     print_uefi(s);
     print_uefi("\r\n");
+}
+
+fn set_color(fg: Color) {
+    if let Ok(handle) = boot::get_handle_for_protocol::<Output>() {
+        if let Ok(mut stdout) = boot::open_protocol_exclusive::<Output>(handle) {
+            let _ = stdout.set_color(fg, Color::Black);
+        }
+    }
+}
+
+fn reset_color() {
+    set_color(Color::LightGray);
 }
 
 fn print_uefi(s: &str) {

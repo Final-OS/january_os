@@ -42,7 +42,7 @@ impl Swiotlb {
         let nr_slots = nr_pages.min(MAX_SLOTS);
         
         // 从低端内存分配 (< 4GB)
-        let buffer_phys = super::super::memblock::memblock_alloc_range(
+        let buffer_phys = crate::mm::page::memblock::memblock_alloc_range(
             size as u64,
             PAGE_SIZE,
             0,

@@ -74,8 +74,48 @@ static CURSOR_X: AtomicUsize = AtomicUsize::new(0);
 static CURSOR_Y: AtomicUsize = AtomicUsize::new(0);
 
 /// 基础颜色 (RGB 格式，会在输出时转换)
-const FG_COLOR_RGB: u32 = 0x00CCCCCC; // 浅灰前景
-const BG_COLOR_RGB: u32 = 0x00000000; // 黑色背景
+const DEFAULT_FG_COLOR: u32 = 0x00CCCCCC; // 浅灰前景
+const DEFAULT_BG_COLOR: u32 = 0x00000000; // 黑色背景
+
+/// 当前前景色 (RGB)
+static FG_COLOR: AtomicU32 = AtomicU32::new(DEFAULT_FG_COLOR);
+/// 当前背景色 (RGB)
+static BG_COLOR: AtomicU32 = AtomicU32::new(DEFAULT_BG_COLOR);
+
+/// 设置前景色
+pub fn set_fg_color(rgb: u32) {
+    FG_COLOR.store(rgb, Ordering::Relaxed);
+}
+
+/// 设置背景色
+pub fn set_bg_color(rgb: u32) {
+    BG_COLOR.store(rgb, Ordering::Relaxed);
+}
+
+/// 获取当前颜色
+pub fn get_colors() -> (u32, u32) {
+    (FG_COLOR.load(Ordering::Relaxed), BG_COLOR.load(Ordering::Relaxed))
+}
+
+/// 设置光标位置
+pub fn set_cursor_pos(x: usize, y: usize) {
+    let cols = COLS.load(Ordering::Relaxed);
+    let rows = ROWS.load(Ordering::Relaxed);
+    if x < cols && y < rows {
+        CURSOR_X.store(x, Ordering::Relaxed);
+        CURSOR_Y.store(y, Ordering::Relaxed);
+    }
+}
+
+/// 获取光标位置
+pub fn get_cursor_pos() -> (usize, usize) {
+    (CURSOR_X.load(Ordering::Relaxed), CURSOR_Y.load(Ordering::Relaxed))
+}
+
+/// 获取屏幕尺寸 (cols, rows)
+pub fn get_screen_size() -> (usize, usize) {
+    (COLS.load(Ordering::Relaxed), ROWS.load(Ordering::Relaxed))
+}
 
 /// 根据像素格式转换颜色
 fn convert_color(rgb: u32) -> u32 {
@@ -131,11 +171,11 @@ pub fn init(addr: u64, width: u32, height: u32, stride: u32, pixel_format: u32) 
     ROWS.store(rows, Ordering::SeqCst);
     
     // 直接使用传入参数清屏（避免原子变量加载问题）
-    let bg = if pixel_format == 0 { BG_COLOR_RGB } else {
+    let bg = if pixel_format == 0 { DEFAULT_BG_COLOR } else {
         // BGR 格式
-        let r = (BG_COLOR_RGB >> 16) & 0xFF;
-        let g = (BG_COLOR_RGB >> 8) & 0xFF;
-        let b = BG_COLOR_RGB & 0xFF;
+        let r = (DEFAULT_BG_COLOR >> 16) & 0xFF;
+        let g = (DEFAULT_BG_COLOR >> 8) & 0xFF;
+        let b = DEFAULT_BG_COLOR & 0xFF;
         (b << 16) | (g << 8) | r
     };
     
@@ -171,7 +211,7 @@ pub fn clear_screen() {
     let width = FB_WIDTH.load(Ordering::Relaxed) as usize;
     let height = FB_HEIGHT.load(Ordering::Relaxed) as usize;
     let stride = FB_STRIDE.load(Ordering::Relaxed) as usize; // 像素数，不需要除以4
-    let bg = convert_color(BG_COLOR_RGB);
+    let bg = convert_color(BG_COLOR.load(Ordering::Relaxed));
     
     let fb = addr as *mut u32;
     
@@ -236,7 +276,7 @@ fn scroll_up() {
     let width = FB_WIDTH.load(Ordering::Relaxed) as usize;
     let height = FB_HEIGHT.load(Ordering::Relaxed) as usize;
     let stride = FB_STRIDE.load(Ordering::Relaxed) as usize; // 像素数
-    let bg = convert_color(BG_COLOR_RGB);
+    let bg = convert_color(BG_COLOR.load(Ordering::Relaxed));
     
     let fb = addr as *mut u32;
     let line_height = FONT_HEIGHT;
@@ -290,11 +330,11 @@ pub fn put_char(ch: char) {
         '\x08' => { // Backspace
             if x > 0 {
                 x -= 1;
-                draw_char(x, y, ' ', FG_COLOR_RGB, BG_COLOR_RGB);
+                draw_char(x, y, ' ', FG_COLOR.load(Ordering::Relaxed), BG_COLOR.load(Ordering::Relaxed));
             }
         }
         ch if ch >= ' ' => {
-            draw_char(x, y, ch, FG_COLOR_RGB, BG_COLOR_RGB);
+            draw_char(x, y, ch, FG_COLOR.load(Ordering::Relaxed), BG_COLOR.load(Ordering::Relaxed));
             x += 1;
             if x >= cols {
                 x = 0;

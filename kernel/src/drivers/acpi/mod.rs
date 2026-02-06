@@ -64,6 +64,11 @@ struct AcpiState {
 /// ACPI 全局状态（一次性初始化）
 static ACPI_STATE: OnceCell<AcpiState> = OnceCell::new();
 
+/// 检查 ACPI 是否已初始化
+pub fn is_initialized() -> bool {
+    ACPI_STATE.get().is_some()
+}
+
 // ============================================================================
 // 初始化
 // ============================================================================
@@ -76,7 +81,7 @@ static ACPI_STATE: OnceCell<AcpiState> = OnceCell::new();
 /// # Returns
 /// 成功返回 Ok(()), 失败返回错误信息
 pub fn init(rsdp_addr: u64) -> Result<(), &'static str> {
-    if ACPI_STATE.is_initialized() {
+    if ACPI_STATE.get().is_some() {
         return Err("ACPI already initialized");
     }
 
@@ -100,8 +105,8 @@ pub fn init(rsdp_addr: u64) -> Result<(), &'static str> {
         return Err("Invalid XSDT/RSDT address");
     }
 
-    // 保存状态
-    ACPI_STATE.set(AcpiState {
+    // 使用 set 初始化 OnceCell
+    let _ = ACPI_STATE.set(AcpiState {
         xsdt_addr: sdt_addr,
         revision: rsdp.revision,
     });
@@ -109,111 +114,40 @@ pub fn init(rsdp_addr: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// 打印所有 ACPI 表
-pub fn dump_tables() {
-    let state = match ACPI_STATE.get() {
-        Some(s) => s,
-        None => {
-            crate::kprintln!("ACPI not initialized");
-            return;
-        }
-    };
-    let xsdt_addr = state.xsdt_addr;
+// ============================================================================
+// 表查找与遍历
+// ============================================================================
 
-    crate::kprintln!("ACPI Revision: {}", state.revision);
-    crate::kprintln!("XSDT/RSDT Address: {:#x}", state.xsdt_addr);
-
-    unsafe {
-        let xsdt_virt = phys_to_virt(xsdt_addr);
-        let header = &*(xsdt_virt as *const SdtHeader);
-
-        // Copy fields to avoid unaligned access
-        let revision = header.revision;
-        let length = header.length;
-        
-        let is_xsdt = &header.signature == b"XSDT";
-        
-        if is_xsdt {
-            crate::kprintln!("XSDT (v{}) Length: {}", revision, length);
-        } else {
-            crate::kprintln!("RSDT (v{}) Length: {}", revision, length);
-        }
-
-        let entry_size = if is_xsdt { 8 } else { 4 };
-        let entries_size = length as usize - core::mem::size_of::<SdtHeader>();
-        let entry_count = entries_size / entry_size;
-
-        let entries_start = xsdt_virt + core::mem::size_of::<SdtHeader>() as u64;
-        
-        for i in 0..entry_count {
-            let entry_addr = if is_xsdt {
-                let ptr = (entries_start + (i * 8) as u64) as *const u64;
-                *ptr
-            } else {
-                let ptr = (entries_start + (i * 4) as u64) as *const u32;
-                *ptr as u64
-            };
-
-            if entry_addr == 0 {
-                continue;
-            }
-
-            let table_virt = phys_to_virt(entry_addr);
-            let table_header = &*(table_virt as *const SdtHeader);
-            
-            // Copy fields to avoid unaligned access
-            let sig = table_header.signature;
-            let len = table_header.length;
-            let sig_str = core::str::from_utf8(&sig).unwrap_or("????");
-            
-            crate::kprintln!("  [{}] {} @ {:#x} (len: {})", 
-                i, sig_str, entry_addr, len);
-        }
-    }
-}
-
-/// 查找 ACPI 表
+/// 查找特定的 ACPI 表
 pub fn find_table<T: AcpiTable>() -> Option<&'static T> {
     let state = ACPI_STATE.get()?;
-    let xsdt_addr = state.xsdt_addr;
+    let virt_addr = state.xsdt_addr + crate::config::DIRECT_MAP_OFFSET;
+    let signature = T::signature();
 
-    unsafe {
-        let xsdt_virt = phys_to_virt(xsdt_addr);
-        let header = &*(xsdt_virt as *const SdtHeader);
-
-        // 验证 XSDT
-        if &header.signature != b"XSDT" && &header.signature != b"RSDT" {
-            return None;
-        }
-
-        // 计算表条目数量
-        let is_xsdt = &header.signature == b"XSDT";
-        let entry_size = if is_xsdt { 8 } else { 4 };
-        let entries_size = header.length as usize - core::mem::size_of::<SdtHeader>();
-        let entry_count = entries_size / entry_size;
-
-        // 遍历所有条目
-        let entries_start = xsdt_virt + core::mem::size_of::<SdtHeader>() as u64;
-        
-        for i in 0..entry_count {
-            let entry_addr = if is_xsdt {
-                let ptr = (entries_start + (i * 8) as u64) as *const u64;
-                *ptr
-            } else {
-                let ptr = (entries_start + (i * 4) as u64) as *const u32;
-                *ptr as u64
-            };
-
-            if entry_addr == 0 {
-                continue;
+    if state.revision >= 2 {
+        // 使用 XSDT
+        let xsdt = unsafe { &*(virt_addr as *const Xsdt) };
+        let count = xsdt.entry_count();
+        for i in 0..count {
+            let entry_addr = unsafe { xsdt.entry(i) };
+            if entry_addr == 0 { continue; }
+            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let header = unsafe { &*(entry_virt as *const SdtHeader) };
+            if &header.signature == signature {
+                return unsafe { Some(&*(entry_virt as *const T)) };
             }
-
-            // 读取表头并检查签名
-            let table_virt = phys_to_virt(entry_addr);
-            let table_header = &*(table_virt as *const SdtHeader);
-
-            if &table_header.signature == T::signature() {
-                return Some(&*(table_virt as *const T));
+        }
+    } else {
+        // 使用 RSDT
+        let rsdt = unsafe { &*(virt_addr as *const Rsdt) };
+        let count = rsdt.entry_count();
+        for i in 0..count {
+            let entry_addr = unsafe { rsdt.entry(i) } as u64;
+            if entry_addr == 0 { continue; }
+            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let header = unsafe { &*(entry_virt as *const SdtHeader) };
+            if &header.signature == signature {
+                return unsafe { Some(&*(entry_virt as *const T)) };
             }
         }
     }
@@ -221,48 +155,57 @@ pub fn find_table<T: AcpiTable>() -> Option<&'static T> {
     None
 }
 
-// Removed get_table
-/// ACPI 表 trait
-pub trait AcpiTable {
-    /// 获取表签名
-    fn signature() -> &'static [u8; 4];
-}
+/// 打印所有 ACPI 表信息
+pub fn dump_tables() {
+    let state = if let Some(s) = ACPI_STATE.get() { s } else {
+        crate::warn!("ACPI not initialized");
+        return;
+    };
 
-// ============================================================================
-// 辅助函数
-// ============================================================================
+    let virt_addr = state.xsdt_addr + crate::config::DIRECT_MAP_OFFSET;
 
-/// 物理地址转虚拟地址
-#[inline]
-fn phys_to_virt(phys: u64) -> u64 {
-    phys + crate::config::DIRECT_MAP_OFFSET
-}
-
-/// 验证 ACPI 表校验和
-fn validate_checksum(data: *const u8, length: usize) -> bool {
-    let mut sum: u8 = 0;
-    for i in 0..length {
-        sum = sum.wrapping_add(unsafe { *data.add(i) });
+    if state.revision >= 2 {
+        let xsdt = unsafe { &*(virt_addr as *const Xsdt) };
+        crate::info!("ACPI: XSDT at {:#x}, entries: {}", state.xsdt_addr, xsdt.entry_count());
+        for i in 0..xsdt.entry_count() {
+            let entry_addr = unsafe { xsdt.entry(i) };
+            if entry_addr == 0 { continue; }
+            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let header = unsafe { &*(entry_virt as *const SdtHeader) };
+            let signature = header.signature_str();
+            let length = header.length;
+            let revision = header.revision;
+            crate::info!("  [{:02}] {} (len={:<5}, rev={})", 
+                i, signature, length, revision);
+        }
+    } else {
+        let rsdt = unsafe { &*(virt_addr as *const Rsdt) };
+        crate::info!("ACPI: RSDT at {:#x}, entries: {}", state.xsdt_addr, rsdt.entry_count());
+        for i in 0..rsdt.entry_count() {
+            let entry_addr = unsafe { rsdt.entry(i) } as u64;
+            if entry_addr == 0 { continue; }
+            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let header = unsafe { &*(entry_virt as *const SdtHeader) };
+            let signature = header.signature_str();
+            let length = header.length;
+            let revision = header.revision;
+            crate::info!("  [{:02}] {} (len={:<5}, rev={})", 
+                i, signature, length, revision);
+        }
     }
-    sum == 0
 }
 
 // ============================================================================
-// 调试
+// 电源管理 (FADT)
 // ============================================================================
 
-// Removed duplicate dump_tables
-// ============================================================================
-// FADT (Fixed ACPI Description Table) - 电源管理
-// ============================================================================
-
-/// FADT 结构（简化版，只包含关机需要的字段）
+/// FADT (Fixed ACPI Description Table)
 #[repr(C, packed)]
 pub struct Fadt {
     pub header: SdtHeader,
     pub firmware_ctrl: u32,
     pub dsdt: u32,
-    pub _reserved1: u8,
+    pub reserved: u8,
     pub preferred_pm_profile: u8,
     pub sci_int: u16,
     pub smi_cmd: u32,
@@ -272,8 +215,8 @@ pub struct Fadt {
     pub pstate_cnt: u8,
     pub pm1a_evt_blk: u32,
     pub pm1b_evt_blk: u32,
-    pub pm1a_cnt_blk: u32,      // PM1a Control Block - 关机用
-    pub pm1b_cnt_blk: u32,      // PM1b Control Block
+    pub pm1a_cnt_blk: u32,
+    pub pm1b_cnt_blk: u32,
     pub pm2_cnt_blk: u32,
     pub pm_tmr_blk: u32,
     pub gpe0_blk: u32,
@@ -292,64 +235,147 @@ pub struct Fadt {
     pub flush_stride: u16,
     pub duty_offset: u8,
     pub duty_width: u8,
-    pub day_alrm: u8,
-    pub mon_alrm: u8,
+    pub day_alarm: u8,
+    pub mon_alarm: u8,
     pub century: u8,
     pub iapc_boot_arch: u16,
-    pub _reserved2: u8,
+    pub reserved2: u8,
     pub flags: u32,
-    // ... 更多字段省略
+    pub reset_reg: GenericAddress,
+    pub reset_value: u8,
+    pub reserved3: [u8; 3],
+    pub x_firmware_ctrl: u64,
+    pub x_dsdt: u64,
+    pub x_pm1a_evt_blk: GenericAddress,
+    pub x_pm1b_evt_blk: GenericAddress,
+    pub x_pm1a_cnt_blk: GenericAddress,
+    pub x_pm1b_cnt_blk: GenericAddress,
+    // ... 更多字段省略 ...
 }
-
 
 impl AcpiTable for Fadt {
-    fn signature() -> &'static [u8; 4] {
-        b"FACP"
+    fn signature() -> &'static [u8; 4] { b"FACP" }
+}
+
+/// 获取关机所需的 PM1a/PM1b 端口地址
+pub fn get_shutdown_info() -> Option<(u32, u32)> {
+    if let Some(fadt) = find_table::<Fadt>() {
+        // 优先使用 32 位地址 (ACPI 1.0)
+        let pm1a = fadt.pm1a_cnt_blk;
+        let pm1b = fadt.pm1b_cnt_blk;
+        if pm1a != 0 {
+            return Some((pm1a, pm1b));
+        }
+        
+        // 尝试使用 64 位地址 (ACPI 2.0+)
+        // 注意：这里简化处理，假设是 I/O 端口
+        if fadt.x_pm1a_cnt_blk.address_space == 1 { // SystemIo
+             return Some((fadt.x_pm1a_cnt_blk.address as u32, fadt.x_pm1b_cnt_blk.address as u32));
+        }
     }
+    None
 }
 
-/// 获取 FADT 表
-pub fn get_fadt() -> Option<&'static Fadt> {
-    find_table::<Fadt>()
-}
-
-/// 获取关机信息（用于调试）
-pub fn get_shutdown_info() -> Option<(u16, u16)> {
-    let fadt = get_fadt()?;
-    Some((fadt.pm1a_cnt_blk as u16, fadt.pm1b_cnt_blk as u16))
-}
-
-/// ACPI 关机
-/// 
-/// 从 FADT 读取正确的 PM1a_CNT 端口并执行 S5 睡眠
+/// 尝试通过 ACPI 关机
 pub fn acpi_shutdown() -> Result<(), &'static str> {
-    // 获取 FADT
-    let fadt = get_fadt().ok_or("FADT not found")?;
+    let (pm1a, pm1b) = get_shutdown_info().ok_or("FADT not found or invalid PM1a_CNT")?;
     
-    let pm1a_cnt = fadt.pm1a_cnt_blk as u16;
-    if pm1a_cnt == 0 {
-        return Err("PM1a_CNT_BLK is 0");
-    }
-    
-    let pm1b_cnt = fadt.pm1b_cnt_blk as u16;
-    
+    // SLP_TYP_S5 通常是 5 (101b)
     // SLP_EN 是 bit 13
-    // SLP_TYPa 在 bit 10-12，尝试所有可能值 0-7
+    // 需要将 SLP_TYP_S5 << 10 | SLP_EN 写入 PM1a_CNT
+    
+    // 注意：这里的 SLP_TYP 值实际上应该从 DSDT 的 \_S5 包中获取
+    // 但对于 QEMU 和大多数标准 PC，SLP_TYP_S5 通常是 0 或 5
+    // QEMU 似乎期望 SLP_TYP = 5
+    
+    let shutdown_val: u16 = (5 << 10) | (1 << 13);
+    
     unsafe {
-        for slp_typ in [5u16, 7, 0, 1, 2, 3, 4, 6] {
-            let slp_value: u16 = (slp_typ << 10) | (1 << 13);
-            core::arch::asm!("out dx, ax", in("dx") pm1a_cnt, in("ax") slp_value);
-            
-            if pm1b_cnt != 0 {
-                core::arch::asm!("out dx, ax", in("dx") pm1b_cnt, in("ax") slp_value);
-            }
-            
-            // 短暂延迟
-            for _ in 0..10000 {
-                core::arch::asm!("pause");
-            }
+        core::arch::asm!("out dx, ax", in("dx") pm1a as u16, in("ax") shutdown_val);
+        if pm1b != 0 {
+            core::arch::asm!("out dx, ax", in("dx") pm1b as u16, in("ax") shutdown_val);
         }
     }
     
-    Ok(())
+    // 如果还没关机...
+    for _ in 0..1000 { core::hint::spin_loop(); }
+    
+    Err("ACPI shutdown failed (hardware didn't respond)")
+}
+
+/// 尝试通过 ACPI 重启
+pub fn acpi_reset() -> Result<(), &'static str> {
+    if let Some(fadt) = find_table::<Fadt>() {
+        // 检查 FADT 版本 (ACPI 2.0+)
+        if fadt.header.revision >= 2 {
+            let reset_reg = fadt.reset_reg;
+            let reset_val = fadt.reset_value;
+            
+            // 目前只支持 I/O 端口 (Space ID = 1)
+            if reset_reg.address_space == 1 {
+                 unsafe {
+                     core::arch::asm!("out dx, al", in("dx") reset_reg.address as u16, in("al") reset_val);
+                 }
+                 // 等待重启
+                 for _ in 0..1000 { core::hint::spin_loop(); }
+                 return Ok(());
+            }
+        }
+    }
+    Err("ACPI reset not supported or failed")
+}
+
+// ============================================================================
+// 高级配置接口
+// ============================================================================
+
+/// 从 ACPI 获取的系统配置摘要
+#[derive(Debug, Clone, Copy)]
+pub struct AcpiConfig {
+    pub cpu_count: usize,
+    pub local_apic_addr: u64,
+    pub ioapic_addr: u64,
+    pub ioapic_gsi_base: u32,
+    pub has_iommu: bool,
+}
+
+impl Default for AcpiConfig {
+    fn default() -> Self {
+        Self {
+            cpu_count: 1,
+            local_apic_addr: 0xFEE00000, // 默认 x86 Local APIC 地址
+            ioapic_addr: 0,
+            ioapic_gsi_base: 0,
+            has_iommu: false,
+        }
+    }
+}
+
+/// 自动检测系统配置
+pub fn detect_system_config() -> AcpiConfig {
+    let mut config = AcpiConfig::default();
+
+    // 必须先初始化 ACPI
+    if ACPI_STATE.get().is_none() {
+        return config;
+    }
+
+    // 解析 MADT
+    if let Some(madt) = find_table::<Madt>() {
+        let madt_info = parse_madt(madt);
+        config.cpu_count = madt_info.cpu_count;
+        config.local_apic_addr = madt_info.local_apic_address;
+        
+        if madt_info.ioapic_count > 0 {
+            config.ioapic_addr = madt_info.ioapics[0].address as u64;
+            config.ioapic_gsi_base = madt_info.ioapics[0].gsi_base;
+        }
+    }
+
+    // 检测 DMAR (IOMMU)
+    if find_table::<Dmar>().is_some() {
+        config.has_iommu = true;
+    }
+
+    config
 }

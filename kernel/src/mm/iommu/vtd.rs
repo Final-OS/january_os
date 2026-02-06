@@ -649,7 +649,7 @@ impl VtdUnit {
     /// 分配一个物理页面
     fn alloc_page(&self) -> Result<u64, &'static str> {
         // 使用 memblock 分配
-        let phys = super::super::memblock::memblock_alloc(PAGE_SIZE, PAGE_SIZE);
+        let phys = crate::mm::page::memblock::memblock_alloc(PAGE_SIZE, PAGE_SIZE);
         if phys == 0 {
             return Err("Failed to allocate page for VT-d");
         }

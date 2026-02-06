@@ -271,12 +271,12 @@ pub struct IommuStats {
 /// 尝试初始化 Intel VT-d
 fn try_init_vtd(mgr: &mut IommuManager, direct_map_offset: u64) -> bool {
     // 从 ACPI DMAR 表获取 VT-d 信息
-    let dmar = match crate::acpi::find_table::<crate::acpi::Dmar>() {
+    let dmar = match crate::drivers::acpi::find_table::<crate::drivers::acpi::Dmar>() {
         Some(d) => d,
         None => return false,
     };
     
-    let dmar_info = crate::acpi::parse_dmar(dmar);
+    let dmar_info = crate::drivers::acpi::parse_dmar(dmar);
     if dmar_info.drhd_count == 0 {
         return false;
     }
@@ -379,8 +379,8 @@ pub fn iommu_stats() -> IommuStats {
 // DMA 一致性内存 API
 // ============================================================================
 
-use super::zone::GfpFlags;
-use super::buddy::alloc_pages;
+use crate::mm::page::zone::GfpFlags;
+use crate::mm::page::buddy::alloc_pages;
 use super::page::page_to_pfn;
 
 /// 分配 DMA 一致性内存
@@ -398,7 +398,7 @@ pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAdd
     let dma_addr = map(phys, size, DmaDirection::Bidirectional);
     
     if dma_addr.is_null() {
-        unsafe { super::buddy::free_pages(page, order) };
+        unsafe { crate::mm::page::buddy::free_pages(page, order) };
         return None;
     }
     
@@ -421,10 +421,10 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
     let pfn = phys / PAGE_SIZE;
     
     unsafe {
-        let page = super::page::pfn_to_page(pfn);
+        let page = crate::mm::page::page::pfn_to_page(pfn);
         let pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
         let order = pages.next_power_of_two().trailing_zeros() as usize;
-        super::buddy::free_pages(page, order);
+        crate::mm::page::buddy::free_pages(page, order);
     }
 }
 

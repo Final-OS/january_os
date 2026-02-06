@@ -32,15 +32,15 @@
 //!   - 可使用所有分配接口
 //! ```
 
-use super::memblock::{
+use crate::mm::page::memblock::{
     memblock_init, memblock_initialized, memblock_add, memblock_reserve,
     memblock_alloc, memblock_for_each_free_region, memblock_phys_mem_size,
 };
-use super::page::{Page, init_vmemmap, PAGE_STRUCT_SIZE};
-use super::zone::{Zone, ZoneType, ZONES, mark_zones_initialized};
-use super::buddy::init_zone_buddy;
-use super::slub::init_kmalloc_caches;
-use super::layout::PAGE_SIZE;
+use crate::mm::page::page::{Page, init_vmemmap, PAGE_STRUCT_SIZE};
+use crate::mm::page::zone::{Zone, ZoneType, ZONES, mark_zones_initialized};
+use crate::mm::page::buddy::init_zone_buddy;
+use crate::mm::slub::init_kmalloc_caches;
+use crate::mm::vm::layout::PAGE_SIZE;
 use crate::error::{KernelError, KernelResult};
 
 // ============================================================================
@@ -176,8 +176,8 @@ pub unsafe fn init_buddy_system(
         init_vmemmap(page_array, max_pfn);
         
         // 2. 初始化 Zones
-        let dma_end_pfn = (super::zone::ZONE_DMA_LIMIT / PAGE_SIZE).min(max_pfn);
-        let dma32_end_pfn = (super::zone::ZONE_DMA32_LIMIT / PAGE_SIZE).min(max_pfn);
+        let dma_end_pfn = (crate::mm::page::zone::ZONE_DMA_LIMIT / PAGE_SIZE).min(max_pfn);
+        let dma32_end_pfn = (crate::mm::page::zone::ZONE_DMA32_LIMIT / PAGE_SIZE).min(max_pfn);
         
         // ZONE_DMA: 0 - 16MB (ISA DMA)
         if dma_end_pfn > 0 {

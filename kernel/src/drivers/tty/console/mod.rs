@@ -5,21 +5,6 @@
 //! - 多虚拟控制台 (tty1-tty6)
 //! - 滚动缓冲区
 //! - 光标控制
-//!
-//! # 架构
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────────────┐
-//! │                        VT 层                                    │
-//! │               (ANSI 转义序列解析)                                │
-//! ├─────────────────────────────────────────────────────────────────┤
-//! │                     Console 层                                  │
-//! │            (文本缓冲区, 滚动, 光标)                              │
-//! ├─────────────────────────────────────────────────────────────────┤
-//! │                   Framebuffer 层                                │
-//! │              (像素渲染, 字体绘制)                                │
-//! └─────────────────────────────────────────────────────────────────┘
-//! ```
 
 mod font;
 mod vt;
@@ -28,7 +13,139 @@ pub use vt::{VtParser, VtState, VtAction};
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::fmt::{self, Write};
-use crate::sync::{Once, OnceCell};
+use crate::sync::IrqMutex;
+
+// ============================================================================
+// Console Lock
+// ============================================================================
+
+pub struct Console {
+    vt_parser: VtParser,
+}
+
+impl Console {
+    pub const fn new() -> Self {
+        Self {
+            vt_parser: VtParser::new(),
+        }
+    }
+
+    /// 处理 VT 动作
+    fn process_action(&mut self, action: VtAction) {
+        use crate::drivers::tty::fbcon;
+        
+        match action {
+            VtAction::Print(ch) => {
+                fbcon::put_char(ch);
+            }
+            VtAction::CursorUp(n) => {
+                let (x, y) = fbcon::get_cursor_pos();
+                fbcon::set_cursor_pos(x, y.saturating_sub(n));
+            }
+            VtAction::CursorDown(n) => {
+                let (x, y) = fbcon::get_cursor_pos();
+                let (_, rows) = fbcon::get_screen_size();
+                let new_y = core::cmp::min(rows.saturating_sub(1), y + n);
+                fbcon::set_cursor_pos(x, new_y);
+            }
+            VtAction::CursorForward(n) => {
+                let (x, y) = fbcon::get_cursor_pos();
+                let (cols, _) = fbcon::get_screen_size();
+                let new_x = core::cmp::min(cols.saturating_sub(1), x + n);
+                fbcon::set_cursor_pos(new_x, y);
+            }
+            VtAction::CursorBack(n) => {
+                let (x, y) = fbcon::get_cursor_pos();
+                fbcon::set_cursor_pos(x.saturating_sub(n), y);
+            }
+            VtAction::CursorPosition(row, col) => {
+                // ANSI 是 1-based，我们是 0-based
+                let r = row.saturating_sub(1);
+                let c = col.saturating_sub(1);
+                fbcon::set_cursor_pos(c, r);
+            }
+            VtAction::EraseDisplay(mode) => {
+                if mode == 2 {
+                    fbcon::clear_screen();
+                }
+            }
+            VtAction::SetAttr(attr) => {
+                self.handle_sgr(attr);
+            }
+            VtAction::Reset => {
+                fbcon::set_fg_color(DEFAULT_FG);
+                fbcon::set_bg_color(DEFAULT_BG);
+                fbcon::clear_screen();
+                self.vt_parser.reset();
+            }
+            _ => {}
+        }
+    }
+
+    /// 处理 SGR 属性
+    fn handle_sgr(&mut self, attr: u8) {
+        use crate::drivers::tty::fbcon;
+        
+        match attr {
+            0 => { // Reset
+                fbcon::set_fg_color(DEFAULT_FG);
+                fbcon::set_bg_color(DEFAULT_BG);
+            }
+            1 => { // Bold (Bright) - 简化处理：如果是深色则变亮
+                let (fg, _) = fbcon::get_colors();
+                // TODO: 更好的加粗处理
+            }
+            30..=37 => { // FG Color
+                let color = ansi_to_rgb(attr - 30);
+                fbcon::set_fg_color(color);
+            }
+            38 => {
+                // TODO: Extended FG (next params)
+            }
+            39 => { // Default FG
+                fbcon::set_fg_color(DEFAULT_FG);
+            }
+            40..=47 => { // BG Color
+                let color = ansi_to_rgb(attr - 40);
+                fbcon::set_bg_color(color);
+            }
+            48 => {
+                // TODO: Extended BG (next params)
+            }
+            49 => { // Default BG
+                fbcon::set_bg_color(DEFAULT_BG);
+            }
+            90..=97 => { // Bright FG
+                let color = ansi_to_rgb(attr - 90 + 8);
+                fbcon::set_fg_color(color);
+            }
+            100..=107 => { // Bright BG
+                let color = ansi_to_rgb(attr - 100 + 8);
+                fbcon::set_bg_color(color);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 全局控制台锁，确保多核输出不乱序，且中断安全
+pub static CONSOLE: IrqMutex<Console> = IrqMutex::new(Console::new());
+
+impl Write for Console {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        // 串口输出 (Raw)
+        let _ = write!(crate::drivers::tty::serial::SerialWriter, "{}", s);
+        
+        // Framebuffer 输出 (VT 处理)
+        for ch in s.chars() {
+            let mut iter = self.vt_parser.feed(ch);
+            while let Some(action) = iter.next() {
+                self.process_action(action);
+            }
+        }
+        Ok(())
+    }
+}
 
 // ============================================================================
 // 输出宏 - 同时输出到串口和 Framebuffer 控制台
@@ -39,15 +156,20 @@ macro_rules! kprint {
     ($($arg:tt)*) => {{
         use core::fmt::Write;
         // 使用绝对路径以确保在任何地方都能访问
-        let _ = write!(crate::drivers::tty::serial::SerialWriter, $($arg)*);
-        let _ = write!(crate::drivers::tty::fbcon::FbConsoleWriter, $($arg)*);
+        let mut console = $crate::drivers::tty::console::CONSOLE.lock();
+        let _ = write!(console, $($arg)*);
     }};
 }
 
 #[macro_export]
 macro_rules! kprintln {
     () => { $crate::kprint!("\n") };
-    ($($arg:tt)*) => {{ $crate::kprint!($($arg)*); $crate::kprint!("\n"); }};
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let mut console = $crate::drivers::tty::console::CONSOLE.lock();
+        let _ = write!(console, $($arg)*);
+        let _ = write!(console, "\n");
+    }};
 }
 
 // ============================================================================
@@ -113,12 +235,3 @@ pub fn ansi_to_rgb(code: u8) -> u32 {
         ((gray as u32) << 16) | ((gray as u32) << 8) | (gray as u32)
     }
 }
-
-// ============================================================================
-// Framebuffer 信息
-// ============================================================================
-
-// ... (rest of file usually follows, but I am overwriting the file. Wait! I should NOT overwrite if I don't have full content)
-// The previous Read only gave me 100 lines.
-// I must use SearchReplace to insert macros.
-

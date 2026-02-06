@@ -91,7 +91,7 @@ max_cpus = 64
 # 内存访问架构 (UMA / NUMA)
 # ==============================================================================
 [memory_model]
-# 内存模型: "uma" / "numa"
+# 内存模型: "auto" / "uma" / "numa"
 #
 # UMA (Uniform Memory Access):
 #   - 所有 CPU 访问所有内存的延迟相同
@@ -104,9 +104,11 @@ max_cpus = 64
 #   - 需要从 ACPI SRAT 表检测拓扑
 #   - 内核会尽量在本地节点分配内存
 #
-type = "uma"
+# 自动模式:
+#   - 系统只报告一个内存节点（node0），内核就把它当成 UMA（或“伪 UMA”） 来用。
+#   - 如果报告多个节点，内核就按 NUMA 初始化 node/zone，并据此做分配和调度。
+type = "auto"
 
-# NUMA 特定配置 (仅当 type="numa" 时有效)
 [memory_model.numa]
 max_nodes = 8           # 最大节点数
 # local_distance = 10   # 本地访问距离
