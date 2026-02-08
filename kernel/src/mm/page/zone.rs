@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::page::{Page, ListHead, PageFlags};
 use crate::mm::vm::layout::PAGE_SIZE;
 use crate::config;
+use crate::sync::SpinLock;
 
 // ============================================================================
 // 常量定义 (从配置导入)
@@ -211,6 +212,8 @@ pub struct Zone {
     pub free_pages: AtomicU64,
     /// Buddy 空闲区域 [order]
     pub free_area: [FreeArea; MAX_ORDER],
+    /// Zone 锁 - 保护 free_area 链表操作
+    pub lock: SpinLock<()>,
     /// 保留的页帧数（低水位）
     pub watermark_min: u64,
     /// 低水位
@@ -236,6 +239,7 @@ impl Zone {
                 FreeArea::new(), FreeArea::new(), FreeArea::new(),
                 FreeArea::new(), FreeArea::new(),
             ],
+            lock: SpinLock::new(()),
             watermark_min: 0,
             watermark_low: 0,
             watermark_high: 0,

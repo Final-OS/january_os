@@ -140,6 +140,8 @@ impl PerCpuPages {
     /// 批量从 Buddy 补充
     pub unsafe fn refill_from_buddy(&self, zone: &mut Zone, batch: u32) -> u32 {
         let mut inner = self.inner.lock();
+        // 获取 Zone 锁（锁序：PCP → Zone）
+        let _zone_guard = (*core::ptr::addr_of!(zone.lock)).lock();
         let mut added = 0u32;
         
         while added < batch {
@@ -168,6 +170,8 @@ impl PerCpuPages {
     /// 批量归还到 Buddy
     pub unsafe fn drain_to_buddy(&self, zone: &mut Zone, batch: u32) -> u32 {
         let mut inner = self.inner.lock();
+        // 获取 Zone 锁（锁序：PCP → Zone）
+        let _zone_guard = (*core::ptr::addr_of!(zone.lock)).lock();
         let mut drained = 0u32;
         
         while drained < batch && inner.count > 0 {

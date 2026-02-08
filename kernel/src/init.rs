@@ -71,6 +71,9 @@ pub fn init_kernel(info: &BootInfo) -> acpi::AcpiConfig {
     // 11. 启用时钟和中断
     init_timer_and_enable_interrupts();
 
+    // 12. 初始化任务子系统
+    crate::task::init();
+
     kprintln!();
     ok!("Kernel initialization complete.");
     kprintln!();

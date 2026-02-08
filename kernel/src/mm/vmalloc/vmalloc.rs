@@ -6,11 +6,12 @@
 // ============================================================================
 
 use core::ptr;
-use core::sync::atomic::{AtomicU64, Ordering};
 use core::panic::Location;
-use crate::sync::OnceCell;
+use crate::sync::{Mutex, OnceCell};
+use crate::libs::rbtree::RbTree;
+use crate::libs::mptree::MapleTree;
 use crate::mm::vm::layout::PAGE_SIZE;
-use crate::mm::page::page::{Page, ListHead, pfn_to_page, page_to_pfn};
+use crate::mm::page::page::{page_to_pfn, pfn_to_page};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::page::buddy::{alloc_page, free_page};
 use crate::mm::vm::paging::{PageTableManager, PTE_PRESENT, PTE_WRITABLE, PTE_GLOBAL, PTE_NO_CACHE};
@@ -27,9 +28,6 @@ pub const VMALLOC_END: u64   = 0xFFFF_E8FF_FFFF_FFFF;
 
 /// vmalloc 区域大小
 pub const VMALLOC_SIZE: u64  = VMALLOC_END - VMALLOC_START;
-
-/// 最大 vmalloc 区域数
-const MAX_VMALLOC_AREAS: usize = 256;
 
 // ============================================================================
 // vmalloc 区域描述
@@ -49,87 +47,65 @@ impl VmFlags {
     pub const USERMAP: u32  = 1 << 2;
     /// IO 映射
     pub const IOREMAP: u32  = 1 << 3;
-    
+    /// 分配进行中（页映射尚未完成）
+    pub const ALLOCATING: u32 = 1 << 4;
+
     pub const fn empty() -> Self {
         Self(0)
     }
-    
+
     pub const fn new(bits: u32) -> Self {
         Self(bits)
     }
-    
+
     pub fn contains(&self, flag: u32) -> bool {
         (self.0 & flag) != 0
     }
-    
+
     pub fn set(&mut self, flag: u32) {
         self.0 |= flag;
     }
-    
+
     pub fn clear(&mut self, flag: u32) {
         self.0 &= !flag;
     }
 }
 
-/// vmalloc 区域
-#[repr(C)]
-pub struct VmStruct {
-    /// 起始虚拟地址
-    pub addr: u64,
+/// vmalloc 区域信息 (存储在 RbTree 中，以 vaddr 为键)
+pub struct VmArea {
     /// 大小 (字节)
     pub size: u64,
     /// 标志
     pub flags: VmFlags,
-    /// 物理页数组
-    pub pages: *mut *mut Page,
     /// 页数
     pub nr_pages: u32,
-    /// 填充
-    _pad: u32,
-    /// 链表节点
-    pub list: ListHead,
     /// 调用者信息 (调试用)
     pub caller: Option<&'static Location<'static>>,
-}
-
-impl VmStruct {
-    pub const fn uninit() -> Self {
-        Self {
-            addr: 0,
-            size: 0,
-            flags: VmFlags::empty(),
-            pages: ptr::null_mut(),
-            nr_pages: 0,
-            _pad: 0,
-            list: ListHead::new(),
-            caller: None,
-        }
-    }
-    
-    pub fn init(&mut self, addr: u64, size: u64, caller: Option<&'static Location<'static>>) {
-        self.addr = addr;
-        self.size = size;
-        self.flags = VmFlags::new(VmFlags::ALLOC | VmFlags::INUSE);
-        self.list.init();
-        self.caller = caller;
-    }
 }
 
 // ============================================================================
 // 全局状态
 // ============================================================================
 
-/// vmalloc 区域数组
-static mut VMALLOC_AREAS: [VmStruct; MAX_VMALLOC_AREAS] = {
-    const UNINIT: VmStruct = VmStruct::uninit();
-    [UNINIT; MAX_VMALLOC_AREAS]
-};
+/// vmalloc 数据 (受 Mutex 保护)
+struct VmallocData {
+    /// 区域查找 (vaddr -> VmArea)
+    areas: RbTree<u64, VmArea>,
+    /// 地址空间跟踪 (用于间隙搜索)
+    addr_space: MapleTree<()>,
+}
 
-/// 已使用的区域数
-static VMALLOC_AREA_COUNT: AtomicU64 = AtomicU64::new(0);
+impl VmallocData {
+    const fn new() -> Self {
+        Self {
+            areas: RbTree::new(),
+            addr_space: MapleTree::new(),
+        }
+    }
+}
 
-/// 下一个空闲地址
-static VMALLOC_NEXT_FREE: AtomicU64 = AtomicU64::new(VMALLOC_START);
+/// vmalloc 受保护数据
+static VMALLOC_DATA: Mutex<VmallocData> = Mutex::new(VmallocData::new());
 
 /// vmalloc 状态
 struct VmallocState {
@@ -152,7 +128,6 @@ static VMALLOC_STATE: OnceCell<VmallocState> = OnceCell::new();
 
 /// 初始化 vmalloc 子系统
 pub unsafe fn init_vmalloc(direct_map: u64, pt_mgr: *mut PageTableManager) {
-    VMALLOC_NEXT_FREE.store(VMALLOC_START, Ordering::SeqCst);
     let _ = VMALLOC_STATE.set(VmallocState {
         direct_map,
         page_table_mgr: pt_mgr,
@@ -169,10 +144,10 @@ pub fn vmalloc_initialized() -> bool {
 // ============================================================================
 
 /// 分配虚拟连续内存
-/// 
+///
 /// # Arguments
 /// * `size` - 请求大小 (字节)
-/// 
+///
 /// # Returns
 /// 成功返回虚拟地址，失败返回 null
 #[track_caller]
@@ -180,7 +155,7 @@ pub fn vmalloc(size: usize) -> *mut u8 {
     if size == 0 || !vmalloc_initialized() {
         return ptr::null_mut();
     }
-    
+
     __vmalloc(size, GfpFlags::new(GfpFlags::KERNEL))
 }
 
@@ -201,18 +176,28 @@ pub fn vfree(addr: *mut u8) {
     if addr.is_null() || !vmalloc_initialized() {
         return;
     }
-    
+
     let addr = addr as u64;
-    
-    // 查找对应的 VmStruct
-    unsafe {
-        for i in 0..MAX_VMALLOC_AREAS {
-            let area = &mut VMALLOC_AREAS[i];
-            if area.flags.contains(VmFlags::INUSE) && area.addr == addr {
-                __vfree(area);
+
+    // 从 RbTree 中查找并移除
+    let area = {
+        let mut data = VMALLOC_DATA.lock();
+        // 检查是否正在分配中，如果是则不能释放
+        if let Some(area) = data.areas.get(&addr) {
+            if area.flags.contains(VmFlags::ALLOCATING) {
                 return;
             }
         }
+        let area = data.areas.remove(&addr);
+        if area.is_some() {
+            // 同时从地址空间跟踪中移除
+            data.addr_space.remove(addr as usize);
+        }
+        area
+    };
+
+    if let Some(area) = area {
+        unsafe { __vfree(addr, &area); }
     }
 }
 
@@ -222,78 +207,111 @@ fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
     // 计算需要的页数
     let size = page_align_up(size as u64);
     let nr_pages = (size / PAGE_SIZE) as u32;
-    
-    unsafe {
-        let order = crate::mm::page::zone::get_order((size as u64 + PAGE_SIZE - 1) / PAGE_SIZE);
-        // 找一个空闲的 VmStruct
-        let mut area: Option<&mut VmStruct> = None;
-        for i in 0..MAX_VMALLOC_AREAS {
-            if !VMALLOC_AREAS[i].flags.contains(VmFlags::ALLOC) {
-                area = Some(&mut VMALLOC_AREAS[i]);
-                break;
-            }
-        }
-        
-        let area = match area {
-            Some(a) => a,
+
+    // 分配虚拟地址空间并注册区域 (持有锁)
+    let vaddr = {
+        let mut data = VMALLOC_DATA.lock();
+
+        // 使用 MapleTree 间隙搜索分配虚拟地址
+        // 每个区域之间留一个 guard page
+        let alloc_size = size + PAGE_SIZE;
+        let vaddr = match data.addr_space.find_gap(
+            alloc_size as usize,
+            VMALLOC_START as usize,
+            VMALLOC_END as usize,
+        ) {
+            Some(addr) => addr as u64,
             None => return ptr::null_mut(),
         };
-        
-        // 分配虚拟地址空间
-        let vaddr = allocate_vm_area(size);
-        if vaddr == 0 {
+
+        // 注册到地址空间跟踪
+        if data.addr_space.insert(
+            vaddr as usize,
+            (vaddr + alloc_size) as usize,
+            (),
+        ).is_err() {
             return ptr::null_mut();
         }
-        
-        // 初始化 VmStruct
-        area.init(vaddr, size, Some(Location::caller()));
-        area.nr_pages = nr_pages;
-        
-        // 分配物理页并映射
-        // 简化实现：逐页分配和映射
+
+        // 注册到区域 RbTree
+        let area = VmArea {
+            size,
+            flags: VmFlags::new(VmFlags::ALLOC | VmFlags::INUSE | VmFlags::ALLOCATING),
+            nr_pages,
+            caller: Some(Location::caller()),
+        };
+        data.areas.insert(vaddr, area);
+
+        vaddr
+    };
+    // 锁已释放
+
+    // 分配物理页并映射 (不持有 VMALLOC_DATA 锁)
+    unsafe {
         for i in 0..nr_pages {
             let page = match alloc_page(gfp) {
                 Some(p) => p,
                 None => {
-                    // 分配失败，释放已分配的页
-                    __vfree(area);
+                    // 分配失败，释放已映射的页
+                    cleanup_partial(vaddr, i, nr_pages);
                     return ptr::null_mut();
                 }
             };
-            
+
             let phys = page_to_pfn(page) * PAGE_SIZE;
             let virt = vaddr + (i as u64) * PAGE_SIZE;
-            
+
             // 映射页面
             if !map_vmalloc_page(virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL) {
                 // 映射失败
                 free_page(page);
-                __vfree(area);
+                cleanup_partial(vaddr, i, nr_pages);
                 return ptr::null_mut();
             }
         }
-        
-        VMALLOC_AREA_COUNT.fetch_add(1, Ordering::Relaxed);
-        
-        vaddr as *mut u8
     }
+
+    // 映射完成，清除 ALLOCATING 标志
+    {
+        let mut data = VMALLOC_DATA.lock();
+        if let Some(area) = data.areas.get_mut(&vaddr) {
+            area.flags.clear(VmFlags::ALLOCATING);
+        }
+    }
+
+    vaddr as *mut u8
 }
 
-/// 内部释放函数
-unsafe fn __vfree(area: &mut VmStruct) {
-    if !area.flags.contains(VmFlags::INUSE) {
-        return;
+/// 清理部分分配 (分配失败时)
+unsafe fn cleanup_partial(vaddr: u64, mapped_pages: u32, _total_pages: u32) {
+    // 取消已映射的页并释放
+    for j in 0..mapped_pages {
+        let virt = vaddr + (j as u64) * PAGE_SIZE;
+        if let Some(phys) = get_vmalloc_phys(virt) {
+            unmap_vmalloc_page(virt);
+            let pfn = phys / PAGE_SIZE;
+            let page = pfn_to_page(pfn);
+            free_page(page);
+        }
     }
-    
+
+    // 从跟踪结构中移除
+    let mut data = VMALLOC_DATA.lock();
+    data.areas.remove(&vaddr);
+    data.addr_space.remove(vaddr as usize);
+}
+
+/// 内部释放函数 (在锁外调用，area 已从树中移除)
+unsafe fn __vfree(addr: u64, area: &VmArea) {
     // 取消映射并释放物理页
     for i in 0..area.nr_pages {
-        let virt = area.addr + (i as u64) * PAGE_SIZE;
-        
+        let virt = addr + (i as u64) * PAGE_SIZE;
+
         // 获取物理地址
         if let Some(phys) = get_vmalloc_phys(virt) {
             // 取消映射
             unmap_vmalloc_page(virt);
-            
+
             // 释放物理页 (仅当不是 IO 映射时)
             if !area.flags.contains(VmFlags::IOREMAP) {
                 let pfn = phys / PAGE_SIZE;
@@ -302,33 +320,11 @@ unsafe fn __vfree(area: &mut VmStruct) {
             }
         }
     }
-    
-    // 清理 VmStruct
-    area.flags = VmFlags::empty();
-    area.addr = 0;
-    area.size = 0;
-    area.nr_pages = 0;
-    
-    VMALLOC_AREA_COUNT.fetch_sub(1, Ordering::Relaxed);
 }
 
 // ============================================================================
 // 辅助函数
 // ============================================================================
-
-/// 分配虚拟地址空间
-fn allocate_vm_area(size: u64) -> u64 {
-    // 简单实现：线性分配
-    let addr = VMALLOC_NEXT_FREE.fetch_add(size + PAGE_SIZE, Ordering::SeqCst);
-    
-    if addr + size > VMALLOC_END {
-        // 超出范围，回滚
-        VMALLOC_NEXT_FREE.fetch_sub(size + PAGE_SIZE, Ordering::SeqCst);
-        return 0;
-    }
-    
-    addr
-}
 
 /// 映射 vmalloc 页面
 fn map_vmalloc_page(virt: u64, phys: u64, flags: u64) -> bool {
@@ -336,13 +332,40 @@ fn map_vmalloc_page(virt: u64, phys: u64, flags: u64) -> bool {
         Some(s) => s,
         None => return false,
     };
-    
+
     if state.page_table_mgr.is_null() {
         crate::kprintln!("map_vmalloc_page: page_table_mgr is null");
         return false;
     }
-    
-    unsafe { (*state.page_table_mgr).map_page(virt, phys, flags) }
+
+    unsafe {
+        let pt_mgr = &mut *state.page_table_mgr;
+
+        // 验证 PML4 与当前 CR3 一致
+        let cr3: u64;
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nostack, preserves_flags));
+        let cr3_phys = cr3 & 0x000F_FFFF_FFFF_F000;
+        if pt_mgr.pml4_phys() != cr3_phys {
+            crate::kprintln!(
+                "map_vmalloc_page: PML4 mismatch! stored={:#x} cr3={:#x}",
+                pt_mgr.pml4_phys(), cr3_phys
+            );
+            return false;
+        }
+
+        let ok = pt_mgr.map_page(virt, phys, flags);
+        if ok {
+            // 验证映射是否生效
+            if pt_mgr.translate_addr(virt).is_none() {
+                crate::kprintln!(
+                    "map_vmalloc_page: mapping verification FAILED virt={:#x} phys={:#x}",
+                    virt, phys
+                );
+                return false;
+            }
+        }
+        ok
+    }
 }
 
 /// 取消映射 vmalloc 页面
@@ -351,14 +374,13 @@ fn unmap_vmalloc_page(virt: u64) {
         Some(s) => s,
         None => return,
     };
-    
+
     if state.page_table_mgr.is_null() {
         return;
     }
-    
+
     // 使用页表管理器取消映射
     unsafe { (*state.page_table_mgr).unmap_page(virt); }
-    // let _ = virt;
 }
 
 /// 获取 vmalloc 虚拟地址对应的物理地址
@@ -367,11 +389,11 @@ fn get_vmalloc_phys(virt: u64) -> Option<u64> {
         Some(s) => s,
         None => return None,
     };
-    
+
     if state.page_table_mgr.is_null() {
         return None;
     }
-    
+
     unsafe { (*state.page_table_mgr).translate_addr(virt) }
 }
 
@@ -391,72 +413,77 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
     if size == 0 {
         return ptr::null_mut();
     }
-    
+
     // 对齐到页边界
     let offset = phys_addr & (PAGE_SIZE - 1);
     let phys_base = phys_addr & !(PAGE_SIZE - 1);
     let page_align_size = (size as u64 + offset + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
     let nr_pages = (page_align_size / PAGE_SIZE) as u32;
-    
-    // 分配 vmalloc 区域 (但不分配物理页)
-    let vm_ptr = unsafe {
-        // 找一个空闲的 VmStruct
-        let mut area_ptr: *mut VmStruct = ptr::null_mut();
-        for i in 0..MAX_VMALLOC_AREAS {
-            if !VMALLOC_AREAS[i].flags.contains(VmFlags::ALLOC) {
-                area_ptr = &mut VMALLOC_AREAS[i];
-                break;
+
+    // 分配虚拟地址空间并注册区域 (持有锁)
+    let vaddr = {
+        let mut data = VMALLOC_DATA.lock();
+
+        let alloc_size = page_align_size + PAGE_SIZE; // guard page
+        let vaddr = match data.addr_space.find_gap(
+            alloc_size as usize,
+            VMALLOC_START as usize,
+            VMALLOC_END as usize,
+        ) {
+            Some(addr) => addr as u64,
+            None => {
+                crate::kprintln!("ioremap: find_gap failed");
+                return ptr::null_mut();
             }
-        }
-        
-        if area_ptr.is_null() {
-            crate::kprintln!("ioremap: No free VmStruct");
+        };
+
+        if data.addr_space.insert(
+            vaddr as usize,
+            (vaddr + alloc_size) as usize,
+            (),
+        ).is_err() {
+            crate::kprintln!("ioremap: addr_space insert failed");
             return ptr::null_mut();
         }
-        
-        let area = &mut *area_ptr;
-        
-        // 分配虚拟地址空间
-        let vaddr = allocate_vm_area(page_align_size);
-        if vaddr == 0 {
-            crate::kprintln!("ioremap: allocate_vm_area failed");
-            return ptr::null_mut();
-        }
-        
-        // 初始化 VmStruct
-        area.init(vaddr, page_align_size, Some(Location::caller()));
-        area.nr_pages = nr_pages;
-        area.flags.set(VmFlags::IOREMAP);
-        
-        VMALLOC_AREA_COUNT.fetch_add(1, Ordering::Relaxed);
-        
-        vaddr as *mut u8
+
+        let mut flags = VmFlags::new(VmFlags::ALLOC | VmFlags::INUSE);
+        flags.set(VmFlags::IOREMAP);
+
+        let area = VmArea {
+            size: page_align_size,
+            flags,
+            nr_pages,
+            caller: Some(Location::caller()),
+        };
+        data.areas.insert(vaddr, area);
+
+        vaddr
     };
-    
-    if vm_ptr.is_null() {
-        return ptr::null_mut();
-    }
-    
-    let vm_start = vm_ptr as u64;
-    
-    // 映射每一页
+    // 锁已释放
+
+    // 映射每一页 (不持有 VMALLOC_DATA 锁)
     for i in 0..(page_align_size / PAGE_SIZE) {
         let phys = phys_base + i * PAGE_SIZE;
-        let virt = vm_start + i * PAGE_SIZE;
-        
+        let virt = vaddr + i * PAGE_SIZE;
+
         if !map_vmalloc_page(virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NO_CACHE) {
             crate::kprintln!("ioremap: map_vmalloc_page failed at virt={:#x} phys={:#x}", virt, phys);
-            vfree(vm_ptr);
+            vfree(vaddr as *mut u8);
             return ptr::null_mut();
         }
     }
-    
-    unsafe { vm_ptr.add(offset as usize) }
+
+    unsafe { (vaddr as *mut u8).add(offset as usize) }
 }
 
 /// 取消 IO 内存映射
 pub fn iounmap(addr: *mut u8) {
-    vfree(addr);
+    if addr.is_null() {
+        return;
+    }
+    // ioremap 返回 vaddr + offset，需要页对齐后再查找
+    let aligned = ((addr as u64) & !(PAGE_SIZE - 1)) as *mut u8;
+    vfree(aligned);
 }
 
 // ============================================================================
@@ -475,48 +502,40 @@ pub struct VmallocStats {
 
 /// 获取 vmalloc 统计信息
 pub fn vmalloc_stats() -> VmallocStats {
+    let data = VMALLOC_DATA.lock();
     let mut stats = VmallocStats {
-        nr_areas: VMALLOC_AREA_COUNT.load(Ordering::Relaxed),
+        nr_areas: data.areas.len() as u64,
         total_vm: 0,
         total_phys: 0,
     };
-    
-    unsafe {
-        for i in 0..MAX_VMALLOC_AREAS {
-            let area = &VMALLOC_AREAS[i];
-            if area.flags.contains(VmFlags::INUSE) {
-                stats.total_vm += area.size;
-                stats.total_phys += (area.nr_pages as u64) * PAGE_SIZE;
-            }
-        }
+
+    for (_, area) in data.areas.iter() {
+        stats.total_vm += area.size;
+        stats.total_phys += (area.nr_pages as u64) * PAGE_SIZE;
     }
-    
+
     stats
 }
 
 /// 打印所有 vmalloc 分配信息 (用于检测泄漏)
 pub fn vmalloc_dump_info() {
     crate::kprintln!("=== vmalloc dump ===");
-    unsafe {
-        for i in 0..MAX_VMALLOC_AREAS {
-            let area = &VMALLOC_AREAS[i];
-            if area.flags.contains(VmFlags::INUSE) {
-                crate::kprintln!(
-                    "VA: {:#x} - {:#x} ({}) | Pages: {} | Caller: {}",
-                    area.addr,
-                    area.addr + area.size,
-                    area.size,
-                    area.nr_pages,
-                    if let Some(loc) = area.caller {
-                        loc.file()
-                    } else {
-                        "unknown"
-                    },
-                );
-                if let Some(loc) = area.caller {
-                    crate::kprintln!("    at {}:{}", loc.file(), loc.line());
-                }
-            }
+    let data = VMALLOC_DATA.lock();
+    for (&addr, area) in data.areas.iter() {
+        crate::kprintln!(
+            "VA: {:#x} - {:#x} ({}) | Pages: {} | Caller: {}",
+            addr,
+            addr + area.size,
+            area.size,
+            area.nr_pages,
+            if let Some(loc) = area.caller {
+                loc.file()
+            } else {
+                "unknown"
+            },
+        );
+        if let Some(loc) = area.caller {
+            crate::kprintln!("    at {}:{}", loc.file(), loc.line());
         }
     }
     crate::kprintln!("====================");

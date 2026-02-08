@@ -4,6 +4,7 @@ use crate::mm;
 use crate::interrupt;
 use crate::drivers::acpi::{Madt, MadtEntry, MultiprocessorWakeupMailbox};
 use core::arch::global_asm;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 // Global state for ACPI Wakeup (shared with ASM)
 #[unsafe(no_mangle)]
@@ -13,6 +14,9 @@ static mut NEXT_AP_STACK_VAL: u64 = 0;
 
 // Internal state
 static mut MAILBOX_VIRT_ADDR: u64 = 0;
+
+/// AP signals it has started and read trampoline data
+static AP_STARTED: AtomicBool = AtomicBool::new(false);
 
 global_asm!(r#"
 .section .text
@@ -76,10 +80,11 @@ pub unsafe fn prepare_smp(madt: &Madt, direct_map_base: u64) {
 
 /// Boot a specific AP
 pub fn boot_ap(apic_id: u32, direct_map_base: u64) {
-    // Allocate stack
-    let stack_pages = 4; // 16KB
-    let stack = mm::alloc_pages(stack_pages, mm::GFP_KERNEL).expect("Failed to alloc AP stack");
-    let stack_top = direct_map_base + (mm::page_to_pfn(stack) as u64) * 4096 + (stack_pages as u64) * 4096;
+    // Allocate stack: order=2 → 2^2 = 4 pages = 16KB
+    let stack_order = 2;
+    let stack_pages = 1u64 << stack_order; // 4
+    let stack = mm::alloc_pages(stack_order, mm::GFP_KERNEL).expect("Failed to alloc AP stack");
+    let stack_top = direct_map_base + (mm::page_to_pfn(stack) as u64) * 4096 + stack_pages * 4096;
 
     // Save stack for ACPI Wakeup (if used)
     unsafe {
@@ -99,28 +104,47 @@ pub fn boot_ap(apic_id: u32, direct_map_base: u64) {
 unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) {
     crate::info!("  [SMP] Booting AP {} via ACPI Wakeup...", apic_id);
     let mailbox = &mut *(MAILBOX_VIRT_ADDR as *mut MultiprocessorWakeupMailbox);
-    
+
     // 1. Setup Mailbox
-    // Use addr_of_mut! to avoid unaligned references
     core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.apic_id), apic_id);
     core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.wakeup_vector), acpi_wakeup_entry as u64);
+    // 内存屏障确保 apic_id 和 wakeup_vector 在 command 之前可见
+    core::sync::atomic::fence(Ordering::Release);
     core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.command), MultiprocessorWakeupMailbox::COMMAND_WAKEUP);
 
-    // 2. Wait for wakeup (optional, but good for debugging)
-    // The AP should clear the command bit or we can just rely on SMP timeout in main loop
+    // 2. 等待 AP 启动并读取完数据
+    let mut timeout = 0u64;
+    while !AP_STARTED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+        timeout += 1;
+        if timeout > 10_000_000 {
+            crate::warn!("  [SMP] AP {} (ACPI) start timeout!", apic_id);
+            break;
+        }
+    }
+    AP_STARTED.store(false, Ordering::Release);
 }
 
 /// Boot AP using Legacy Trampoline (SIPI)
 unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) {
     crate::info!("  [SMP] Booting AP {} via Legacy Trampoline...", apic_id);
     let pml4_phys = read_cr3();
-    
+
+    // Read BSP's GDTR and IDTR
+    let mut gdtr: [u8; 10] = [0; 10];
+    let mut idtr: [u8; 10] = [0; 10];
+    core::arch::asm!("sgdt [{}]", in(reg) gdtr.as_mut_ptr(), options(nostack, preserves_flags));
+    core::arch::asm!("sidt [{}]", in(reg) idtr.as_mut_ptr(), options(nostack, preserves_flags));
+
     // Fill trampoline data
     let data_base = (direct_map_base + trampoline::TRAMPOLINE_BASE + 4096) as *mut u8;
     *(data_base.sub(trampoline::OFFSET_ARG as usize) as *mut u64) = direct_map_base;
     *(data_base.sub(trampoline::OFFSET_CR3 as usize) as *mut u64) = pml4_phys;
     *(data_base.sub(trampoline::OFFSET_RSP as usize) as *mut u64) = stack_top;
     *(data_base.sub(trampoline::OFFSET_ENTRY as usize) as *mut u64) = ap_entry as u64;
+    // Copy GDTR and IDTR (10 bytes each)
+    core::ptr::copy_nonoverlapping(gdtr.as_ptr(), data_base.sub(trampoline::OFFSET_GDTR as usize), 10);
+    core::ptr::copy_nonoverlapping(idtr.as_ptr(), data_base.sub(trampoline::OFFSET_IDTR as usize), 10);
     
     // Send INIT-SIPI-SIPI
     interrupt::send_init_ipi(apic_id);
@@ -130,21 +154,57 @@ unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) {
     interrupt::send_sipi(apic_id, vector);
     delay_us(200);
     interrupt::send_sipi(apic_id, vector);
+
+    // Wait for AP to signal it has started (and read trampoline data)
+    let mut timeout = 0u64;
+    while !AP_STARTED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+        timeout += 1;
+        if timeout > 10_000_000 {
+            crate::warn!("  [SMP] AP {} start timeout!", apic_id);
+            // 超时也必须重置标志，但不能继续启动下一个 AP
+            // 因为当前 AP 可能稍后才读取 trampoline 数据
+            return;
+        }
+    }
+    AP_STARTED.store(false, Ordering::Release);
 }
 
 fn delay_ms(ms: u64) {
-    for _ in 0..ms * 10000 {
-        core::hint::spin_loop();
+    let freq = crate::interrupt::tsc_frequency();
+    if freq > 0 {
+        let start = crate::interrupt::rdtsc();
+        let wait = freq * ms / 1000;
+        while crate::interrupt::rdtsc() - start < wait {
+            core::hint::spin_loop();
+        }
+    } else {
+        // TSC 未校准时的回退
+        for _ in 0..ms * 10000 {
+            core::hint::spin_loop();
+        }
     }
 }
 fn delay_us(us: u64) {
-    for _ in 0..us * 10 {
-        core::hint::spin_loop();
+    let freq = crate::interrupt::tsc_frequency();
+    if freq > 0 {
+        let start = crate::interrupt::rdtsc();
+        let wait = freq * us / 1_000_000;
+        while crate::interrupt::rdtsc() - start < wait {
+            core::hint::spin_loop();
+        }
+    } else {
+        for _ in 0..us * 10 {
+            core::hint::spin_loop();
+        }
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
+    // Signal BSP that we have started and read trampoline data
+    AP_STARTED.store(true, Ordering::Release);
+
     let cpu_id = crate::smp::alloc_cpu_id();
     
     // Init AP interrupts
@@ -161,9 +221,11 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
     }
     
     crate::kprintln!("      [SMP] AP Started (CPU {})", cpu_id);
-    
+
+    // TODO: 接入调度器后改为 scheduler::run_idle()
+    // 当前使用 hlt 等待中断，比 spin_loop 节省功耗
     loop {
-        core::hint::spin_loop();
+        unsafe { core::arch::asm!("sti; hlt; cli", options(nostack, nomem)); }
     }
 }
 

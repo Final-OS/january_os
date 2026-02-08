@@ -11,6 +11,7 @@ use crate::mm::page::page::{Page, PageFlags, pfn_to_page, page_to_pfn};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::page::buddy::{alloc_pages, free_pages};
 use crate::mm::vm::layout::PAGE_SIZE;
+use crate::sync::SpinLock;
 
 // ============================================================================
 // 常量
@@ -73,6 +74,8 @@ pub struct KmemCache {
     pub allocated: AtomicUsize,
     /// 分配的 slab 数
     pub slabs: AtomicUsize,
+    /// 保护 partial 链表和 freelist 操作
+    pub lock: SpinLock<()>,
     /// 是否已初始化
     pub initialized: bool,
 }
@@ -90,6 +93,7 @@ impl KmemCache {
             partial: AtomicPtr::new(core::ptr::null_mut()),
             allocated: AtomicUsize::new(0),
             slabs: AtomicUsize::new(0),
+            lock: SpinLock::new(()),
             initialized: false,
         }
     }
@@ -149,7 +153,8 @@ impl KmemCache {
     
     /// 从 partial slab 分配
     fn alloc_from_partial(&self) -> Option<*mut u8> {
-        let mut page_ptr = self.partial.load(Ordering::Acquire);
+        let _guard = self.lock.lock();
+        let mut page_ptr = self.partial.load(Ordering::Relaxed);
         
         while !page_ptr.is_null() {
             unsafe {
@@ -179,9 +184,11 @@ impl KmemCache {
     
     /// 分配新的 slab
     fn alloc_new_slab(&self, gfp: GfpFlags) -> Option<*mut u8> {
-        // 分配页
+        // 分配页（在锁外进行，避免持锁调用 buddy）
         let page = alloc_pages(self.order, gfp)?;
-        
+
+        let _guard = self.lock.lock();
+
         unsafe {
             // 初始化 slab 元数据
             let slab_meta_size = core::mem::size_of::<SlabPage>();
@@ -207,9 +214,9 @@ impl KmemCache {
             
             // 设置页标志
             page.set_flag(PageFlags::SLAB);
-            
-            // 注意：简化实现，不使用单独的 SlabPage 结构
-            // 直接使用 Page 的字段
+
+            // 将 cache 指针存入 page.private，用于 kfree 时定位正确的 cache
+            page.set_private(self as *const KmemCache as *mut u8);
             
             // 取出第一个对象
             let first_obj = prev;
@@ -233,23 +240,14 @@ impl KmemCache {
     }
     
     /// 添加 slab 到 partial 链表
+    ///
+    /// 调用者必须持有 self.lock
     fn add_to_partial(&self, page: &mut Page) {
-        loop {
-            let old = self.partial.load(Ordering::Relaxed);
-            // 使用 page.lru 作为链表节点
-            unsafe {
-                page.lru.next = old as *mut _;
-            }
-            
-            if self.partial.compare_exchange_weak(
-                old, 
-                page as *mut _, 
-                Ordering::Release, 
-                Ordering::Relaxed
-            ).is_ok() {
-                break;
-            }
+        let old = self.partial.load(Ordering::Relaxed);
+        unsafe {
+            page.lru.next = old as *mut _;
         }
+        self.partial.store(page as *mut _, Ordering::Relaxed);
     }
     
     /// 释放对象
@@ -257,7 +255,9 @@ impl KmemCache {
         if ptr.is_null() || !self.initialized {
             return;
         }
-        
+
+        let _guard = self.lock.lock();
+
         // 找到对象所属的页
         let addr = ptr as u64;
         let pfn = addr / PAGE_SIZE;
@@ -394,25 +394,18 @@ pub unsafe fn kfree(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    
+
     // 找到对应的页
     let addr = ptr as u64;
     let pfn = addr / PAGE_SIZE;
     let page = pfn_to_page(pfn);
-    
+
     // 检查是否为 slab 页
     if page.is_slab() {
-        // 从 slab 释放
-        // 需要找到对应的 cache
-        // 简化实现：遍历所有 cache
-        for i in 0..KMALLOC_NUM_CACHES {
-            let cache = &KMALLOC_CACHES[i];
-            if cache.initialized {
-                // 检查指针是否在这个 cache 的 slab 中
-                // 简化：直接尝试释放
-                cache.free(ptr);
-                return;
-            }
+        // 通过 page.private 获取拥有此 slab 的 cache
+        let cache_ptr = page.private() as *const KmemCache;
+        if !cache_ptr.is_null() {
+            (*cache_ptr).free(ptr);
         }
     } else {
         // 大分配，释放页

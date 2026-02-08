@@ -111,9 +111,17 @@ unsafe impl GlobalAlloc for SimpleHeap {
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
         let prev = self.allocations.fetch_sub(1, Ordering::SeqCst);
         if prev == 1 {
-            // 所有分配都被释放，重置堆
-            let start = self.heap_start.load(Ordering::SeqCst);
-            self.next.store(start, Ordering::SeqCst);
+            // 所有分配都被释放，尝试重置堆
+            // 使用 CAS 避免与并发 alloc 竞争：
+            // 如果在 fetch_sub 和此处之间有新的 alloc，allocations 不再为 0
+            if self.allocations.load(Ordering::SeqCst) == 0 {
+                let start = self.heap_start.load(Ordering::SeqCst);
+                let current = self.next.load(Ordering::SeqCst);
+                // 仅在 next 未被新 alloc 推进时重置
+                let _ = self.next.compare_exchange(
+                    current, start, Ordering::SeqCst, Ordering::SeqCst
+                );
+            }
         }
     }
 }

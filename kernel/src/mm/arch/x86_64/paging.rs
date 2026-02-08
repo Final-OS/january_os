@@ -5,9 +5,9 @@
 // ============================================================================
 
 use crate::config;
-use crate::mm::buddy::alloc_page;
+use crate::mm::buddy::{alloc_page, free_page};
 use crate::mm::zone::GFP_KERNEL_ZERO;
-use crate::mm::page::page_to_pfn;
+use crate::mm::page::{page_to_pfn, pfn_to_page};
 
 // ============================================================================
 // 页表条目标志位 (x86_64 特定)
@@ -475,60 +475,69 @@ impl PageTableManager {
         let pt = &mut *(phys_to_virt(pd_entry.phys_addr()) as *mut PageTable);
         let pt_idx = pt_index(virt);
         let pt_entry = &mut pt.entries[pt_idx];
-        
+
+        // 如果已映射，先刷新旧 TLB（允许重映射，如 ioremap 场景）
+        if pt_entry.is_present() {
+            self.flush_tlb(virt);
+        }
+
         *pt_entry = PageTableEntry::new(phys, flags);
-        
+
         self.flush_tlb(virt);
         
         true
     }
 
     /// 取消映射虚拟地址
-    /// 
-    /// 成功返回 true，如果未映射返回 false
+    ///
+    /// 成功返回 true，如果未映射返回 false。
+    /// 空的中间页表页会被自动回收。
     pub unsafe fn unmap_page(&mut self, virt: u64) -> bool {
         let direct_map_offset = self.direct_map_offset;
         let pml4_phys = self.pml4_phys;
-        
+
         let phys_to_virt = |p: u64| direct_map_offset + p;
 
         let pml4 = &mut *(phys_to_virt(pml4_phys) as *mut PageTable);
         let pml4_idx = pml4_index(virt);
         let pml4_entry = &mut pml4.entries[pml4_idx];
-        
+
         if !pml4_entry.is_present() {
             return false;
         }
 
-        let pdpt = &mut *(phys_to_virt(pml4_entry.phys_addr()) as *mut PageTable);
+        let pdpt_phys = pml4_entry.phys_addr();
+        let pdpt = &mut *(phys_to_virt(pdpt_phys) as *mut PageTable);
         let pdpt_idx = pdpt_index(virt);
         let pdpt_entry = &mut pdpt.entries[pdpt_idx];
 
         if !pdpt_entry.is_present() {
             return false;
         }
-        
+
         if pdpt_entry.is_huge() {
             *pdpt_entry = PageTableEntry::empty();
             self.flush_tlb(virt);
             return true;
         }
 
-        let pd = &mut *(phys_to_virt(pdpt_entry.phys_addr()) as *mut PageTable);
+        let pd_phys = pdpt_entry.phys_addr();
+        let pd = &mut *(phys_to_virt(pd_phys) as *mut PageTable);
         let pd_idx = pd_index(virt);
         let pd_entry = &mut pd.entries[pd_idx];
 
         if !pd_entry.is_present() {
             return false;
         }
-        
+
         if pd_entry.is_huge() {
             *pd_entry = PageTableEntry::empty();
             self.flush_tlb(virt);
             return true;
         }
 
-        let pt = &mut *(phys_to_virt(pd_entry.phys_addr()) as *mut PageTable);
+        let pt_phys = pd_entry.phys_addr();
+        let pt = &mut *(phys_to_virt(pt_phys) as *mut PageTable);
         let pt_idx = pt_index(virt);
         let pt_entry = &mut pt.entries[pt_idx];
 
@@ -538,8 +547,29 @@ impl PageTableManager {
 
         *pt_entry = PageTableEntry::empty();
         self.flush_tlb(virt);
-        
+
+        // 回收空的中间页表页（PT → PD → PDPT，不回收 PML4）
+        if Self::is_table_empty(pt) {
+            *pd_entry = PageTableEntry::empty();
+            free_page(pfn_to_page(pt_phys / config::PAGE_SIZE));
+
+            if Self::is_table_empty(pd) {
+                *pdpt_entry = PageTableEntry::empty();
+                free_page(pfn_to_page(pd_phys / config::PAGE_SIZE));
+
+                if Self::is_table_empty(pdpt) {
+                    *pml4_entry = PageTableEntry::empty();
+                    free_page(pfn_to_page(pdpt_phys / config::PAGE_SIZE));
+                }
+            }
+        }
+
         true
+    }
+
+    /// 检查页表是否全空（所有条目都不存在）
+    fn is_table_empty(table: &PageTable) -> bool {
+        table.entries().iter().all(|e| !e.is_present())
     }
     
     /// 获取 PML4 中存在的条目数量

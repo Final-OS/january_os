@@ -5,6 +5,7 @@
 pub mod serial;
 pub mod cpu;
 pub mod power;
+pub mod syscall;
 
 pub use serial::{serial_init, serial_print, serial_println};
 pub use cpu::{current_stack_top, halt};

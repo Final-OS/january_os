@@ -307,7 +307,7 @@ fn execute_usb_command() {
 
 fn execute_test_command(mut args: core::str::SplitWhitespace) {
     let subcommand = args.next().unwrap_or("help");
-    
+
     match subcommand {
         "timer" => {
             info!("Testing timer (3 seconds)...");
@@ -317,10 +317,6 @@ fn execute_test_command(mut args: core::str::SplitWhitespace) {
             }
             crate::ok!("Timer test passed: {} ticks", interrupt::timer_ticks() - start);
         }
-        "help" | _ => {
-            kprintln!("Usage: test <subcommand>");
-            kprintln!("Subcommands:");
-            kprintln!("  timer     - Test timer for 3 seconds");
-        }
+        other => crate::tests::run(other),
     }
 }

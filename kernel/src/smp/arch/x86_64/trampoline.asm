@@ -3,21 +3,21 @@
 
 start:
     cli
-    
+
     ; Set segments to 0
     xor ax, ax
     mov ds, ax
     mov es, ax
     mov ss, ax
-    
+
     ; Load GDT
     lgdt [gdt_desc]
-    
+
     ; Enable PE (Protected Mode Enable)
     mov eax, cr0
     or eax, 1
     mov cr0, eax
-    
+
     ; Jump to 32-bit code
     jmp 0x8:protected_mode
 
@@ -30,28 +30,27 @@ protected_mode:
     mov ss, ax
     mov fs, ax
     mov gs, ax
-    
+
     ; Enable PAE (Physical Address Extension) - Bit 5 of CR4
     mov eax, cr4
     or eax, 1 << 5
     mov cr4, eax
-    
+
     ; Load CR3 (Page Table)
-    ; Assuming CR3 < 4GB
     mov eax, [0x9000 - 24]
     mov cr3, eax
-    
+
     ; Enable Long Mode (LME) - Bit 8 of EFER (MSR 0xC0000080)
     mov ecx, 0xC0000080
     rdmsr
     or eax, 1 << 8
     wrmsr
-    
+
     ; Enable Paging (PG) - Bit 31 of CR0
     mov eax, cr0
     or eax, 1 << 31
     mov cr0, eax
-    
+
     ; Jump to 64-bit code
     jmp 0x18:long_mode
 
@@ -64,25 +63,43 @@ long_mode:
     mov ss, ax
     mov fs, ax
     mov gs, ax
-    
-    ; Load Argument (direct_map_base)
-    mov rdi, [0x9000 - 32]
 
-    ; Load Stack Pointer
-    mov rsp, [0x9000 - 16]
-    
-    ; Load Entry Point
-    mov rax, [0x9000 - 8]
-    
+    mov rbx, 0x9000
+
+    ; Load kernel GDT (from BSP) - 10 bytes at [rbx - 64]
+    lea rcx, [rbx - 64]
+    lgdt [rcx]
+
+    ; Load kernel IDT (from BSP) - 10 bytes at [rbx - 48]
+    lea rcx, [rbx - 48]
+    lidt [rcx]
+
+    ; Enable SSE (kernel code may use SSE instructions)
+    mov rcx, cr0
+    and cx, 0xFFFB      ; Clear CR0.EM (bit 2)
+    or cx, 0x2           ; Set CR0.MP (bit 1)
+    mov cr0, rcx
+
+    mov rcx, cr4
+    or cx, 3 << 9        ; Set CR4.OSFXSR (bit 9) and CR4.OSXMMEXCPT (bit 10)
+    mov cr4, rcx
+
+    ; Load arguments
+    mov rdi, [rbx - 32]  ; ARG (direct_map_base)
+    mov rsp, [rbx - 16]  ; RSP (stack top)
+
+    ; Load entry point
+    mov rax, [rbx - 8]   ; ENTRY (ap_entry)
+
     ; Jump to kernel
-    call rax
-    
+    jmp rax
+
     ; Should not reach here
 spin:
     hlt
     jmp spin
 
-; GDT for 32-bit transition
+; Trampoline GDT (only used for 16->32->64 transition)
 align 4
 gdt_start:
     dq 0x0000000000000000 ; Null

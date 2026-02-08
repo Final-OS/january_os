@@ -58,22 +58,26 @@ pub fn alloc_pages(order: usize, gfp: GfpFlags) -> Option<&'static mut Page> {
 
 /// 从指定 Zone 分配页帧
 fn zone_alloc_pages(zone: &mut Zone, order: usize, gfp: GfpFlags) -> Option<&'static mut Page> {
+    // 获取 Zone 锁，保护 free_area 链表操作
+    // 使用 addr_of! 避免借用冲突（协议锁模式）
+    let _guard = unsafe { (*core::ptr::addr_of!(zone.lock)).lock() };
+
     // 从请求的 order 开始向上查找
     let mut current_order = order;
-    
+
     while current_order < MAX_ORDER {
         let area = &zone.free_area[current_order];
-        
+
         if !area.is_empty() {
             // 找到可用块
-            return Some(unsafe { 
-                expand_and_alloc(zone, current_order, order, gfp) 
+            return Some(unsafe {
+                expand_and_alloc(zone, current_order, order, gfp)
             });
         }
-        
+
         current_order += 1;
     }
-    
+
     None
 }
 
@@ -150,11 +154,15 @@ pub unsafe fn free_pages(page: &mut Page, order: usize) {
             return;
         }
         
+        // 检测 double-free
+        if page.refcount() == 0 {
+            crate::warn!("BUG: double-free detected for page PFN {}", page_to_pfn(page));
+            return;
+        }
+
         // 减少引用计数
-        if page.refcount() > 0 {
-            if page.put() > 0 {
-                return; // 还有其他引用
-            }
+        if page.put() > 0 {
+            return; // 还有其他引用
         }
         
         // 清除复合页标志
@@ -167,7 +175,10 @@ pub unsafe fn free_pages(page: &mut Page, order: usize) {
             Some(z) => z,
             None => return,
         };
-        
+
+        // 获取 Zone 锁，保护 free_area 链表操作
+        let _guard = (*core::ptr::addr_of!(zone.lock)).lock();
+
         // 尝试合并伙伴
         let mut current_order = order;
         

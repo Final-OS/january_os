@@ -4,7 +4,7 @@
 // 参考 Linux 内核设计，每个物理页帧都有一个对应的 Page 结构
 // ============================================================================
 
-use core::sync::atomic::{AtomicU32, AtomicI32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicI32, AtomicU8, Ordering};
 
 // ============================================================================
 // 页帧标志位
@@ -168,7 +168,7 @@ pub struct Page {
     zone_id: u8,
     
     /// Buddy order（如果在空闲链表中）
-    order: u8,
+    order: AtomicU8,
     
     /// 保留字段（对齐）
     _reserved: [u8; 2],
@@ -194,7 +194,7 @@ impl Page {
             refcount: AtomicU32::new(0),
             mapcount: AtomicI32::new(-1),
             zone_id: 0,
-            order: 0,
+            order: AtomicU8::new(0),
             _reserved: [0; 2],
             lru: ListHead::new(),
             private: core::ptr::null_mut(),
@@ -207,7 +207,7 @@ impl Page {
         self.refcount.store(0, Ordering::Relaxed);
         self.mapcount.store(-1, Ordering::Relaxed);
         self.zone_id = zone_id;
-        self.order = 0;
+        self.order.store(0, Ordering::Relaxed);
         self.lru.init();
         self.private = core::ptr::null_mut();
     }
@@ -290,12 +290,12 @@ impl Page {
     
     /// 获取 Buddy order
     pub fn order(&self) -> u8 {
-        self.order
+        self.order.load(Ordering::Relaxed)
     }
-    
+
     /// 设置 Buddy order
     pub fn set_order(&mut self, order: u8) {
-        self.order = order;
+        self.order.store(order, Ordering::Relaxed);
     }
     
     // ========== 私有数据 ==========
@@ -340,11 +340,7 @@ impl Page {
     /// 标记为 Buddy
     pub fn mark_buddy(&self, order: u8) {
         self.set_flag(PageFlags::BUDDY);
-        // order 需要可变引用，这里用 unsafe
-        unsafe {
-            let self_mut = self as *const Self as *mut Self;
-            (*self_mut).order = order;
-        }
+        self.order.store(order, Ordering::Relaxed);
     }
     
     /// 清除 Buddy 标记

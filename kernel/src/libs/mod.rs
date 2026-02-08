@@ -1,28 +1,8 @@
 //! 内核通用数据结构和库
-//!
-//! 此目录用于存放内核通用的数据结构，如：
-//! - 链表 (LinkedList)
-//! - 红黑树 (RBTree)
-//! - 并发数据结构 (RCU 等)
-//!
-//! # Rust 内置数据结构
-//!
-//! Rust 的 `alloc` 库提供了以下常用数据结构（内核中可直接使用）：
-//!
-//! - `Vec<T>`: 动态数组，最常用的连续内存容器。
-//! - `BTreeMap<K, V>`: B 树实现的有序映射。在内核中常用于替代红黑树（因为对缓存更友好）。
-//! - `BTreeSet<T>`: 基于 B 树的有序集合。
-//! - `LinkedList<T>`: 双向链表。注意：标准库的链表是非侵入式的，在内核中侵入式链表（Intrusive List）通常更高效且无需内存分配。
-//! - `BinaryHeap<T>`: 二叉堆，常用于优先队列（如定时器）。
-//! - `String` / `ToString`: 动态字符串。
-//!
-//! # 缺失的数据结构
-//!
-//! 标准库（`alloc`）不包含以下内核常用结构，需要自行实现或引入第三方库：
-//!
-//! - **侵入式链表 (Intrusive Linked List)**: 节点本身包含链接指针，避免额外的内存分配。
-//! - **红黑树 (Red-Black Tree)**: Linux 内核广泛使用（如 VMA 管理）。Rust 的 `BTreeMap` 通常是更好的替代品。
-//! - **RCU (Read-Copy-Update)**: 用于读多写少的并发场景。
-//! - **Maple Tree**: Linux 6.1 引入的高效范围索引结构（用于替代 VMA 红黑树）。
-//! - **Radix Tree / XArray**: 基数树，用于 ID 分配或页缓存索引。
-//!
+
+pub mod list;
+pub mod rbtree;
+pub mod rcu;
+pub mod lru;
+pub mod mptree;
+pub mod rdtree;

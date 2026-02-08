@@ -1,7 +1,7 @@
 use alloc::alloc::{alloc, dealloc, Layout};
 use alloc::string::String;
 use core::ptr::NonNull;
-use super::id::TaskId;
+use super::id::{TaskId, ProcessId};
 use super::arch::TaskContext;
 
 const KERNEL_STACK_SIZE: usize = 32 * 1024; // 32KB
@@ -44,26 +44,33 @@ impl Drop for KernelStack {
 
 pub struct Task {
     pub id: TaskId,
+    pub pid: ProcessId,
+    pub ppid: ProcessId,
     pub name: String,
     pub context_sp: usize,
     pub kstack: KernelStack,
     pub status: TaskStatus,
+    pub exit_code: Option<i32>,
 }
 
 impl Task {
     pub fn new(name: String, entry: usize) -> Option<Self> {
         let id = TaskId::new();
+        let pid = ProcessId::new();
         let kstack = KernelStack::new()?;
-        
+
         // Initialize context on the kernel stack
         let context_sp = TaskContext::init(entry, kstack.top());
-        
+
         Some(Self {
             id,
+            pid,
+            ppid: TaskId(0),
             name,
             context_sp,
             kstack,
             status: TaskStatus::Ready,
+            exit_code: None,
         })
     }
     

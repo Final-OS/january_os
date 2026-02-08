@@ -37,6 +37,10 @@ mod interrupt;
 mod mm;
 mod sync;
 mod smp;
+mod libs;
+mod task;
+mod syscall;
+mod tests;
 
 // 新增模块
 mod boot;
@@ -90,18 +94,23 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // 注意：如果 panic 发生在 console 初始化之前，这里可能无法输出
-    // 更好的做法是在 panic 中尝试直接写串口，或者检查 console 状态
-    // 我们尝试使用 crate::kprintln!
+    // 立即禁用中断，防止重入和重启
+    unsafe { asm!("cli", options(nostack, preserves_flags)); }
+
+    // 防止 panic 重入（嵌套 panic 直接死循环）
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static PANICKING: AtomicBool = AtomicBool::new(false);
+    if PANICKING.swap(true, Ordering::SeqCst) {
+        loop { unsafe { asm!("cli; hlt", options(nostack, nomem)); } }
+    }
+
     crate::kprintln!();
     crate::kprintln!("!!! KERNEL PANIC !!!");
     if let Some(loc) = info.location() {
         crate::kprintln!("  {}:{}", loc.file(), loc.line());
     }
-    if let Some(msg) = info.message().as_str() {
-        crate::kprintln!("  {}", msg);
-    }
+    crate::kprintln!("  {}", info.message());
     loop {
-        halt();
+        unsafe { asm!("cli; hlt", options(nostack, nomem)); }
     }
 }

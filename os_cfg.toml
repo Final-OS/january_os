@@ -15,7 +15,7 @@ target = "x86_64"
 [qemu]
 # 内存大小 (支持 M/G 后缀):
 # 例如 "256M", "1G"。过小会导致内核堆/页分配不足。
-memory = "256M"
+memory = "1G"
 # CPU 核心数:
 # 影响 SMP 启动的 CPU 数量，超过 limits.max_cpus 的部分会被忽略。
 smp = 4

@@ -4,6 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 pub struct TaskId(pub usize);
 
 pub type Pid = TaskId;
+pub type ProcessId = TaskId;
 
 impl TaskId {
     pub fn new() -> Self {

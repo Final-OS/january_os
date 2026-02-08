@@ -13,28 +13,50 @@ pub struct TaskContext {
     pub rip: u64, // Return address (pushed by call)
 }
 
+/// 内核线程退出 trampoline
+///
+/// 当内核线程的入口函数返回时，ret 会跳到这里。
+/// 在栈上布局为: [TaskContext] [kernel_thread_entry] [task_exit_trampoline]
+/// __switch 恢复后 ret → kernel_thread_entry，
+/// kernel_thread_entry ret → task_exit_trampoline。
+extern "C" fn task_exit_trampoline() -> ! {
+    // 线程入口函数返回，标记当前任务为 Exited 并让出 CPU
+    crate::task::exit_current_task(0);
+    crate::task::scheduler::schedule();
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 impl TaskContext {
     /// Create a new context for a kernel thread
-    /// 
-    /// # Arguments
-    /// * `entry` - Entry point address
-    /// * `kstack_top` - Top of the kernel stack (high address)
-    /// 
-    /// # Returns
-    /// The initial stack pointer value (sp) that points to this context
+    ///
+    /// Stack layout (high → low):
+    /// ```text
+    ///   kstack_top
+    ///   [task_exit_trampoline]   ← entry 函数 ret 时的返回地址
+    ///   [TaskContext.rip = entry] ← __switch ret 时跳转到 entry
+    ///   [TaskContext 其余字段]
+    ///   sp ← 返回值
+    /// ```
     pub fn init(entry: usize, kstack_top: usize) -> usize {
         let mut sp = kstack_top;
-        
+
+        // Push return address for when entry() returns
+        sp -= core::mem::size_of::<u64>();
+        unsafe {
+            *(sp as *mut u64) = task_exit_trampoline as u64;
+        }
+
         // Reserve space for TaskContext
         sp -= core::mem::size_of::<TaskContext>();
-        
-        // Initialize context at that location
+
         let ctx = unsafe { &mut *(sp as *mut TaskContext) };
         *ctx = TaskContext {
             rip: entry as u64,
             ..Default::default()
         };
-        
+
         sp
     }
 

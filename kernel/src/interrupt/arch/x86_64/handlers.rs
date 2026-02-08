@@ -6,6 +6,7 @@
 
 use super::idt::{InterruptFrame, InterruptFrameWithError};
 use core::arch::asm;
+use crate::mm::fault::{FaultContext, FaultResult, handle_page_fault};
 
 // ============================================================================
 // 异常处理程序
@@ -122,29 +123,41 @@ pub extern "x86-interrupt" fn page_fault_handler(
         asm!("mov {}, cr2", out(reg) fault_addr, options(nostack, preserves_flags));
     }
 
-    // 解析错误码
-    let present = error_code & 0x1 != 0;
-    let write = error_code & 0x2 != 0;
-    let user = error_code & 0x4 != 0;
-    let reserved = error_code & 0x8 != 0;
-    let instruction_fetch = error_code & 0x10 != 0;
+    // 调用 mm 模块的页错误处理
+    let direct_map = crate::config::DIRECT_MAP_OFFSET;
+    let mut ctx = FaultContext::new(fault_addr, error_code, core::ptr::null_mut(), direct_map);
+    let result = handle_page_fault(&mut ctx);
 
-    // TODO: 调用 mm 模块的页错误处理
-    // 目前先 panic
-    panic!(
-        "EXCEPTION: Page Fault (#PF)\n\
-         Fault address: {:#x}\n\
-         Error code: {:#x}\n\
-         - Page present: {}\n\
-         - Write access: {}\n\
-         - User mode: {}\n\
-         - Reserved bit: {}\n\
-         - Instruction fetch: {}\n\
-         {:#?}",
-        fault_addr, error_code,
-        present, write, user, reserved, instruction_fetch,
-        frame
-    );
+    match result {
+        FaultResult::Retry => {
+            // 页错误已处理，CPU 将重试指令
+            return;
+        }
+        _ => {
+            // 无法处理的页错误
+            let present = error_code & 0x1 != 0;
+            let write = error_code & 0x2 != 0;
+            let user = error_code & 0x4 != 0;
+            let reserved = error_code & 0x8 != 0;
+            let instruction_fetch = error_code & 0x10 != 0;
+
+            panic!(
+                "EXCEPTION: Page Fault (#PF)\n\
+                 Fault address: {:#x}\n\
+                 Error code: {:#x}\n\
+                 Result: {:?}\n\
+                 - Page present: {}\n\
+                 - Write access: {}\n\
+                 - User mode: {}\n\
+                 - Reserved bit: {}\n\
+                 - Instruction fetch: {}\n\
+                 {:#?}",
+                fault_addr, error_code, result,
+                present, write, user, reserved, instruction_fetch,
+                frame
+            );
+        }
+    }
 }
 
 /// x87 FPU 错误处理程序 (#MF)
