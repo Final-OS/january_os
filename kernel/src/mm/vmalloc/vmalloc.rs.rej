@@ -1,0 +1,60 @@
+--- kernel/src/mm/vmalloc/vmalloc.rs
++++ kernel/src/mm/vmalloc/vmalloc.rs
+@@ -197,7 +197,8 @@ pub unsafe fn vfree(addr: *mut u8) {
+     }
+ 
+     // 从地址空间中移除
+-    data.addr_space.remove(addr as usize);
++    data.ensure_addr_space();
++    data.addr_space.as_mut().unwrap().remove(addr as usize);
+ 
+     // 释放物理页面
+     for page in area.pages.iter() {
+@@ -221,7 +222,8 @@ pub fn vmalloc(size: usize) -> Option<*mut u8> {
+     let mut data = VMALLOC_DATA.lock();
+ 
+     // 在地址空间中查找空闲区域
+-    let vaddr = match data.addr_space.find_gap(
++    data.ensure_addr_space();
++    let vaddr = match data.addr_space.as_ref().unwrap().find_gap(
+         size,
+         VMALLOC_START,
+         VMALLOC_END,
+@@ -231,7 +233,7 @@ pub fn vmalloc(size: usize) -> Option<*mut u8> {
+     };
+ 
+     // 标记地址空间为已使用
+-    if data.addr_space.insert(
++    if data.addr_space.as_mut().unwrap().insert(
+         vaddr,
+         vaddr + size,
+         (),
+@@ -304,7 +306,8 @@ pub unsafe fn vunmap(vaddr: *mut u8, size: usize) {
+     }
+ 
+     // 从地址空间中移除
+-    data.addr_space.remove(vaddr as usize);
++    data.ensure_addr_space();
++    data.addr_space.as_mut().unwrap().remove(vaddr as usize);
+ 
+     // 取消映射
+     for i in 0..pages {
+@@ -431,7 +434,8 @@ pub unsafe fn vmap(pages: &[PhysAddr], prot: PageTableFlags) -> Option<*mut u8>
+     let mut data = VMALLOC_DATA.lock();
+ 
+     // 在地址空间中查找空闲区域
+-    let vaddr = match data.addr_space.find_gap(
++    data.ensure_addr_space();
++    let vaddr = match data.addr_space.as_ref().unwrap().find_gap(
+         size,
+         VMALLOC_START,
+         VMALLOC_END,
+@@ -443,7 +447,7 @@ pub unsafe fn vmap(pages: &[PhysAddr], prot: PageTableFlags) -> Option<*mut u8>
+     };
+ 
+     // 标记地址空间为已使用
+-    if data.addr_space.insert(
++    if data.addr_space.as_mut().unwrap().insert(
+         vaddr,
+         vaddr + size,
+         (),

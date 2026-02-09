@@ -283,7 +283,7 @@ pub struct Mm {
 
 impl Mm {
     /// 创建未初始化的 Mm
-    pub const fn uninit() -> Self {
+    pub fn uninit() -> Self {
         Self {
             vma_tree: MapleTree::new(),
             vma_count: 0,
@@ -556,15 +556,15 @@ pub fn mmap_flags_to_vm_flags(prot: u32, flags: u32) -> VmFlags {
 // ============================================================================
 
 /// 内核 mm (共享内核页表)
-static INIT_MM: SpinLock<Mm> = SpinLock::new(Mm::uninit());
+static INIT_MM: crate::sync::OnceCell<SpinLock<Mm>> = crate::sync::OnceCell::new();
 
 /// 获取内核 mm (加锁)
 pub fn get_init_mm() -> crate::sync::SpinLockGuard<'static, Mm> {
-    INIT_MM.lock()
+    INIT_MM.get_or_init(|| SpinLock::new(Mm::uninit())).lock()
 }
 
 /// 初始化 VMA 子系统
 pub fn init_vma() {
-    let mut mm = INIT_MM.lock();
+    let mut mm = INIT_MM.get_or_init(|| SpinLock::new(Mm::uninit())).lock();
     mm.init(0); // 内核 pgd 后续设置
 }

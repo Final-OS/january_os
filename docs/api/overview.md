@@ -55,6 +55,38 @@
 | [Once](./sync/once.md) | 一次性初始化 | `kernel/src/sync/once.rs` |
 | [Barrier](./sync/barrier.md) | 屏障 | `kernel/src/sync/barrier.rs` |
 
+### 任务管理 (task)
+
+| 模块 | 说明 | 文件 |
+|------|------|------|
+| [Task](./task/task.md) | 任务管理 | `kernel/src/task/task.rs` |
+| [Scheduler](./task/scheduler.md) | 调度器 | `kernel/src/task/scheduler/` |
+| [Processor](./task/processor.md) | Per-CPU 处理器 | `kernel/src/task/processor.rs` |
+
+### SMP 支持 (smp)
+
+| 模块 | 说明 | 文件 |
+|------|------|------|
+| [SMP](./smp/smp.md) | 多核支持 | `kernel/src/smp/` |
+
+### 系统调用 (syscall)
+
+| 模块 | 说明 | 文件 |
+|------|------|------|
+| [Syscall](./syscall/syscall.md) | 系统调用 | `kernel/src/syscall/` |
+
+### 数据结构 (libs)
+
+| 数据结构 | 说明 | 文件 |
+|---------|------|------|
+| [Overview](./libs/overview.md) | 数据结构概览 | `kernel/src/libs/` |
+| [RbTree](./libs/rbtree.md) | 红黑树 | `kernel/src/libs/rbtree/` |
+| [LRU Cache](./libs/lru.md) | LRU 缓存 | `kernel/src/libs/lru/` |
+| [RCU](./libs/rcu.md) | Read-Copy-Update | `kernel/src/libs/rcu/` |
+| [Radix Tree](./libs/rdtree.md) | 基数树 | `kernel/src/libs/rdtree/` |
+| [B-Tree](./libs/btree.md) | B-Tree | `kernel/src/libs/btree/` |
+| [Maple Tree](./libs/mptree.md) | 区间树 | `kernel/src/libs/mptree/` |
+
 ### 架构相关 (arch)
 
 | 模块 | 说明 | 文件 |

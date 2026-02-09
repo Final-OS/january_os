@@ -197,7 +197,7 @@ pub fn vfree(addr: *mut u8) {
         let area = data.areas.remove(&addr);
         if area.is_some() {
             // 同时从地址空间跟踪中移除
-            data.ensure_addr_space(); data.addr_space.as_mut().unwrap().remove(addr as usize);
+            data.addr_space.remove(addr as usize);
         }
         area
     };
@@ -221,8 +221,7 @@ fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
         // 使用 MapleTree 间隙搜索分配虚拟地址
         // 每个区域之间留一个 guard page
         let alloc_size = size + PAGE_SIZE;
-        data.ensure_addr_space();
-        let vaddr = match data.addr_space.as_mut().unwrap().find_gap(
+        let vaddr = match data.addr_space.find_gap(
             alloc_size as usize,
             VMALLOC_START as usize,
             VMALLOC_END as usize,
@@ -232,8 +231,7 @@ fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
         };
 
         // 注册到地址空间跟踪
-        data.ensure_addr_space();
-        if data.addr_space.as_mut().unwrap().insert(
+        if data.addr_space.insert(
             vaddr as usize,
             (vaddr + alloc_size) as usize,
             (),
@@ -306,7 +304,7 @@ unsafe fn cleanup_partial(vaddr: u64, mapped_pages: u32, _total_pages: u32) {
     // 从跟踪结构中移除
     let mut data = VMALLOC_DATA.lock();
     data.areas.remove(&vaddr);
-    data.ensure_addr_space(); data.addr_space.as_mut().unwrap().remove(vaddr as usize);
+    data.addr_space.remove(vaddr as usize);
 }
 
 /// 内部释放函数 (在锁外调用，area 已从树中移除)
@@ -433,8 +431,7 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
         let mut data = VMALLOC_DATA.lock();
 
         let alloc_size = page_align_size + PAGE_SIZE; // guard page
-        data.ensure_addr_space();
-        let vaddr = match data.addr_space.as_mut().unwrap().find_gap(
+        let vaddr = match data.addr_space.find_gap(
             alloc_size as usize,
             VMALLOC_START as usize,
             VMALLOC_END as usize,
@@ -446,8 +443,7 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
             }
         };
 
-        data.ensure_addr_space();
-        if data.addr_space.as_mut().unwrap().insert(
+        if data.addr_space.insert(
             vaddr as usize,
             (vaddr + alloc_size) as usize,
             (),

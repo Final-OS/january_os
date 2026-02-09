@@ -4,5 +4,6 @@ pub mod list;
 pub mod rbtree;
 pub mod rcu;
 pub mod lru;
+pub mod btree;
 pub mod mptree;
 pub mod rdtree;
