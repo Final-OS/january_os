@@ -86,7 +86,7 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
     let info = &*boot_info_ptr;
 
     // 初始化内核
-    let _acpi_config = init::init_kernel(info);
+    init::init_kernel(info);
 
     // 进入 Shell
     shell::run();

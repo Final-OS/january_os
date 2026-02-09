@@ -199,7 +199,7 @@ pub fn translation_mode() -> TranslationMode {
 /// 
 /// # Returns
 /// DMA 地址
-pub fn map(phys_addr: u64, size: usize, _dir: DmaDirection) -> DmaAddr {
+pub fn map(phys_addr: u64, size: usize, dir: DmaDirection) -> DmaAddr {
     let mgr = unsafe { &mut *core::ptr::addr_of_mut!(IOMMU_MANAGER) };
     
     if !mgr.enabled.load(Ordering::Relaxed) {
@@ -213,7 +213,7 @@ pub fn map(phys_addr: u64, size: usize, _dir: DmaDirection) -> DmaAddr {
         }
         IommuType::Swiotlb => {
             if let Some(ref mut swiotlb) = mgr.swiotlb {
-                swiotlb.map(phys_addr, size)
+                swiotlb.map(phys_addr, size, dir)
             } else {
                 DmaAddr::new(phys_addr)
             }
@@ -223,7 +223,7 @@ pub fn map(phys_addr: u64, size: usize, _dir: DmaDirection) -> DmaAddr {
 }
 
 /// 取消 DMA 映射
-pub fn unmap(dma_addr: DmaAddr, size: usize, _dir: DmaDirection) {
+pub fn unmap(dma_addr: DmaAddr, size: usize, dir: DmaDirection) {
     let mgr = unsafe { &mut *core::ptr::addr_of_mut!(IOMMU_MANAGER) };
     
     if !mgr.enabled.load(Ordering::Relaxed) {
@@ -236,7 +236,7 @@ pub fn unmap(dma_addr: DmaAddr, size: usize, _dir: DmaDirection) {
         }
         IommuType::Swiotlb => {
             if let Some(ref mut swiotlb) = mgr.swiotlb {
-                swiotlb.unmap(dma_addr, size);
+                swiotlb.unmap(dma_addr, size, dir);
             }
         }
         _ => {}
@@ -301,8 +301,10 @@ fn try_init_vtd(mgr: &mut IommuManager, direct_map_offset: u64) -> bool {
 
 /// 初始化 SWIOTLB
 fn init_swiotlb(mgr: &mut IommuManager) {
-    mgr.swiotlb = Some(Swiotlb::new(config::SWIOTLB_SIZE as usize));
+    mgr.swiotlb = Some(Swiotlb::new(config::SWIOTLB_SIZE as usize, mgr.direct_map_offset));
     mgr.iommu_type = IommuType::Swiotlb;
+    // SWIOTLB 属于软件地址翻译后端，需要走 map/unmap 路径
+    mgr.enabled.store(true, Ordering::SeqCst);
 }
 
 /// VT-d 映射

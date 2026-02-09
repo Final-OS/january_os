@@ -14,11 +14,26 @@ use crate::config;
 use crate::boot::{BootInfo, BOOTINFO_MAGIC};
 use crate::{kprintln, kprint, info, ok, warn, error};
 
+fn resolve_direct_map_offset(boot_direct_map: u64) -> u64 {
+    const KERNEL_ADDR_MIN: u64 = 0xFFFF_0000_0000_0000;
+
+    if boot_direct_map >= KERNEL_ADDR_MIN {
+        return boot_direct_map;
+    }
+
+    warn!(
+        "BootInfo direct_map_offset is invalid ({:#x}), fallback to config ({:#x})",
+        boot_direct_map,
+        config::DIRECT_MAP_OFFSET
+    );
+    config::DIRECT_MAP_OFFSET
+}
+
 /// 初始化内核各子系统
 ///
 /// # Returns
 /// 返回初始化后的 ACPI 配置（包含 CPU 数量等信息）
-pub fn init_kernel(info: &BootInfo) -> acpi::AcpiConfig {
+pub fn init_kernel(info: &BootInfo) {
     // 1. 串口初始化 (最早进行，以便输出调试信息)
     serial::init();
 
@@ -27,10 +42,10 @@ pub fn init_kernel(info: &BootInfo) -> acpi::AcpiConfig {
         panic!("Invalid BootInfo magic: {:#x}", info.magic);
     }
 
-    let direct_map = info.direct_map_offset;
+    let direct_map = resolve_direct_map_offset(info.direct_map_offset);
 
     // 3. 初始化 Framebuffer 控制台
-    init_graphics(info);
+    init_graphics(info, direct_map);
 
     // 清屏并打印 Banner
     kprint!("\x1b[2J\x1b[1;1H"); // Clear screen, move cursor to 1,1
@@ -45,7 +60,7 @@ pub fn init_kernel(info: &BootInfo) -> acpi::AcpiConfig {
     }
 
     // 4. 内存管理初始化
-    init_memory(info);
+    init_memory(info, direct_map);
 
     let kernel_stack_top = arch::current_stack_top();
 
@@ -80,12 +95,9 @@ pub fn init_kernel(info: &BootInfo) -> acpi::AcpiConfig {
     
     // 系统摘要
     print_system_summary(info, &acpi_config);
-
-    acpi_config
 }
 
-fn init_graphics(info: &BootInfo) {
-    let direct_map = info.direct_map_offset;
+fn init_graphics(info: &BootInfo, direct_map: u64) {
     let fb = &info.framebuffer;
     
     // 先用串口输出调试信息
@@ -179,14 +191,12 @@ fn detect_numa_nodes() -> ([mm::numa::NumaNodeInfo; mm::numa::MAX_NUMNODES], usi
     (nodes, node_count)
 }
 
-fn init_memory(info: &BootInfo) {
+fn init_memory(info: &BootInfo, direct_map: u64) {
     info!("Initializing Memory Management...");
     
     let mem_regions = info.memory_map_addr as *const MemoryRegion;
     let entries_count = info.memory_map_entries as usize;
     let kernel_end_phys = info.kernel_phys_addr + info.kernel_size;
-    let direct_map = info.direct_map_offset;
-    
     // 统计内存
     let mut max_phys_addr: u64 = 0;
     for i in 0..entries_count {
@@ -229,7 +239,8 @@ fn init_memory(info: &BootInfo) {
         
         // 初始化堆
         if let Some(heap_page) = mm::alloc_pages(8, mm::GFP_KERNEL) {
-            let heap_virt = direct_map + mm::page_to_pfn(heap_page) * 4096;
+            let heap_phys = mm::page_to_pfn(heap_page) * 4096;
+            let heap_virt = direct_map + heap_phys;
             mm::init_heap(heap_virt as usize, 256 * 4096);
         }
     }

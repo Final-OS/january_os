@@ -5,17 +5,37 @@
 // 用于 32 位设备访问高地址内存
 // ============================================================================
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use super::{DmaAddr, PAGE_SIZE};
+use core::sync::atomic::{AtomicUsize, Ordering};
+use super::{DmaAddr, DmaDirection, PAGE_SIZE};
 
 /// SWIOTLB 最大槽位数 (64MB / 4KB = 16384)
 const MAX_SLOTS: usize = 16384;
 
-/// 槽位状态
-#[derive(Clone, Copy, PartialEq)]
-enum SlotState {
-    Free,
-    Used,
+/// 槽位元数据（仅在起始槽位有效）
+#[derive(Clone, Copy)]
+struct SlotMeta {
+    /// 原始物理地址
+    orig_phys: u64,
+    /// 映射大小（字节）
+    size: usize,
+    /// 占用槽位数
+    slots: usize,
+    /// DMA 方向
+    dir: DmaDirection,
+    /// 是否有效
+    valid: bool,
+}
+
+impl SlotMeta {
+    const fn empty() -> Self {
+        Self {
+            orig_phys: 0,
+            size: 0,
+            slots: 0,
+            dir: DmaDirection::None,
+            valid: false,
+        }
+    }
 }
 
 /// SWIOTLB 弹跳缓冲区
@@ -28,34 +48,48 @@ pub struct Swiotlb {
     nr_slots: usize,
     /// 槽位状态 (简化：使用位图)
     slot_bitmap: [u64; MAX_SLOTS / 64],
+    /// 槽位元数据（仅起始槽位使用）
+    slot_meta: [SlotMeta; MAX_SLOTS],
     /// 已使用槽位数
     used_slots: AtomicUsize,
     /// 下一个检查位置 (简单轮询分配)
     next_slot: AtomicUsize,
+    /// 直接映射偏移
+    direct_map_offset: u64,
 }
 
 impl Swiotlb {
     /// 创建新的 SWIOTLB
-    pub fn new(size: usize) -> Self {
+    pub fn new(size: usize, direct_map_offset: u64) -> Self {
         // 分配弹跳缓冲区
-        let nr_pages = size / PAGE_SIZE as usize;
-        let nr_slots = nr_pages.min(MAX_SLOTS);
-        
+        let nr_pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
+        let requested_slots = nr_pages.min(MAX_SLOTS);
+        let alloc_size = requested_slots * PAGE_SIZE as usize;
+
         // 从低端内存分配 (< 4GB)
-        let buffer_phys = crate::mm::page::memblock::memblock_alloc_range(
-            size as u64,
-            PAGE_SIZE,
-            0,
-            0x1_0000_0000, // 4GB 以下
-        );
-        
+        let buffer_phys = if alloc_size == 0 {
+            0
+        } else {
+            crate::mm::page::memblock::memblock_alloc_range(
+                alloc_size as u64,
+                PAGE_SIZE,
+                0,
+                0x1_0000_0000, // 4GB 以下
+            )
+        };
+
+        let nr_slots = if buffer_phys == 0 { 0 } else { requested_slots };
+        let buffer_size = nr_slots * PAGE_SIZE as usize;
+
         Self {
             buffer_phys,
-            buffer_size: size,
+            buffer_size,
             nr_slots,
             slot_bitmap: [0u64; MAX_SLOTS / 64],
+            slot_meta: [SlotMeta::empty(); MAX_SLOTS],
             used_slots: AtomicUsize::new(0),
             next_slot: AtomicUsize::new(0),
+            direct_map_offset,
         }
     }
     
@@ -63,21 +97,38 @@ impl Swiotlb {
     /// 
     /// 如果物理地址 < 4GB，直接返回；
     /// 否则，从弹跳缓冲区分配空间并复制数据
-    pub fn map(&mut self, phys_addr: u64, size: usize) -> DmaAddr {
+    pub fn map(&mut self, phys_addr: u64, size: usize, dir: DmaDirection) -> DmaAddr {
         // 如果已经在 32 位地址空间内，直接使用
         if phys_addr + size as u64 <= 0x1_0000_0000 {
             return DmaAddr::new(phys_addr);
         }
-        
+
+        if self.nr_slots == 0 || self.buffer_phys == 0 {
+            return DmaAddr::new(phys_addr);
+        }
+
         // 需要使用弹跳缓冲区
         let slots_needed = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
-        
+
         if let Some(slot) = self.alloc_slots(slots_needed) {
             let dma_addr = self.buffer_phys + (slot as u64) * PAGE_SIZE;
-            
-            // 复制数据到弹跳缓冲区
-            // TODO: 实现数据复制
-            
+
+            // 记录映射元数据（仅起始槽位）
+            self.slot_meta[slot] = SlotMeta {
+                orig_phys: phys_addr,
+                size,
+                slots: slots_needed,
+                dir,
+                valid: true,
+            };
+
+            // CPU -> Device 方向需要在 map 时复制
+            if matches!(dir, DmaDirection::ToDevice | DmaDirection::Bidirectional) {
+                unsafe {
+                    self.copy_between_phys(dma_addr, phys_addr, size);
+                }
+            }
+
             DmaAddr::new(dma_addr)
         } else {
             // 分配失败，返回原地址（可能导致 DMA 错误）
@@ -86,18 +137,48 @@ impl Swiotlb {
     }
     
     /// 取消映射
-    pub fn unmap(&mut self, dma_addr: DmaAddr, size: usize) {
+    pub fn unmap(&mut self, dma_addr: DmaAddr, size: usize, dir: DmaDirection) {
         let addr = dma_addr.as_u64();
-        
+
         // 检查是否在弹跳缓冲区范围内
         if addr < self.buffer_phys || addr >= self.buffer_phys + self.buffer_size as u64 {
             return;
         }
-        
+
         let slot = ((addr - self.buffer_phys) / PAGE_SIZE) as usize;
-        let slots = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
-        
-        self.free_slots(slot, slots);
+        if slot >= self.nr_slots {
+            return;
+        }
+
+        let meta = self.slot_meta[slot];
+        if !meta.valid {
+            // 兜底：按调用者传入的 size 尝试释放
+            let slots = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
+            self.free_slots(slot, slots);
+            return;
+        }
+
+        // Device -> CPU 方向需要在 unmap 时回拷
+        let need_copy_back =
+            matches!(meta.dir, DmaDirection::FromDevice | DmaDirection::Bidirectional)
+                || matches!(dir, DmaDirection::FromDevice | DmaDirection::Bidirectional);
+
+        if need_copy_back {
+            let copy_size = core::cmp::min(meta.size, size);
+            unsafe {
+                self.copy_between_phys(meta.orig_phys, addr, copy_size);
+            }
+        }
+
+        self.free_slots(slot, meta.slots);
+
+        // 清理元数据
+        for i in 0..meta.slots {
+            let idx = slot + i;
+            if idx < self.nr_slots {
+                self.slot_meta[idx] = SlotMeta::empty();
+            }
+        }
     }
     
     /// 分配连续槽位
@@ -105,47 +186,62 @@ impl Swiotlb {
         if count == 0 || count > self.nr_slots {
             return None;
         }
-        
-        // 简单的首次适配算法
+
         let start = self.next_slot.load(Ordering::Relaxed) % self.nr_slots;
-        let mut checked = 0;
-        let mut i = start;
-        
-        while checked < self.nr_slots {
-            // 检查从 i 开始的 count 个槽位是否空闲
+
+        if let Some(slot) = self.find_contiguous_slots(start, count)
+            .or_else(|| if start > 0 { self.find_contiguous_slots(0, count) } else { None })
+        {
+            for i in 0..count {
+                self.set_slot_used(slot + i, true);
+            }
+            self.used_slots.fetch_add(count, Ordering::Relaxed);
+            self.next_slot.store((slot + count) % self.nr_slots.max(1), Ordering::Relaxed);
+            return Some(slot);
+        }
+
+        None
+    }
+
+    /// 释放槽位
+    fn free_slots(&mut self, start: usize, count: usize) {
+        if count == 0 || start >= self.nr_slots {
+            return;
+        }
+
+        let max = core::cmp::min(start + count, self.nr_slots);
+        for slot in start..max {
+            self.set_slot_used(slot, false);
+        }
+        self.used_slots.fetch_sub(max - start, Ordering::Relaxed);
+    }
+
+    /// 查找连续空闲槽位（不允许跨尾首回绕）
+    fn find_contiguous_slots(&self, start: usize, count: usize) -> Option<usize> {
+        if count == 0 || count > self.nr_slots || start >= self.nr_slots {
+            return None;
+        }
+
+        let last_start = self.nr_slots - count;
+        if start > last_start {
+            return None;
+        }
+
+        for base in start..=last_start {
             let mut all_free = true;
-            for j in 0..count {
-                let slot = (i + j) % self.nr_slots;
-                if self.is_slot_used(slot) {
+            for i in 0..count {
+                if self.is_slot_used(base + i) {
                     all_free = false;
-                    i = (slot + 1) % self.nr_slots;
-                    checked += j + 1;
                     break;
                 }
             }
-            
+
             if all_free {
-                // 标记为已使用
-                for j in 0..count {
-                    let slot = (i + j) % self.nr_slots;
-                    self.set_slot_used(slot, true);
-                }
-                self.used_slots.fetch_add(count, Ordering::Relaxed);
-                self.next_slot.store((i + count) % self.nr_slots, Ordering::Relaxed);
-                return Some(i);
+                return Some(base);
             }
         }
-        
+
         None
-    }
-    
-    /// 释放槽位
-    fn free_slots(&mut self, start: usize, count: usize) {
-        for i in 0..count {
-            let slot = (start + i) % self.nr_slots;
-            self.set_slot_used(slot, false);
-        }
-        self.used_slots.fetch_sub(count, Ordering::Relaxed);
     }
     
     /// 检查槽位是否已使用
@@ -164,5 +260,23 @@ impl Swiotlb {
         } else {
             self.slot_bitmap[word] &= !(1 << bit);
         }
+    }
+
+    /// 物理地址转虚拟地址（直接映射）
+    #[inline]
+    fn phys_to_virt(&self, phys: u64) -> u64 {
+        phys + self.direct_map_offset
+    }
+
+    /// 物理地址间复制（通过直接映射访问）
+    unsafe fn copy_between_phys(&self, dst_phys: u64, src_phys: u64, size: usize) {
+        let dst = self.phys_to_virt(dst_phys) as *mut u8;
+        let src = self.phys_to_virt(src_phys) as *const u8;
+        core::ptr::copy_nonoverlapping(src, dst, size);
+    }
+
+    /// 已使用槽位数（用于调试/测试）
+    pub fn used_slots(&self) -> usize {
+        self.used_slots.load(Ordering::Relaxed)
     }
 }

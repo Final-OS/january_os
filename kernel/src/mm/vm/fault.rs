@@ -362,12 +362,7 @@ fn do_cow_fault(ctx: &FaultContext, address: u64) -> FaultResult {
         let pte_flags = ctx.vma_flags.to_pte_flags();
         pt_mgr.map_page(address, new_phys, pte_flags);
 
-        // 4. 减少旧页引用
-        let old_page = pfn_to_page(old_phys / PAGE_SIZE);
-        old_page.dec_mapcount();
-        if old_page.put() == 0 {
-            free_page(old_page);
-        }
+        // 4. 旧页引用释放由 map_page 的重映射语义统一处理
 
         // 新页已映射，增加 mapcount
         new_page.inc_mapcount();

@@ -7,7 +7,7 @@
 use crate::config;
 use crate::mm::buddy::{alloc_page, free_page};
 use crate::mm::zone::GFP_KERNEL_ZERO;
-use crate::mm::page::{page_to_pfn, pfn_to_page};
+use crate::mm::page::{page_to_pfn, pfn_to_page, MAX_PFN};
 
 // ============================================================================
 // 页表条目标志位 (x86_64 特定)
@@ -401,6 +401,32 @@ impl PageTableManager {
         }
     }
 
+    /// 释放被重映射替换掉的旧页（仅针对参与 mapcount 的托管页）
+    unsafe fn release_replaced_page(&self, old_phys: u64) {
+        let pfn = old_phys / config::PAGE_SIZE;
+
+        if pfn >= MAX_PFN {
+            return;
+        }
+
+        let old_page = pfn_to_page(pfn);
+
+        // mapcount < 0 通常表示未纳入用户映射计数（例如内核 vmalloc 路径）
+        if old_page.mapcount() < 0 {
+            return;
+        }
+
+        old_page.dec_mapcount();
+
+        if old_page.refcount() == 0 {
+            return;
+        }
+
+        if old_page.put() == 0 {
+            free_page(old_page);
+        }
+    }
+
     /// 映射虚拟地址到物理地址
     /// 
     /// # Safety
@@ -476,8 +502,16 @@ impl PageTableManager {
         let pt_idx = pt_index(virt);
         let pt_entry = &mut pt.entries[pt_idx];
 
-        // 如果已映射，先刷新旧 TLB（允许重映射，如 ioremap 场景）
+        // 如果已映射：处理重映射语义
         if pt_entry.is_present() {
+            let old_phys = pt_entry.phys_addr();
+            let new_phys = phys & PTE_ADDR_MASK;
+
+            // 仅在目标物理页变化时释放旧映射页
+            if old_phys != new_phys {
+                self.release_replaced_page(old_phys);
+            }
+
             self.flush_tlb(virt);
         }
 

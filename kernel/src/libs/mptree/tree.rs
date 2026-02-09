@@ -4,6 +4,7 @@
 
 use alloc::vec::Vec;
 use core::fmt;
+use core::marker::PhantomData;
 
 use crate::libs::btree::BTree;
 
@@ -317,13 +318,13 @@ impl<V> MapleTree<V> {
 
     /// 获取指定点的可变引用
     pub fn get_mut(&mut self, point: usize) -> Option<&mut V> {
-        // 找到包含该点的区间
-        for (_, entry) in self.tree.iter_mut() {
-            if point >= entry.start && point < entry.end {
-                return Some(&mut entry.value);
-            }
-        }
-        None
+        let start = self
+            .tree
+            .iter()
+            .find(|(_, entry)| point >= entry.start && point < entry.end)
+            .map(|(key, _)| *key)?;
+
+        self.tree.get_mut(&start).map(|entry| &mut entry.value)
     }
 
     /// 获取指定起始位置的区间的可变引用
@@ -363,7 +364,13 @@ impl<V> MapleTree<V> {
 
     /// 获取所有值的可变引用
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> + '_ {
-        self.tree.values_mut().map(|e| &mut e.value)
+        let starts: Vec<usize> = self.starts().collect();
+        MapleValuesMut {
+            starts,
+            index: 0,
+            tree: self as *mut _,
+            _marker: PhantomData,
+        }
     }
 
     /// 检查是否包含指定点
@@ -405,6 +412,31 @@ impl<V> MapleTree<V> {
     /// 检查是否有任何区间与指定范围相交
     pub fn has_intersection(&self, start: usize, end: usize) -> bool {
         self.tree.iter().any(|(_, e)| !(end <= e.start || start >= e.end))
+    }
+}
+
+pub struct MapleValuesMut<'a, V> {
+    starts: Vec<usize>,
+    index: usize,
+    tree: *mut MapleTree<V>,
+    _marker: PhantomData<&'a mut MapleTree<V>>,
+}
+
+impl<'a, V> Iterator for MapleValuesMut<'a, V> {
+    type Item = &'a mut V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.index < self.starts.len() {
+            let start = self.starts[self.index];
+            self.index += 1;
+
+            let tree = unsafe { &mut *self.tree };
+            if let Some((_, value)) = tree.get_mut_at(start) {
+                return Some(value);
+            }
+        }
+
+        None
     }
 }
 

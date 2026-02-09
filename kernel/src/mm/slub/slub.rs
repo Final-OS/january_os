@@ -10,7 +10,7 @@ use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use crate::mm::page::page::{Page, PageFlags, pfn_to_page, page_to_pfn};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::page::buddy::{alloc_pages, free_pages};
-use crate::mm::vm::layout::PAGE_SIZE;
+use crate::mm::vm::layout::{DIRECT_MAP_OFFSET, PAGE_SIZE};
 use crate::sync::SpinLock;
 
 // ============================================================================
@@ -190,20 +190,12 @@ impl KmemCache {
         let _guard = self.lock.lock();
 
         unsafe {
-            // 初始化 slab 元数据
-            let slab_meta_size = core::mem::size_of::<SlabPage>();
-            let slab = page as *mut Page as *mut u8;
-            
-            // 将 SlabPage 存储在页的开头（或单独分配）
-            // 简化实现：使用 Page.private 指向单独分配的元数据
-            // 这里我们在页的末尾保留空间给元数据
-            
             let pfn = page_to_pfn(page);
-            let page_addr = pfn * PAGE_SIZE;
-            let slab_size = PAGE_SIZE * (1 << self.order) as u64;
-            
+            let page_phys = pfn * PAGE_SIZE;
+            let page_virt = phys_to_virt(page_phys);
+
             // 初始化空闲链表
-            let obj_start = page_addr as *mut u8;
+            let obj_start = page_virt as *mut u8;
             let mut prev: *mut FreePointer = core::ptr::null_mut();
             
             for i in (0..self.objects_per_slab).rev() {
@@ -260,7 +252,11 @@ impl KmemCache {
 
         // 找到对象所属的页
         let addr = ptr as u64;
-        let pfn = addr / PAGE_SIZE;
+        let phys = match virt_to_phys(addr) {
+            Some(p) => p,
+            None => return,
+        };
+        let pfn = phys / PAGE_SIZE;
         let page = pfn_to_page(pfn);
         
         // 将对象添加回 freelist
@@ -366,7 +362,8 @@ pub fn kmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
         let order = crate::mm::page::zone::get_order((size as u64 + PAGE_SIZE - 1) / PAGE_SIZE);
         if let Some(page) = alloc_pages(order, gfp) {
             let pfn = page_to_pfn(page);
-            return (pfn * PAGE_SIZE) as *mut u8;
+            let phys = pfn * PAGE_SIZE;
+            return phys_to_virt(phys) as *mut u8;
         }
         return core::ptr::null_mut();
     }
@@ -397,7 +394,11 @@ pub unsafe fn kfree(ptr: *mut u8) {
 
     // 找到对应的页
     let addr = ptr as u64;
-    let pfn = addr / PAGE_SIZE;
+    let phys = match virt_to_phys(addr) {
+        Some(p) => p,
+        None => return,
+    };
+    let pfn = phys / PAGE_SIZE;
     let page = pfn_to_page(pfn);
 
     // 检查是否为 slab 页
@@ -417,6 +418,20 @@ pub unsafe fn kfree(ptr: *mut u8) {
 // ============================================================================
 // 辅助函数
 // ============================================================================
+
+#[inline]
+const fn phys_to_virt(phys: u64) -> u64 {
+    phys + DIRECT_MAP_OFFSET
+}
+
+#[inline]
+const fn virt_to_phys(virt: u64) -> Option<u64> {
+    if virt >= DIRECT_MAP_OFFSET {
+        Some(virt - DIRECT_MAP_OFFSET)
+    } else {
+        None
+    }
+}
 
 /// 向上对齐
 const fn align_up(value: usize, align: usize) -> usize {

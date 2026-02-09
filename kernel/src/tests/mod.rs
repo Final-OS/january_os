@@ -4,6 +4,7 @@
 
 mod task_test;
 mod libs_test;
+mod mm_test;
 
 use crate::{kprintln, ok, error};
 use alloc::vec::Vec;
@@ -19,9 +20,14 @@ pub fn run(name: &str) {
             let filter = parts.get(1).copied();
             libs_test::run_with_filter(filter);
         }
+        Some("mm") => {
+            let filter = parts.get(1).copied();
+            mm_test::run_with_filter(filter);
+        }
         Some("all") => {
             task_test::run();
             libs_test::run();
+            mm_test::run();
         }
         Some("help") | _ => {
             kprintln!("Usage: test <subcommand>");
@@ -29,6 +35,9 @@ pub fn run(name: &str) {
             kprintln!("  task           - Kernel thread context switch");
             kprintln!("  libs [name]    - Data structure tests");
             kprintln!("                   Available: rbtree, lru, rdtree, btree, mptree, rcu");
+            kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator");
+            kprintln!("  mm [name]      - Memory management tests");
+            kprintln!("                   Available: swiotlb, slub, buddy, pcp");
             kprintln!("  timer          - Timer tick test");
             kprintln!("  all            - Run all tests");
         }

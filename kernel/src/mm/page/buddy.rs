@@ -7,6 +7,7 @@
 use super::page::{Page, PageFlags, pfn_to_page, page_to_pfn};
 use super::zone::{Zone, GfpFlags, MAX_ORDER, get_zone, gfp_to_zone_list};
 use super::zone::{pages_per_order, get_buddy_pfn};
+use super::pcp::{pcp_alloc_page, pcp_free_page, pcp_initialized};
 use crate::mm::vm::layout::{PAGE_SIZE, DIRECT_MAP_OFFSET};
 
 // ============================================================================
@@ -122,6 +123,7 @@ unsafe fn expand_and_alloc(
         // 设置分配的页
         let page = &mut *page;
         page.set_count_one();
+        page.set_order(low_order as u8);
         page.clear_flag(PageFlags::BUDDY);
         
         // 如果请求清零
@@ -169,6 +171,12 @@ pub unsafe fn free_pages(page: &mut Page, order: usize) {
         if page.is_compound() {
             destroy_compound_page(page, order);
         }
+
+        // order-0 优先回收到 PCP，降低 Zone 锁竞争
+        if order == 0 && pcp_initialized() {
+            pcp_free_page(page);
+            return;
+        }
         
         let mut pfn = page_to_pfn(page);
         let zone = match super::zone::pfn_to_zone(pfn) {
@@ -214,6 +222,13 @@ pub unsafe fn free_pages(page: &mut Page, order: usize) {
 /// 分配单个页帧
 #[inline]
 pub fn alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
+    if pcp_initialized() {
+        if let Some(page) = pcp_alloc_page(gfp) {
+            page.set_count_one();
+            return Some(page);
+        }
+    }
+
     alloc_pages(0, gfp)
 }
 
