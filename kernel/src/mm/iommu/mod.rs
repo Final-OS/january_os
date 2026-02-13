@@ -9,6 +9,7 @@ mod swiotlb;
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::config;
+use crate::sync::SpinLock;
 
 pub use vtd::{VtdUnit, VtdCapability};
 pub use swiotlb::Swiotlb;
@@ -87,7 +88,8 @@ impl DmaAddr {
 // ============================================================================
 
 /// IOMMU 管理器
-static mut IOMMU_MANAGER: IommuManager = IommuManager::new();
+static IOMMU_MANAGER: SpinLock<IommuManager> =
+    SpinLock::with_name(IommuManager::new(), "IommuManager");
 
 /// IOMMU 管理器
 pub struct IommuManager {
@@ -133,7 +135,7 @@ impl IommuManager {
 
 /// 初始化 IOMMU 子系统
 pub fn init(direct_map_offset: u64) {
-    let mgr = unsafe { &mut *core::ptr::addr_of_mut!(IOMMU_MANAGER) };
+    let mut mgr = IOMMU_MANAGER.lock();
     
     if mgr.initialized.load(Ordering::Relaxed) {
         return;
@@ -151,13 +153,13 @@ pub fn init(direct_map_offset: u64) {
     // 检查配置
     if !config::IOMMU_ENABLED && !config::IOMMU_AUTO_DETECT {
         // IOMMU 禁用，使用 SWIOTLB
-        init_swiotlb(mgr);
+        init_swiotlb(&mut mgr);
         mgr.initialized.store(true, Ordering::SeqCst);
         return;
     }
     
     // 尝试初始化 Intel VT-d
-    if try_init_vtd(mgr, direct_map_offset) {
+    if try_init_vtd(&mut mgr, direct_map_offset) {
         mgr.iommu_type = IommuType::IntelVtd;
         mgr.enabled.store(true, Ordering::SeqCst);
         mgr.initialized.store(true, Ordering::SeqCst);
@@ -168,25 +170,25 @@ pub fn init(direct_map_offset: u64) {
     // if try_init_amdvi(mgr) { ... }
     
     // 无硬件 IOMMU，使用 SWIOTLB
-    init_swiotlb(mgr);
+    init_swiotlb(&mut mgr);
     mgr.initialized.store(true, Ordering::SeqCst);
 }
 
 /// 检查 IOMMU 是否启用
 pub fn enabled() -> bool {
-    let mgr = unsafe { &*core::ptr::addr_of!(IOMMU_MANAGER) };
+    let mgr = IOMMU_MANAGER.lock();
     mgr.enabled.load(Ordering::Relaxed)
 }
 
 /// 获取 IOMMU 类型
 pub fn iommu_type() -> IommuType {
-    let mgr = unsafe { &*core::ptr::addr_of!(IOMMU_MANAGER) };
+    let mgr = IOMMU_MANAGER.lock();
     mgr.iommu_type
 }
 
 /// 获取翻译模式
 pub fn translation_mode() -> TranslationMode {
-    let mgr = unsafe { &*core::ptr::addr_of!(IOMMU_MANAGER) };
+    let mgr = IOMMU_MANAGER.lock();
     mgr.translation_mode
 }
 
@@ -200,7 +202,7 @@ pub fn translation_mode() -> TranslationMode {
 /// # Returns
 /// DMA 地址
 pub fn map(phys_addr: u64, size: usize, dir: DmaDirection) -> DmaAddr {
-    let mgr = unsafe { &mut *core::ptr::addr_of_mut!(IOMMU_MANAGER) };
+    let mut mgr = IOMMU_MANAGER.lock();
     
     if !mgr.enabled.load(Ordering::Relaxed) {
         // 无 IOMMU，直接返回物理地址
@@ -209,7 +211,7 @@ pub fn map(phys_addr: u64, size: usize, dir: DmaDirection) -> DmaAddr {
     
     match mgr.iommu_type {
         IommuType::IntelVtd => {
-            vtd_map(mgr, phys_addr, size)
+            vtd_map(&mut mgr, phys_addr, size)
         }
         IommuType::Swiotlb => {
             if let Some(ref mut swiotlb) = mgr.swiotlb {
@@ -224,7 +226,7 @@ pub fn map(phys_addr: u64, size: usize, dir: DmaDirection) -> DmaAddr {
 
 /// 取消 DMA 映射
 pub fn unmap(dma_addr: DmaAddr, size: usize, dir: DmaDirection) {
-    let mgr = unsafe { &mut *core::ptr::addr_of_mut!(IOMMU_MANAGER) };
+    let mut mgr = IOMMU_MANAGER.lock();
     
     if !mgr.enabled.load(Ordering::Relaxed) {
         return;
@@ -232,7 +234,7 @@ pub fn unmap(dma_addr: DmaAddr, size: usize, dir: DmaDirection) {
     
     match mgr.iommu_type {
         IommuType::IntelVtd => {
-            vtd_unmap(mgr, dma_addr, size);
+            vtd_unmap(&mut mgr, dma_addr, size);
         }
         IommuType::Swiotlb => {
             if let Some(ref mut swiotlb) = mgr.swiotlb {
@@ -245,7 +247,7 @@ pub fn unmap(dma_addr: DmaAddr, size: usize, dir: DmaDirection) {
 
 /// 获取统计信息
 pub fn stats() -> IommuStats {
-    let mgr = unsafe { &*core::ptr::addr_of!(IOMMU_MANAGER) };
+    let mgr = IOMMU_MANAGER.lock();
     IommuStats {
         enabled: mgr.enabled.load(Ordering::Relaxed),
         iommu_type: mgr.iommu_type,
@@ -262,6 +264,43 @@ pub struct IommuStats {
     pub translation_mode: TranslationMode,
     pub nr_units: usize,
     pub mapped_pages: u64,
+}
+
+#[inline]
+fn size_to_pages(size: usize) -> Option<usize> {
+    if size == 0 {
+        return None;
+    }
+
+    let page_size = PAGE_SIZE as usize;
+    size
+        .checked_add(page_size - 1)
+        .map(|rounded| rounded / page_size)
+        .filter(|pages| *pages != 0)
+}
+
+#[inline]
+fn pages_to_order(pages: usize) -> Option<usize> {
+    if pages == 0 {
+        return None;
+    }
+
+    let rounded = pages.checked_next_power_of_two()?;
+    Some(rounded.trailing_zeros() as usize)
+}
+
+#[inline]
+fn mapped_pages_add(counter: &AtomicU64, pages: u64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+        Some(old.saturating_add(pages))
+    });
+}
+
+#[inline]
+fn mapped_pages_sub(counter: &AtomicU64, pages: u64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+        Some(old.saturating_sub(pages))
+    });
 }
 
 // ============================================================================
@@ -314,12 +353,19 @@ fn vtd_map(mgr: &mut IommuManager, phys_addr: u64, size: usize) -> DmaAddr {
         return DmaAddr::new(phys_addr);
     }
     
+    let pages = match size_to_pages(size) {
+        Some(p) => p,
+        None => {
+            crate::warn!("IOMMU: invalid DMA map size {}", size);
+            return DmaAddr::new(phys_addr);
+        }
+    };
+
     // Translate 模式：使用第一个可用的 VT-d 单元进行映射
     for i in 0..mgr.nr_vtd_units {
         if let Some(ref mut unit) = mgr.vtd_units[i] {
             if let Some(dma_addr) = unit.map_pages(phys_addr, size) {
-                let pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
-                mgr.mapped_pages.fetch_add(pages as u64, Ordering::Relaxed);
+                mapped_pages_add(&mgr.mapped_pages, pages as u64);
                 return dma_addr;
             }
         }
@@ -334,6 +380,14 @@ fn vtd_unmap(mgr: &mut IommuManager, dma_addr: DmaAddr, size: usize) {
     if mgr.translation_mode == TranslationMode::Passthrough {
         return;
     }
+
+    let pages = match size_to_pages(size) {
+        Some(p) => p,
+        None => {
+            crate::warn!("IOMMU: invalid DMA unmap size {}", size);
+            return;
+        }
+    };
     
     for i in 0..mgr.nr_vtd_units {
         if let Some(ref mut unit) = mgr.vtd_units[i] {
@@ -341,8 +395,7 @@ fn vtd_unmap(mgr: &mut IommuManager, dma_addr: DmaAddr, size: usize) {
         }
     }
     
-    let pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
-    mgr.mapped_pages.fetch_sub(pages as u64, Ordering::Relaxed);
+    mapped_pages_sub(&mgr.mapped_pages, pages as u64);
 }
 
 // ============================================================================
@@ -357,7 +410,7 @@ pub fn init_iommu() {
 }
 
 pub fn iommu_initialized() -> bool {
-    let mgr = unsafe { &*core::ptr::addr_of!(IOMMU_MANAGER) };
+    let mgr = IOMMU_MANAGER.lock();
     mgr.initialized.load(Ordering::Relaxed)
 }
 
@@ -387,15 +440,18 @@ use super::page::page_to_pfn;
 
 /// 分配 DMA 一致性内存
 pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAddr)> {
-    if size == 0 {
-        return None;
-    }
-    
-    let pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
-    let order = pages.next_power_of_two().trailing_zeros() as usize;
+    let pages = size_to_pages(size)?;
+    let order = pages_to_order(pages)?;
     
     let page = alloc_pages(order, gfp)?;
-    let phys = page_to_pfn(page) * PAGE_SIZE;
+    let phys = match page_to_pfn(page).checked_mul(PAGE_SIZE) {
+        Some(p) => p,
+        None => {
+            unsafe { crate::mm::page::buddy::free_pages(page, order) };
+            crate::warn!("IOMMU: dma_alloc_coherent phys overflow, order={}", order);
+            return None;
+        }
+    };
     
     let dma_addr = map(phys, size, DmaDirection::Bidirectional);
     
@@ -403,9 +459,21 @@ pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAdd
         unsafe { crate::mm::page::buddy::free_pages(page, order) };
         return None;
     }
-    
-    let mgr = unsafe { &*core::ptr::addr_of!(IOMMU_MANAGER) };
-    let virt = (phys + mgr.direct_map_offset) as *mut u8;
+
+    let direct_map_offset = {
+        let mgr = IOMMU_MANAGER.lock();
+        mgr.direct_map_offset
+    };
+
+    let virt = match phys.checked_add(direct_map_offset) {
+        Some(v) => v as *mut u8,
+        None => {
+            crate::warn!("IOMMU: dma_alloc_coherent virt overflow");
+            unmap(dma_addr, size, DmaDirection::Bidirectional);
+            unsafe { crate::mm::page::buddy::free_pages(page, order) };
+            return None;
+        }
+    };
     
     Some((virt, dma_addr))
 }
@@ -418,14 +486,42 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
     
     unmap(dma_addr, size, DmaDirection::Bidirectional);
     
-    let mgr = unsafe { &*core::ptr::addr_of!(IOMMU_MANAGER) };
-    let phys = (virt as u64).saturating_sub(mgr.direct_map_offset);
+    let direct_map_offset = {
+        let mgr = IOMMU_MANAGER.lock();
+        mgr.direct_map_offset
+    };
+
+    let virt_addr = virt as u64;
+    if virt_addr < direct_map_offset {
+        crate::warn!(
+            "IOMMU: dma_free_coherent invalid virt={:#x}, direct_map_offset={:#x}",
+            virt_addr,
+            direct_map_offset
+        );
+        return;
+    }
+
+    let phys = virt_addr - direct_map_offset;
     let pfn = phys / PAGE_SIZE;
+
+    let pages = match size_to_pages(size) {
+        Some(p) => p,
+        None => {
+            crate::warn!("IOMMU: dma_free_coherent invalid size {}", size);
+            return;
+        }
+    };
+
+    let order = match pages_to_order(pages) {
+        Some(o) => o,
+        None => {
+            crate::warn!("IOMMU: dma_free_coherent order overflow for pages {}", pages);
+            return;
+        }
+    };
     
     unsafe {
         let page = crate::mm::page::page::pfn_to_page(pfn);
-        let pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
-        let order = pages.next_power_of_two().trailing_zeros() as usize;
         crate::mm::page::buddy::free_pages(page, order);
     }
 }
@@ -435,9 +531,23 @@ pub fn dma_map_single(virt: *const u8, size: usize, dir: DmaDirection) -> DmaAdd
     if virt.is_null() || size == 0 {
         return DmaAddr::NULL;
     }
-    
-    let mgr = unsafe { &*core::ptr::addr_of!(IOMMU_MANAGER) };
-    let phys = (virt as u64).saturating_sub(mgr.direct_map_offset);
+
+    let direct_map_offset = {
+        let mgr = IOMMU_MANAGER.lock();
+        mgr.direct_map_offset
+    };
+
+    let virt_addr = virt as u64;
+    if virt_addr < direct_map_offset {
+        crate::warn!(
+            "IOMMU: dma_map_single invalid virt={:#x}, direct_map_offset={:#x}",
+            virt_addr,
+            direct_map_offset
+        );
+        return DmaAddr::NULL;
+    }
+
+    let phys = virt_addr - direct_map_offset;
     
     map(phys, size, dir)
 }

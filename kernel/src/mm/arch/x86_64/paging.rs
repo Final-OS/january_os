@@ -5,9 +5,13 @@
 // ============================================================================
 
 use crate::config;
+use crate::interrupt;
 use crate::mm::buddy::{alloc_page, free_page};
 use crate::mm::zone::GFP_KERNEL_ZERO;
 use crate::mm::page::{page_to_pfn, pfn_to_page, MAX_PFN};
+use crate::smp;
+use crate::sync::SpinLock;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // ============================================================================
 // 页表条目标志位 (x86_64 特定)
@@ -274,6 +278,147 @@ pub struct PageTableManager {
     direct_map_offset: u64,
 }
 
+/// 全局页表操作锁
+///
+/// 当前内核页表仍是共享地址空间，先使用全局串行化避免并发改表造成损坏。
+static PAGE_TABLE_OP_LOCK: SpinLock<()> = SpinLock::with_name((), "PageTableOps");
+
+/// TLB shootdown ACK 计数
+static TLB_SHOOTDOWN_ACKED: AtomicU32 = AtomicU32::new(0);
+
+/// TLB shootdown 是否可用（超时后自动熔断）
+static TLB_SHOOTDOWN_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// 一次性诊断日志开关
+static TLB_SHOOTDOWN_SKIP_NOT_READY_LOGGED: AtomicBool = AtomicBool::new(false);
+static TLB_SHOOTDOWN_SKIP_IRQ_OFF_LOGGED: AtomicBool = AtomicBool::new(false);
+static TLB_SHOOTDOWN_IPI_RECEIVED_LOGGED: AtomicBool = AtomicBool::new(false);
+static TLB_SHOOTDOWN_FIRST_SENT_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// 等待远端 CPU shootdown 的最大自旋次数
+const TLB_SHOOTDOWN_TIMEOUT_SPINS: usize = 2_000_000;
+
+#[inline]
+fn flush_tlb_local_only(virt_addr: u64) {
+    unsafe {
+        core::arch::asm!(
+            "invlpg [{}]",
+            in(reg) virt_addr,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+#[inline]
+fn flush_tlb_all_local_only() {
+    unsafe {
+        core::arch::asm!(
+            "mov {tmp}, cr3",
+            "mov cr3, {tmp}",
+            tmp = out(reg) _,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+fn shootdown_other_cpus() {
+    if !TLB_SHOOTDOWN_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+
+    if !interrupt::initialized() || !interrupt::apic_initialized() {
+        if TLB_SHOOTDOWN_SKIP_NOT_READY_LOGGED
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
+        {
+            crate::kprintln!(
+                "[diag][tlb] skip shootdown: interrupt/APIC not ready (int_init={} apic_init={})",
+                interrupt::initialized(),
+                interrupt::apic_initialized(),
+            );
+        }
+        return;
+    }
+
+    // 早期启动阶段（BSP 仍未开启中断）不做跨核 shootdown，避免启动路径抖动。
+    if !interrupt::interrupts_enabled() {
+        if TLB_SHOOTDOWN_SKIP_IRQ_OFF_LOGGED
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
+        {
+            crate::kprintln!(
+                "[diag][tlb] skip shootdown: local IRQ disabled (cpu_count={})",
+                smp::cpu_count(),
+            );
+        }
+        return;
+    }
+
+    let target_count = smp::cpu_count().saturating_sub(1);
+    if target_count == 0 {
+        return;
+    }
+
+    let target_count = target_count.min(u32::MAX as usize) as u32;
+    TLB_SHOOTDOWN_ACKED.store(0, Ordering::SeqCst);
+
+    if TLB_SHOOTDOWN_FIRST_SENT_LOGGED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::kprintln!(
+            "[diag][tlb] send shootdown ipi vector={:#x} targets={}",
+            interrupt::IPI_TLB_SHOOTDOWN,
+            target_count,
+        );
+    }
+
+    interrupt::send_ipi(
+        0,
+        interrupt::IPI_TLB_SHOOTDOWN,
+        interrupt::ICR_DELIVERY_FIXED,
+        interrupt::ICR_SHORTHAND_ALL_BUT_SELF,
+        interrupt::ICR_LEVEL_ASSERT,
+        interrupt::ICR_TRIGGER_EDGE,
+    );
+
+    let mut spins = 0usize;
+    while TLB_SHOOTDOWN_ACKED.load(Ordering::Acquire) < target_count {
+        core::hint::spin_loop();
+        spins += 1;
+        if spins >= TLB_SHOOTDOWN_TIMEOUT_SPINS {
+            crate::warn!(
+                "TLB shootdown timeout: acked={} target={}",
+                TLB_SHOOTDOWN_ACKED.load(Ordering::Relaxed),
+                target_count,
+            );
+
+            if TLB_SHOOTDOWN_ENABLED
+                .compare_exchange(true, false, Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+            {
+                crate::warn!("TLB shootdown disabled after timeout; fallback to local TLB flush only");
+            }
+            break;
+        }
+    }
+}
+
+/// TLB shootdown IPI 处理（仅本地刷新）
+pub fn handle_tlb_shootdown_ipi() {
+    flush_tlb_all_local_only();
+    if TLB_SHOOTDOWN_IPI_RECEIVED_LOGGED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::kprintln!(
+            "[diag][tlb] first shootdown IPI received on apic_id={}",
+            interrupt::local_apic_id(),
+        );
+    }
+    TLB_SHOOTDOWN_ACKED.fetch_add(1, Ordering::AcqRel);
+}
+
 impl PageTableManager {
     /// 创建页表管理器
     /// 
@@ -321,6 +466,7 @@ impl PageTableManager {
     /// 
     /// 返回 (条目, 页表层级, 页面大小)
     pub fn translate(&self, virt_addr: u64) -> Option<(PageTableEntry, PageTableLevel, u64)> {
+        let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
         let pml4 = self.pml4();
         let pml4_entry = pml4.entry(pml4_index(virt_addr));
         
@@ -380,25 +526,30 @@ impl PageTableManager {
 
     /// 刷新单个 TLB 条目
     pub fn flush_tlb(&self, virt_addr: u64) {
-        unsafe {
-            core::arch::asm!(
-                "invlpg [{}]",
-                in(reg) virt_addr,
-                options(nostack, preserves_flags)
-            );
-        }
+        self.flush_tlb_local(virt_addr);
+        shootdown_other_cpus();
     }
     
     /// 刷新整个 TLB (重新加载 CR3)
     pub fn flush_tlb_all(&self) {
-        unsafe {
-            core::arch::asm!(
-                "mov {tmp}, cr3",
-                "mov cr3, {tmp}",
-                tmp = out(reg) _,
-                options(nostack, preserves_flags)
-            );
-        }
+        self.flush_tlb_all_local();
+        shootdown_other_cpus();
+    }
+
+    #[inline]
+    fn flush_tlb_local(&self, virt_addr: u64) {
+        flush_tlb_local_only(virt_addr);
+    }
+
+    #[inline]
+    fn flush_tlb_all_local(&self) {
+        flush_tlb_all_local_only();
+    }
+
+    #[inline]
+    fn flush_tlb_global(&self, virt_addr: u64) {
+        self.flush_tlb_local(virt_addr);
+        shootdown_other_cpus();
     }
 
     /// 释放被重映射替换掉的旧页（仅针对参与 mapcount 的托管页）
@@ -432,7 +583,8 @@ impl PageTableManager {
     /// # Safety
     /// 
     /// - 需要确保分配内存成功
-    pub unsafe fn map_page(&mut self, virt: u64, phys: u64, flags: u64) -> bool {
+    pub unsafe fn map_page(&self, virt: u64, phys: u64, flags: u64) -> bool {
+        let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
         let direct_map_offset = self.direct_map_offset;
         let pml4_phys = self.pml4_phys;
         
@@ -451,6 +603,13 @@ impl PageTableManager {
             };
             let pfn = page_to_pfn(page);
             let table_phys = pfn * config::PAGE_SIZE;
+
+            // 防御式清零：避免分配器快路径遗漏 GFP_ZERO 语义时引入脏页表。
+            core::ptr::write_bytes(
+                phys_to_virt(table_phys) as *mut u8,
+                0,
+                config::PAGE_SIZE as usize,
+            );
             
             pml4_entry.set_phys_addr(table_phys);
             pml4_entry.set_present(true);
@@ -471,6 +630,12 @@ impl PageTableManager {
             };
             let pfn = page_to_pfn(page);
             let table_phys = pfn * config::PAGE_SIZE;
+
+            core::ptr::write_bytes(
+                phys_to_virt(table_phys) as *mut u8,
+                0,
+                config::PAGE_SIZE as usize,
+            );
             
             pdpt_entry.set_phys_addr(table_phys);
             pdpt_entry.set_present(true);
@@ -491,6 +656,12 @@ impl PageTableManager {
             };
             let pfn = page_to_pfn(page);
             let table_phys = pfn * config::PAGE_SIZE;
+
+            core::ptr::write_bytes(
+                phys_to_virt(table_phys) as *mut u8,
+                0,
+                config::PAGE_SIZE as usize,
+            );
             
             pd_entry.set_phys_addr(table_phys);
             pd_entry.set_present(true);
@@ -502,8 +673,10 @@ impl PageTableManager {
         let pt_idx = pt_index(virt);
         let pt_entry = &mut pt.entries[pt_idx];
 
+        let was_present = pt_entry.is_present();
+
         // 如果已映射：处理重映射语义
-        if pt_entry.is_present() {
+        if was_present {
             let old_phys = pt_entry.phys_addr();
             let new_phys = phys & PTE_ADDR_MASK;
 
@@ -512,12 +685,17 @@ impl PageTableManager {
                 self.release_replaced_page(old_phys);
             }
 
-            self.flush_tlb(virt);
+            self.flush_tlb_local(virt);
         }
 
         *pt_entry = PageTableEntry::new(phys, flags);
 
-        self.flush_tlb(virt);
+        // 新建映射仅需本地刷新；重映射才需要跨核 shootdown。
+        if was_present {
+            self.flush_tlb_global(virt);
+        } else {
+            self.flush_tlb_local(virt);
+        }
         
         true
     }
@@ -526,7 +704,8 @@ impl PageTableManager {
     ///
     /// 成功返回 true，如果未映射返回 false。
     /// 空的中间页表页会被自动回收。
-    pub unsafe fn unmap_page(&mut self, virt: u64) -> bool {
+    pub unsafe fn unmap_page(&self, virt: u64) -> bool {
+        let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
         let direct_map_offset = self.direct_map_offset;
         let pml4_phys = self.pml4_phys;
 
@@ -551,7 +730,7 @@ impl PageTableManager {
 
         if pdpt_entry.is_huge() {
             *pdpt_entry = PageTableEntry::empty();
-            self.flush_tlb(virt);
+            self.flush_tlb_global(virt);
             return true;
         }
 
@@ -566,7 +745,7 @@ impl PageTableManager {
 
         if pd_entry.is_huge() {
             *pd_entry = PageTableEntry::empty();
-            self.flush_tlb(virt);
+            self.flush_tlb_global(virt);
             return true;
         }
 
@@ -580,7 +759,7 @@ impl PageTableManager {
         }
 
         *pt_entry = PageTableEntry::empty();
-        self.flush_tlb(virt);
+        self.flush_tlb_global(virt);
 
         // 回收空的中间页表页（PT → PD → PDPT，不回收 PML4）
         if Self::is_table_empty(pt) {

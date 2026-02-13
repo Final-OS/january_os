@@ -43,6 +43,13 @@ pub fn init_kernel(info: &BootInfo) {
     }
 
     let direct_map = resolve_direct_map_offset(info.direct_map_offset);
+    kprintln!(
+        "[diag][boot] bootinfo: mem_entries={} usable={}MB direct_map={:#x} rsdp={:#x}",
+        info.memory_map_entries,
+        info.usable_memory / 1024 / 1024,
+        direct_map,
+        info.acpi_rsdp_addr,
+    );
 
     // 3. 初始化 Framebuffer 控制台
     init_graphics(info, direct_map);
@@ -60,34 +67,61 @@ pub fn init_kernel(info: &BootInfo) {
     }
 
     // 4. 内存管理初始化
+    kprintln!("[diag][boot] step4: init_memory begin");
     init_memory(info, direct_map);
+    kprintln!("[diag][boot] step4: init_memory done");
 
     let kernel_stack_top = arch::current_stack_top();
+    kprintln!("[diag][boot] kernel_stack_top={:#x}", kernel_stack_top);
 
     // 5. ACPI 解析
+    kprintln!("[diag][boot] step5: init_acpi begin");
     let acpi_config = init_acpi(info);
     let cpu_count = acpi_config.cpu_count;
+    kprintln!(
+        "[diag][boot] step5: init_acpi done cpu_count={} lapic={:#x} ioapic={:#x}",
+        cpu_count,
+        acpi_config.local_apic_addr,
+        acpi_config.ioapic_addr,
+    );
 
     // 6. 初始化 PCP (Per-CPU Pages) - 依赖 CPU 数量
+    kprintln!("[diag][boot] step6: init_pcp nr_cpus={}", cpu_count);
     mm::init_pcp(cpu_count as u32);
 
     // 7. 中断控制器初始化
+    kprintln!("[diag][boot] step7: init_interrupts begin");
     init_interrupts(&acpi_config, kernel_stack_top, direct_map);
+    kprintln!("[diag][boot] step7: init_interrupts done");
 
     // 8. 启动 AP 核心 (SMP)
+    kprintln!("[diag][boot] step8: smp::init begin expected_cpus={}", cpu_count);
     smp::init(direct_map, cpu_count as usize);
+    kprintln!("[diag][boot] step8: smp::init done online_cpus={}", smp::cpu_count());
 
     // 9. IOMMU 初始化
+    kprintln!("[diag][boot] step9: init_iommu begin");
     init_iommu();
+    kprintln!("[diag][boot] step9: init_iommu done");
 
     // 10. 设备驱动初始化
+    kprintln!("[diag][boot] step10: init_drivers begin");
     init_drivers();
+    kprintln!("[diag][boot] step10: init_drivers done");
 
     // 11. 启用时钟和中断
+    kprintln!("[diag][boot] step11: init_timer_and_enable_interrupts begin");
     init_timer_and_enable_interrupts();
+    let if_after_step11 = interrupt::interrupts_enabled();
+    kprintln!(
+        "[diag][boot] step11: interrupts_enabled={}",
+        if_after_step11
+    );
 
     // 12. 初始化任务子系统
+    kprintln!("[diag][boot] step12: task::init begin");
     crate::task::init();
+    kprintln!("[diag][boot] step12: task::init done");
 
     kprintln!();
     ok!("Kernel initialization complete.");
@@ -340,18 +374,42 @@ fn init_drivers() {
 }
 
 fn init_timer_and_enable_interrupts() {
+    let if_step11a = interrupt::interrupts_enabled();
+    kprintln!(
+        "[diag][boot] step11a: IF(before timer init)={}",
+        if_step11a
+    );
+
     // 1. 校准 TSC (System Clock)
     interrupt::calibrate_tsc();
 
     // 2. 校准 APIC Timer (Scheduler/Tick)
     let timer_freq = interrupt::calibrate_timer();
-    const TIMER_HZ: u32 = 100;
+    const TIMER_HZ: u32 = interrupt::TIMER_TICK_HZ as u32;
     interrupt::init_apic_timer(interrupt::IRQ_TIMER, TIMER_HZ);
     
     // 启用串口接收中断
     serial_enable_rx_interrupt();
+
+    let if_step11b = interrupt::interrupts_enabled();
+    kprintln!(
+        "[diag][boot] step11b: IF(before sti)={}",
+        if_step11b
+    );
     
     interrupt::enable_interrupts();
+
+    // STI 在下一条指令边界后生效，先插入一个 NOP 再读取 IF。
+    unsafe {
+        core::arch::asm!("nop", options(nostack, nomem));
+    }
+
+    let if_step11c = interrupt::interrupts_enabled();
+
+    kprintln!(
+        "[diag][boot] step11c: IF(after sti)={}",
+        if_step11c
+    );
     
     ok!("Timer: {} MHz | Tick: {} Hz | Interrupts: ENABLED",
         timer_freq / 1_000_000, TIMER_HZ);

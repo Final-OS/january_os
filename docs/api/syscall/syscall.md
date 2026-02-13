@@ -192,21 +192,37 @@ pub(crate) fn sys_exit_group(args: &SyscallArgs) -> SyscallRet
 
 #### sys_wait4 (61)
 
-等待子进程退出（桩实现）。
+等待子进程退出（增强最小实现）。
 
 ```rust
 pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet
 ```
 
 **参数**:
-- `arg0`: 进程 ID（-1 表示任意子进程）
+- `arg0`: 进程过滤
+  - `> 0`: 等待指定 PID
+  - `-1`: 等待任意子进程
+  - `0`: 等待“同进程组”子进程
+  - `< -1`: 等待指定进程组（`abs(arg0)`）
 - `arg1`: 状态指针
 - `arg2`: 选项
 - `arg3`: rusage 指针
 
 **返回**: 子进程 PID 或错误码
 
-**注意**: 当前是桩实现，总是返回 ECHILD。
+**注意**:
+- 若 `arg1 != 0`，内核会写入 wait status：
+  - 正常退出：`(exit_code & 0xff) << 8`
+  - 停止事件（`WUNTRACED`）：`((signal & 0xff) << 8) | 0x7f`
+  - 继续事件（`WCONTINUED`）：`0xffff`
+- 若 `arg3 != 0`，内核会写入 `rusage`（当前基于任务运行时 tick + 上下文切换计数聚合）。
+- 支持 `WNOHANG`（`arg2 & 0x1`）；若有匹配子进程但尚无可报告事件，返回 `0`。
+- 支持 `WUNTRACED/WCONTINUED`：可分别报告子进程停止/继续事件。
+- 支持 `__WCLONE/__WALL`：按 Linux 语义切换 clone/non-clone 子进程匹配范围。
+- 支持 `__WNOTHREAD`：仅等待“当前线程创建的子进程”；未设置时可等待同进程内其他线程创建的子进程。
+- 若不存在匹配子进程，返回 `-ECHILD`。
+- 若未设置 `WNOHANG` 且子进程尚未退出，当前实现采用调度循环等待（协作式阻塞）。
+- 非上述已知选项位返回 `-EINVAL`。
 
 ### I/O 操作
 
@@ -249,7 +265,7 @@ pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet
 | 57 | fork | ❌ 未实现 |
 | 59 | execve | ❌ 未实现 |
 | 60 | exit | ✅ 已实现 |
-| 61 | wait4 | ⚠️ 桩实现 |
+| 61 | wait4 | ✅ 增强实现 |
 | 110 | getppid | ✅ 已实现 |
 | 186 | gettid | ✅ 已实现 |
 | 231 | exit_group | ✅ 已实现 |

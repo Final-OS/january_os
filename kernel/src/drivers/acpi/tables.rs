@@ -53,10 +53,19 @@ impl Rsdp {
         
         // ACPI 2.0+ 额外验证
         if rsdp.revision >= 2 {
+            let rsdp_len = rsdp.length as usize;
+            let min_len = core::mem::size_of::<Rsdp>();
+            if rsdp_len < min_len {
+                return Err("Invalid RSDP length");
+            }
+            if rsdp_len > 4096 {
+                return Err("RSDP length too large");
+            }
+
             let mut ext_sum: u8 = 0;
             let ext_bytes = core::slice::from_raw_parts(
                 virt_addr as *const u8,
-                rsdp.length as usize
+                rsdp_len
             );
             for &b in ext_bytes {
                 ext_sum = ext_sum.wrapping_add(b);
@@ -126,7 +135,12 @@ pub struct Xsdt {
 impl Xsdt {
     /// 获取表条目数量
     pub fn entry_count(&self) -> usize {
-        let entries_size = self.header.length as usize - core::mem::size_of::<SdtHeader>();
+        let total_size = self.header.length as usize;
+        let header_size = core::mem::size_of::<SdtHeader>();
+        if total_size < header_size {
+            return 0;
+        }
+        let entries_size = total_size - header_size;
         entries_size / 8
     }
     
@@ -153,7 +167,12 @@ pub struct Rsdt {
 impl Rsdt {
     /// 获取表条目数量
     pub fn entry_count(&self) -> usize {
-        let entries_size = self.header.length as usize - core::mem::size_of::<SdtHeader>();
+        let total_size = self.header.length as usize;
+        let header_size = core::mem::size_of::<SdtHeader>();
+        if total_size < header_size {
+            return 0;
+        }
+        let entries_size = total_size - header_size;
         entries_size / 4
     }
     

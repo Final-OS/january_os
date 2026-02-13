@@ -2,6 +2,8 @@
 
 january_os 当前开发状态与功能完成情况。
 
+> 计划入口：[`v0.2 分批实施计划`](./v0.2-plan)
+
 ## 最近更新 🆕
 
 **2026-02-08 - 任务管理与系统调用实现**
@@ -132,7 +134,7 @@ january_os 当前开发状态与功能完成情况。
 - **已实现的系统调用**:
   - getpid/getppid/gettid - 进程/线程 ID 查询
   - exit/exit_group - 进程退出
-  - wait4 - 等待子进程（桩实现）
+  - wait4 - 等待子进程（支持 PID/PGRP 过滤、WNOHANG/WUNTRACED/WCONTINUED、__WNOTHREAD/__WCLONE/__WALL、rusage 运行时统计）
   - write - 输出到控制台（桩实现）
 
 ---

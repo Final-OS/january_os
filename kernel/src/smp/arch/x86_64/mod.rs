@@ -86,6 +86,13 @@ pub fn boot_ap(apic_id: u32, direct_map_base: u64) {
     let stack = mm::alloc_pages(stack_order, mm::GFP_KERNEL).expect("Failed to alloc AP stack");
     let stack_top = direct_map_base + (mm::page_to_pfn(stack) as u64) * 4096 + stack_pages * 4096;
 
+    crate::kprintln!(
+        "[diag][smp] apic_id={} ap_stack_top={:#x} ap_stack_pfn={:#x}",
+        apic_id,
+        stack_top,
+        mm::page_to_pfn(stack),
+    );
+
     // Save stack for ACPI Wakeup (if used)
     unsafe {
         NEXT_AP_STACK_VAL = stack_top;
@@ -111,6 +118,7 @@ unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) {
     // 内存屏障确保 apic_id 和 wakeup_vector 在 command 之前可见
     core::sync::atomic::fence(Ordering::Release);
     core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.command), MultiprocessorWakeupMailbox::COMMAND_WAKEUP);
+    crate::kprintln!("[diag][smp] acpi wakeup sent apic_id={}", apic_id);
 
     // 2. 等待 AP 启动并读取完数据
     let mut timeout = 0u64;
@@ -148,9 +156,11 @@ unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) {
     
     // Send INIT-SIPI-SIPI
     interrupt::send_init_ipi(apic_id);
+    crate::kprintln!("[diag][smp] INIT sent apic_id={}", apic_id);
     delay_ms(10);
     
     let vector = (trampoline::TRAMPOLINE_BASE >> 12) as u8; // 0x08
+    crate::kprintln!("[diag][smp] SIPI vector={:#x} apic_id={}", vector, apic_id);
     interrupt::send_sipi(apic_id, vector);
     delay_us(200);
     interrupt::send_sipi(apic_id, vector);
@@ -219,6 +229,12 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
     unsafe {
         interrupt::init_ap(cpu_id, kernel_stack_top, local_apic_base, direct_map_base).unwrap();
     }
+
+    crate::kprintln!(
+        "[diag][smp] ap_entry cpu_id={} local_apic_id={}",
+        cpu_id,
+        interrupt::local_apic_id(),
+    );
     
     crate::kprintln!("      [SMP] AP Started (CPU {})", cpu_id);
 

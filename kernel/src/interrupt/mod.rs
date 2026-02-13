@@ -26,6 +26,9 @@
 
 pub mod arch;
 
+/// APIC Timer 触发频率（Hz）
+pub const TIMER_TICK_HZ: u64 = 100;
+
 // Re-export common types and functions from arch
 pub use arch::{
     InterruptInitInfo,
@@ -56,6 +59,7 @@ pub use idt::{
     ALIGNMENT_CHECK, MACHINE_CHECK, SIMD_EXCEPTION,
     VIRTUALIZATION, CONTROL_PROTECTION,
     IRQ_BASE, IRQ_TIMER, IRQ_KEYBOARD, IRQ_MOUSE, IRQ_COM1, IRQ_SPURIOUS,
+    IPI_TLB_SHOOTDOWN,
 };
 
 pub use apic::{

@@ -118,7 +118,7 @@ struct VmallocState {
     /// 直接映射偏移
     direct_map: u64,
     /// 页表管理器指针
-    page_table_mgr: *mut PageTableManager,
+    page_table_mgr: *const PageTableManager,
 }
 
 // 允许跨线程发送（实际上是单核初始化）
@@ -133,7 +133,7 @@ static VMALLOC_STATE: OnceCell<VmallocState> = OnceCell::new();
 // ============================================================================
 
 /// 初始化 vmalloc 子系统
-pub unsafe fn init_vmalloc(direct_map: u64, pt_mgr: *mut PageTableManager) {
+pub unsafe fn init_vmalloc(direct_map: u64, pt_mgr: *const PageTableManager) {
     let _ = VMALLOC_STATE.set(VmallocState {
         direct_map,
         page_table_mgr: pt_mgr,
@@ -210,9 +210,20 @@ pub fn vfree(addr: *mut u8) {
 /// 内部分配函数
 #[track_caller]
 fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
-    // 计算需要的页数
-    let size = page_align_up(size as u64);
-    let nr_pages = (size / PAGE_SIZE) as u32;
+    // 计算需要的页数（带溢出保护）
+    let size = match (size as u64)
+        .checked_add(PAGE_SIZE - 1)
+        .map(|v| v & !(PAGE_SIZE - 1))
+    {
+        Some(v) if v != 0 => v,
+        _ => return ptr::null_mut(),
+    };
+
+    let nr_pages_u64 = size / PAGE_SIZE;
+    if nr_pages_u64 == 0 || nr_pages_u64 > u32::MAX as u64 {
+        return ptr::null_mut();
+    }
+    let nr_pages = nr_pages_u64 as u32;
 
     // 分配虚拟地址空间并注册区域 (持有锁)
     let vaddr = {
@@ -220,10 +231,17 @@ fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
 
         // 使用 MapleTree 间隙搜索分配虚拟地址
         // 每个区域之间留一个 guard page
-        let alloc_size = size + PAGE_SIZE;
+        let alloc_size = match size.checked_add(PAGE_SIZE) {
+            Some(v) => v,
+            None => return ptr::null_mut(),
+        };
+        let alloc_size_usize = match usize::try_from(alloc_size) {
+            Ok(v) => v,
+            Err(_) => return ptr::null_mut(),
+        };
         data.ensure_addr_space();
         let vaddr = match data.addr_space.as_mut().unwrap().find_gap(
-            alloc_size as usize,
+            alloc_size_usize,
             VMALLOC_START as usize,
             VMALLOC_END as usize,
         ) {
@@ -231,12 +249,21 @@ fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
             None => return ptr::null_mut(),
         };
 
+        let end = match vaddr.checked_add(alloc_size) {
+            Some(v) => v,
+            None => return ptr::null_mut(),
+        };
+        let end_usize = match usize::try_from(end) {
+            Ok(v) => v,
+            Err(_) => return ptr::null_mut(),
+        };
+
         // 注册到地址空间跟踪
         data.ensure_addr_space();
-        crate::kprintln!("[diag][ioremap] addr_space insert [{:#x}, {:#x})", vaddr, vaddr + alloc_size);
+        crate::kprintln!("[diag][ioremap] addr_space insert [{:#x}, {:#x})", vaddr, end);
         if data.addr_space.as_mut().unwrap().insert(
             vaddr as usize,
-            (vaddr + alloc_size) as usize,
+            end_usize,
             (),
         ).is_err() {
             return ptr::null_mut();
@@ -350,7 +377,7 @@ fn map_vmalloc_page(virt: u64, phys: u64, flags: u64) -> bool {
     }
 
     unsafe {
-        let pt_mgr = &mut *state.page_table_mgr;
+        let pt_mgr = &*state.page_table_mgr;
 
         // 验证 PML4 与当前 CR3 一致
         let cr3: u64;
@@ -393,7 +420,7 @@ fn unmap_vmalloc_page(virt: u64) {
     }
 
     // 使用页表管理器取消映射
-    unsafe { (*state.page_table_mgr).unmap_page(virt); }
+    unsafe { (&*state.page_table_mgr).unmap_page(virt); }
 }
 
 /// 获取 vmalloc 虚拟地址对应的物理地址
@@ -407,7 +434,7 @@ fn get_vmalloc_phys(virt: u64) -> Option<u64> {
         return None;
     }
 
-    unsafe { (*state.page_table_mgr).translate_addr(virt) }
+    unsafe { (&*state.page_table_mgr).translate_addr(virt) }
 }
 
 /// 页对齐 (向上)
@@ -431,19 +458,47 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
     // 对齐到页边界
     let offset = phys_addr & (PAGE_SIZE - 1);
     let phys_base = phys_addr & !(PAGE_SIZE - 1);
-    let page_align_size = (size as u64 + offset + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let nr_pages = (page_align_size / PAGE_SIZE) as u32;
+    let page_align_size = match (size as u64)
+        .checked_add(offset)
+        .and_then(|v| v.checked_add(PAGE_SIZE - 1))
+        .map(|v| v & !(PAGE_SIZE - 1))
+    {
+        Some(v) if v != 0 => v,
+        _ => {
+            crate::kprintln!("ioremap: size overflow");
+            return ptr::null_mut();
+        }
+    };
+    let nr_pages_u64 = page_align_size / PAGE_SIZE;
+    if nr_pages_u64 == 0 || nr_pages_u64 > u32::MAX as u64 {
+        crate::kprintln!("ioremap: invalid page count {}", nr_pages_u64);
+        return ptr::null_mut();
+    }
+    let nr_pages = nr_pages_u64 as u32;
 
     // 分配虚拟地址空间并注册区域 (持有锁)
     let vaddr = {
         crate::kprintln!("[diag][ioremap] lock vmalloc_data");
         let mut data = VMALLOC_DATA.lock();
 
-        let alloc_size = page_align_size + PAGE_SIZE; // guard page
+        let alloc_size = match page_align_size.checked_add(PAGE_SIZE) {
+            Some(v) => v,
+            None => {
+                crate::kprintln!("ioremap: alloc_size overflow");
+                return ptr::null_mut();
+            }
+        }; // guard page
+        let alloc_size_usize = match usize::try_from(alloc_size) {
+            Ok(v) => v,
+            Err(_) => {
+                crate::kprintln!("ioremap: alloc_size too large");
+                return ptr::null_mut();
+            }
+        };
         crate::kprintln!("[diag][ioremap] find_gap alloc_size={:#x}", alloc_size);
         data.ensure_addr_space();
         let vaddr = match data.addr_space.as_mut().unwrap().find_gap(
-            alloc_size as usize,
+            alloc_size_usize,
             VMALLOC_START as usize,
             VMALLOC_END as usize,
         ) {
@@ -457,11 +512,26 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
             }
         };
 
+        let end = match vaddr.checked_add(alloc_size) {
+            Some(v) => v,
+            None => {
+                crate::kprintln!("ioremap: vaddr end overflow");
+                return ptr::null_mut();
+            }
+        };
+        let end_usize = match usize::try_from(end) {
+            Ok(v) => v,
+            Err(_) => {
+                crate::kprintln!("ioremap: vaddr end out of range");
+                return ptr::null_mut();
+            }
+        };
+
         data.ensure_addr_space();
-        crate::kprintln!("[diag][ioremap] addr_space insert [{:#x}, {:#x})", vaddr, vaddr + alloc_size);
+        crate::kprintln!("[diag][ioremap] addr_space insert [{:#x}, {:#x})", vaddr, end);
         if data.addr_space.as_mut().unwrap().insert(
             vaddr as usize,
-            (vaddr + alloc_size) as usize,
+            end_usize,
             (),
         ).is_err() {
             crate::kprintln!("ioremap: addr_space insert failed");
@@ -485,8 +555,8 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
     // 锁已释放
 
     // 映射每一页 (不持有 VMALLOC_DATA 锁)
-    crate::kprintln!("[diag][ioremap] mapping pages count={}", page_align_size / PAGE_SIZE);
-    for i in 0..(page_align_size / PAGE_SIZE) {
+    crate::kprintln!("[diag][ioremap] mapping pages count={}", nr_pages_u64);
+    for i in 0..nr_pages_u64 {
         let phys = phys_base + i * PAGE_SIZE;
         let virt = vaddr + i * PAGE_SIZE;
 

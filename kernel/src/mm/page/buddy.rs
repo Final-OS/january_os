@@ -225,6 +225,19 @@ pub fn alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
     if pcp_initialized() {
         if let Some(page) = pcp_alloc_page(gfp) {
             page.set_count_one();
+
+            // PCP 快路径同样需要满足 GFP 语义。
+            page.clear_flag(PageFlags::BUDDY);
+            page.set_order(0);
+
+            if gfp.test(GfpFlags::ZERO) {
+                let addr = page_to_pfn(page) * PAGE_SIZE;
+                let virt = DIRECT_MAP_OFFSET + addr;
+                unsafe {
+                    core::ptr::write_bytes(virt as *mut u8, 0, PAGE_SIZE as usize);
+                }
+            }
+
             return Some(page);
         }
     }

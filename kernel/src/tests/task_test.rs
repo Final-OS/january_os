@@ -1,11 +1,13 @@
 //! 内核线程 / 上下文切换测试
 
-use crate::{kprintln, ok, error};
 use crate::task;
+use crate::{error, kprintln, ok};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 static COUNTER_A: AtomicUsize = AtomicUsize::new(0);
 static COUNTER_B: AtomicUsize = AtomicUsize::new(0);
+static REAPED_CHILD_PID: AtomicUsize = AtomicUsize::new(0);
+static REAPED_CHILD_CODE: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 pub fn run() {
     kprintln!("=== Task / Context Switch Test ===");
@@ -34,7 +36,32 @@ pub fn run() {
         error!("task: FAIL (A={}, B={}, expected 5 each)", a, b);
     }
 
+    run_wait_reap_test();
+
     kprintln!();
+}
+
+fn run_wait_reap_test() {
+    REAPED_CHILD_PID.store(0, Ordering::SeqCst);
+    REAPED_CHILD_CODE.store(usize::MAX, Ordering::SeqCst);
+
+    task::spawn_kernel_thread("wait_parent", wait_parent_thread);
+
+    for _ in 0..48 {
+        task::scheduler::schedule();
+        if REAPED_CHILD_PID.load(Ordering::SeqCst) != 0 {
+            break;
+        }
+    }
+
+    let pid = REAPED_CHILD_PID.load(Ordering::SeqCst);
+    let code = REAPED_CHILD_CODE.load(Ordering::SeqCst);
+
+    if pid != 0 && code == 0 {
+        ok!("task: wait/reap OK (pid={}, code={})", pid, code);
+    } else {
+        error!("task: wait/reap FAIL (pid={}, code={})", pid, code);
+    }
 }
 
 extern "C" fn thread_a() {
@@ -52,3 +79,18 @@ extern "C" fn thread_b() {
         task::scheduler::schedule();
     }
 }
+
+extern "C" fn wait_parent_thread() {
+    task::spawn_kernel_thread("wait_child", wait_child_thread);
+
+    for _ in 0..24 {
+        if let Some((pid, code)) = task::wait_child(None) {
+            REAPED_CHILD_PID.store(pid.0, Ordering::SeqCst);
+            REAPED_CHILD_CODE.store(code as usize, Ordering::SeqCst);
+            return;
+        }
+        task::scheduler::schedule();
+    }
+}
+
+extern "C" fn wait_child_thread() {}

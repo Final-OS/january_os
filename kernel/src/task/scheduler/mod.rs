@@ -2,7 +2,9 @@
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use crate::interrupt;
 use crate::sync::Mutex;
+use super::id::ProcessId;
 use super::task::{Task, TaskStatus};
 use super::processor::{PROCESSOR, do_switch};
 
@@ -28,17 +30,58 @@ impl Scheduler {
         }
     }
 
-    pub fn add_task(&mut self, task: Arc<Mutex<Task>>) {
-        task.lock().status = TaskStatus::Ready;
+    fn contains_task(&self, target: &Arc<Mutex<Task>>) -> bool {
+        self.ready_queue
+            .iter()
+            .any(|queued| Arc::ptr_eq(queued, target))
+    }
+
+    fn enqueue_task(&mut self, task: Arc<Mutex<Task>>) {
+        {
+            let mut task_guard = task.lock();
+            if task_guard.status == TaskStatus::Exited {
+                return;
+            }
+            task_guard.status = TaskStatus::Ready;
+        }
+
+        if self.contains_task(&task) {
+            return;
+        }
+
         self.ready_queue.push_back(task);
+    }
+
+    pub fn add_task(&mut self, task: Arc<Mutex<Task>>) {
+        self.enqueue_task(task);
     }
 
     pub fn pick_next(&mut self) -> Option<Arc<Mutex<Task>>> {
-        self.ready_queue.pop_front()
+        let now_ticks = interrupt::timer_ticks();
+
+        while let Some(task) = self.ready_queue.pop_front() {
+            let mut task_guard = task.lock();
+            if task_guard.status == TaskStatus::Exited {
+                continue;
+            }
+
+            task_guard.status = TaskStatus::Running;
+            task_guard.on_switch_in(now_ticks);
+            drop(task_guard);
+            return Some(task);
+        }
+
+        None
     }
 
     pub fn push_back(&mut self, task: Arc<Mutex<Task>>) {
-        self.ready_queue.push_back(task);
+        self.enqueue_task(task);
+    }
+
+    pub fn remove_tasks_by_pid(&mut self, pid: ProcessId) -> usize {
+        let before = self.ready_queue.len();
+        self.ready_queue.retain(|task| task.lock().pid != pid);
+        before.saturating_sub(self.ready_queue.len())
     }
 }
 
@@ -57,8 +100,10 @@ pub fn schedule() {
                 if IDLE_CONTEXT_SP != 0 {
                     let prev_task = PROCESSOR.lock().take_current();
                     if let Some(prev) = prev_task {
+                        let now_ticks = interrupt::timer_ticks();
                         let prev_ctx_ptr: *mut usize = {
                             let mut t = prev.lock();
+                            t.on_switch_out(now_ticks, false);
                             &mut t.context_sp as *mut usize
                         };
                         let idle_ptr = core::ptr::addr_of_mut!(IDLE_CONTEXT_SP);
@@ -88,17 +133,18 @@ pub fn schedule() {
 
     // 4. 将 prev 放回就绪队列（如果还活着），并获取其 context_sp 指针
     if let Some(prev) = prev_task {
+        let now_ticks = interrupt::timer_ticks();
+        let mut should_requeue = false;
         let prev_ctx_ptr: *mut usize = {
             let mut t = prev.lock();
+            t.on_switch_out(now_ticks, false);
+            should_requeue = t.status != TaskStatus::Exited;
             &mut t.context_sp as *mut usize
         };
 
         // 放回就绪队列
-        {
-            let status = prev.lock().status;
-            if status != TaskStatus::Exited {
-                SCHEDULER.lock().push_back(prev);
-            }
+        if should_requeue {
+            SCHEDULER.lock().push_back(prev);
         }
 
         // 5. 所有锁已释放，执行切换

@@ -113,6 +113,7 @@ export default defineConfig({
           text: '开发进度',
           items: [
             { text: '总体进度', link: '/progress/overview' },
+            { text: 'v0.2 实施计划', link: '/progress/v0.2-plan' },
           ]
         }
       ]
