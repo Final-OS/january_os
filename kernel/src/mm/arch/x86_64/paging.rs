@@ -573,9 +573,7 @@ impl PageTableManager {
             return;
         }
 
-        if old_page.put() == 0 {
-            free_page(old_page);
-        }
+        free_page(old_page);
     }
 
     /// 映射虚拟地址到物理地址

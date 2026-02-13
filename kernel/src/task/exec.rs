@@ -1,0 +1,721 @@
+//! exec 加载规划与映射（Batch 3）
+//!
+//! 当前提供：
+//! - ELF64 Header / Program Header 解析
+//! - PT_LOAD 映射规划
+//! - 最小真实映射（含回滚）
+//! - 用户态入口帧参数构建所需数据
+
+use alloc::vec::Vec;
+use core::arch::asm;
+use core::cmp;
+use core::mem::size_of;
+
+use crate::mm;
+use crate::syscall::{E2BIG, EBUSY, EINVAL, ENOENT, ENOMEM};
+
+const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+const ELF_CLASS_64: u8 = 2;
+const ELF_DATA_LSB: u8 = 1;
+const ELF_VERSION_CURRENT: u8 = 1;
+const ELF_MACHINE_X86_64: u16 = 62;
+
+const PT_LOAD: u32 = 1;
+
+const PF_X: u32 = 1;
+const PF_W: u32 = 2;
+
+const DEFAULT_USER_STACK_PAGES: u64 = 8;
+
+const BUILTIN_DEMO_EXEC_PATH: &str = "/bin/demo_user";
+const BUILTIN_INIT_EXEC_PATH: &str = "/init";
+static BUILTIN_DEMO_ELF: &[u8] = include_bytes!("assets/demo_user.elf");
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct Elf64Header {
+    ident: [u8; 16],
+    e_type: u16,
+    e_machine: u16,
+    e_version: u32,
+    e_entry: u64,
+    e_phoff: u64,
+    e_shoff: u64,
+    e_flags: u32,
+    e_ehsize: u16,
+    e_phentsize: u16,
+    e_phnum: u16,
+    e_shentsize: u16,
+    e_shnum: u16,
+    e_shstrndx: u16,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct Elf64ProgramHeader {
+    p_type: u32,
+    p_flags: u32,
+    p_offset: u64,
+    p_vaddr: u64,
+    p_paddr: u64,
+    p_filesz: u64,
+    p_memsz: u64,
+    p_align: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecLoadSegmentPlan {
+    pub vaddr: u64,
+    pub mem_size: u64,
+    pub file_offset: u64,
+    pub file_size: u64,
+    pub align: u64,
+    pub page_start: u64,
+    pub page_end: u64,
+    pub page_count: u64,
+    pub map_flags: u64,
+    pub executable: bool,
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecLoadPlan {
+    pub entry: u64,
+    pub image_len: usize,
+    pub segments: Vec<ExecLoadSegmentPlan>,
+    pub segment_pages: u64,
+    pub stack_top: u64,
+    pub stack_pages: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExecMapPreview {
+    pub segment_count: usize,
+    pub executable_segments: usize,
+    pub writable_segments: usize,
+    pub segment_pages: u64,
+    pub stack_pages: u64,
+    pub total_pages: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecMappedPageKind {
+    Segment,
+    Stack,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExecMappedPage {
+    pub virt: u64,
+    pub phys: u64,
+    pub flags: u64,
+    pub kind: ExecMappedPageKind,
+}
+
+#[inline]
+fn read_struct_unaligned<T: Copy>(buf: &[u8], offset: usize) -> Option<T> {
+    let size = size_of::<T>();
+    let end = offset.checked_add(size)?;
+    if end > buf.len() {
+        return None;
+    }
+
+    Some(unsafe { core::ptr::read_unaligned(buf.as_ptr().add(offset) as *const T) })
+}
+
+#[inline]
+fn is_power_of_two(value: u64) -> bool {
+    value != 0 && (value & (value - 1)) == 0
+}
+
+#[inline]
+fn segment_contains_entry(segment: &ExecLoadSegmentPlan, entry: u64) -> bool {
+    match segment.vaddr.checked_add(segment.mem_size) {
+        Some(end) => entry >= segment.vaddr && entry < end,
+        None => false,
+    }
+}
+
+#[inline]
+fn ranges_overlap(start_a: u64, end_a: u64, start_b: u64, end_b: u64) -> bool {
+    start_a < end_b && start_b < end_a
+}
+
+#[inline]
+fn read_cr3_phys() -> u64 {
+    let cr3: u64;
+    unsafe {
+        asm!(
+            "mov {}, cr3",
+            out(reg) cr3,
+            options(nostack, preserves_flags)
+        );
+    }
+
+    cr3 & mm::PTE_ADDR_MASK
+}
+
+#[inline]
+fn current_page_table_manager() -> mm::PageTableManager {
+    let pml4_phys = read_cr3_phys();
+    unsafe { mm::PageTableManager::new(pml4_phys, mm::DIRECT_MAP_OFFSET) }
+}
+
+#[inline]
+fn user_zero_gfp() -> mm::GfpFlags {
+    let mut gfp = mm::GFP_USER;
+    gfp.set(mm::GfpFlags::ZERO);
+    gfp
+}
+
+fn log_mapping_conflict(pt_mgr: &mm::PageTableManager, virt: u64, tag: &str) {
+    if let Some((entry, level, page_size)) = pt_mgr.translate(virt) {
+        crate::kprintln!(
+            "[diag][execve] map conflict tag={} virt={:#x} phys={:#x} level={:?} page_size={:#x} flags={:#x}",
+            tag,
+            virt,
+            entry.phys_addr(),
+            level,
+            page_size,
+            entry.flags(),
+        );
+        return;
+    }
+
+    if let Some(phys) = pt_mgr.translate_addr(virt) {
+        crate::kprintln!(
+            "[diag][execve] map conflict tag={} virt={:#x} phys={:#x} (translate_addr fallback)",
+            tag,
+            virt,
+            phys,
+        );
+        return;
+    }
+
+    crate::kprintln!(
+        "[diag][execve] map conflict tag={} virt={:#x} (translation unavailable)",
+        tag,
+        virt,
+    );
+}
+
+fn validate_target_unmapped(
+    pt_mgr: &mm::PageTableManager,
+    plan: &ExecLoadPlan,
+    stack_bottom: u64,
+) -> Result<(), i32> {
+    for (segment_idx, segment) in plan.segments.iter().enumerate() {
+        for page_idx in 0..segment.page_count {
+            let page_offset = page_idx.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
+            let virt = segment.page_start.checked_add(page_offset).ok_or(E2BIG)?;
+            if pt_mgr.translate_addr(virt).is_some() {
+                crate::kprintln!(
+                    "[diag][execve] segment page already mapped seg={} page_idx={} range=[{:#x}, {:#x})",
+                    segment_idx,
+                    page_idx,
+                    segment.page_start,
+                    segment.page_end,
+                );
+                log_mapping_conflict(pt_mgr, virt, "segment");
+                return Err(EBUSY);
+            }
+        }
+    }
+
+    for page_idx in 0..plan.stack_pages {
+        let page_offset = page_idx.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
+        let virt = stack_bottom.checked_add(page_offset).ok_or(E2BIG)?;
+        if pt_mgr.translate_addr(virt).is_some() {
+            crate::kprintln!(
+                "[diag][execve] stack page already mapped page_idx={} range=[{:#x}, {:#x})",
+                page_idx,
+                stack_bottom,
+                plan.stack_top,
+            );
+            log_mapping_conflict(pt_mgr, virt, "stack");
+            return Err(EBUSY);
+        }
+    }
+
+    Ok(())
+}
+
+fn map_zero_page(
+    pt_mgr: &mm::PageTableManager,
+    virt: u64,
+    flags: u64,
+    kind: ExecMappedPageKind,
+    mapped_pages: &mut Vec<ExecMappedPage>,
+) -> Result<u64, i32> {
+    crate::kprintln!(
+        "[diag][execve] map_zero_page alloc begin kind={:?} virt={:#x} flags={:#x}",
+        kind,
+        virt,
+        flags,
+    );
+
+    let page = mm::alloc_page(user_zero_gfp()).ok_or(ENOMEM)?;
+    let phys = mm::page_to_pfn(page).checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
+
+    crate::kprintln!(
+        "[diag][execve] map_zero_page alloc done kind={:?} virt={:#x} phys={:#x}",
+        kind,
+        virt,
+        phys,
+    );
+
+    crate::kprintln!(
+        "[diag][execve] map_zero_page call map_page kind={:?} virt={:#x} phys={:#x}",
+        kind,
+        virt,
+        phys,
+    );
+
+    let mapped_ok = unsafe { pt_mgr.map_page(virt, phys, flags) };
+    crate::kprintln!(
+        "[diag][execve] map_zero_page map_page result kind={:?} virt={:#x} ok={}",
+        kind,
+        virt,
+        mapped_ok,
+    );
+
+    if !mapped_ok {
+        unsafe {
+            mm::free_page(page);
+        }
+        return Err(ENOMEM);
+    }
+
+    page.inc_mapcount();
+
+    mapped_pages.push(ExecMappedPage {
+        virt,
+        phys,
+        flags,
+        kind,
+    });
+
+    crate::kprintln!(
+        "[diag][execve] map_zero_page done kind={:?} virt={:#x} mapped_total={}",
+        kind,
+        virt,
+        mapped_pages.len(),
+    );
+
+    Ok(phys)
+}
+
+fn copy_segment_page_data(
+    image: &[u8],
+    segment: &ExecLoadSegmentPlan,
+    virt_page_start: u64,
+    phys_page_start: u64,
+) -> Result<(), i32> {
+    let segment_file_end = segment
+        .vaddr
+        .checked_add(segment.file_size)
+        .ok_or(E2BIG)?;
+
+    if segment.file_size == 0 {
+        return Ok(());
+    }
+
+    let page_end = virt_page_start.checked_add(mm::PAGE_SIZE).ok_or(E2BIG)?;
+    let copy_start = cmp::max(virt_page_start, segment.vaddr);
+    let copy_end = cmp::min(page_end, segment_file_end);
+
+    if copy_end <= copy_start {
+        return Ok(());
+    }
+
+    let src_delta = copy_start.checked_sub(segment.vaddr).ok_or(EINVAL)?;
+    let src_offset_u64 = segment.file_offset.checked_add(src_delta).ok_or(E2BIG)?;
+    let src_offset = usize::try_from(src_offset_u64).map_err(|_| E2BIG)?;
+    let copy_len = usize::try_from(copy_end - copy_start).map_err(|_| E2BIG)?;
+    let src_end = src_offset.checked_add(copy_len).ok_or(E2BIG)?;
+
+    if src_end > image.len() {
+        return Err(EINVAL);
+    }
+
+    let page_offset = copy_start.checked_sub(virt_page_start).ok_or(EINVAL)?;
+    let dst_virt = mm::phys_to_virt(phys_page_start)
+        .checked_add(page_offset)
+        .ok_or(E2BIG)?;
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            image.as_ptr().add(src_offset),
+            dst_virt as *mut u8,
+            copy_len,
+        );
+    }
+
+    Ok(())
+}
+
+pub fn builtin_exec_paths() -> &'static [&'static str] {
+    &[BUILTIN_DEMO_EXEC_PATH, BUILTIN_INIT_EXEC_PATH]
+}
+
+pub fn lookup_builtin_exec_image(path: &str) -> Option<&'static [u8]> {
+    match path {
+        BUILTIN_DEMO_EXEC_PATH | BUILTIN_INIT_EXEC_PATH => Some(BUILTIN_DEMO_ELF),
+        _ => None,
+    }
+}
+
+pub fn build_elf_load_plan(image: &[u8]) -> Result<ExecLoadPlan, i32> {
+    let header = read_struct_unaligned::<Elf64Header>(image, 0).ok_or(EINVAL)?;
+
+    if header.ident[0..4] != ELF_MAGIC {
+        return Err(EINVAL);
+    }
+    if header.ident[4] != ELF_CLASS_64 {
+        return Err(EINVAL);
+    }
+    if header.ident[5] != ELF_DATA_LSB {
+        return Err(EINVAL);
+    }
+    if header.ident[6] != ELF_VERSION_CURRENT {
+        return Err(EINVAL);
+    }
+    if header.e_version != ELF_VERSION_CURRENT as u32 {
+        return Err(EINVAL);
+    }
+    if header.e_machine != ELF_MACHINE_X86_64 {
+        return Err(EINVAL);
+    }
+    if header.e_phentsize as usize != size_of::<Elf64ProgramHeader>() {
+        return Err(EINVAL);
+    }
+    if header.e_phnum == 0 {
+        return Err(ENOENT);
+    }
+
+    let phoff = usize::try_from(header.e_phoff).map_err(|_| EINVAL)?;
+    let phentsize = header.e_phentsize as usize;
+    let phnum = header.e_phnum as usize;
+
+    let ph_table_size = phentsize.checked_mul(phnum).ok_or(E2BIG)?;
+    let ph_table_end = phoff.checked_add(ph_table_size).ok_or(E2BIG)?;
+    if ph_table_end > image.len() {
+        return Err(EINVAL);
+    }
+
+    let mut segments: Vec<ExecLoadSegmentPlan> = Vec::new();
+    let mut segment_pages = 0u64;
+
+    for index in 0..phnum {
+        let ph_offset = phoff
+            .checked_add(index.checked_mul(phentsize).ok_or(E2BIG)?)
+            .ok_or(E2BIG)?;
+        let ph = read_struct_unaligned::<Elf64ProgramHeader>(image, ph_offset).ok_or(EINVAL)?;
+
+        if ph.p_type != PT_LOAD {
+            continue;
+        }
+
+        if ph.p_memsz == 0 {
+            continue;
+        }
+
+        if ph.p_filesz > ph.p_memsz {
+            return Err(EINVAL);
+        }
+
+        let file_end = ph.p_offset.checked_add(ph.p_filesz).ok_or(E2BIG)?;
+        if file_end > image.len() as u64 {
+            return Err(EINVAL);
+        }
+
+        let seg_start = ph.p_vaddr;
+        let seg_end = ph.p_vaddr.checked_add(ph.p_memsz).ok_or(E2BIG)?;
+
+        if seg_start < mm::USER_SPACE_START {
+            return Err(EINVAL);
+        }
+        if seg_end <= seg_start {
+            return Err(EINVAL);
+        }
+        if !mm::is_user_addr(seg_start) || !mm::is_user_addr(seg_end - 1) {
+            return Err(EINVAL);
+        }
+
+        if ph.p_align != 0 && !is_power_of_two(ph.p_align) {
+            return Err(EINVAL);
+        }
+
+        let page_start = mm::page_align_down(seg_start);
+        let page_end = mm::page_align_up(seg_end);
+        let page_count = (page_end - page_start) / mm::PAGE_SIZE;
+
+        let mut map_flags = mm::PTE_PRESENT | mm::PTE_USER;
+        let writable = (ph.p_flags & PF_W) != 0;
+        let executable = (ph.p_flags & PF_X) != 0;
+
+        if writable {
+            map_flags |= mm::PTE_WRITABLE;
+        }
+        if !executable {
+            map_flags |= mm::PTE_NO_EXECUTE;
+        }
+
+        segment_pages = segment_pages.checked_add(page_count).ok_or(E2BIG)?;
+
+        segments.push(ExecLoadSegmentPlan {
+            vaddr: seg_start,
+            mem_size: ph.p_memsz,
+            file_offset: ph.p_offset,
+            file_size: ph.p_filesz,
+            align: ph.p_align,
+            page_start,
+            page_end,
+            page_count,
+            map_flags,
+            executable,
+            writable,
+        });
+    }
+
+    if segments.is_empty() {
+        return Err(ENOENT);
+    }
+
+    segments.sort_by_key(|segment| segment.page_start);
+    for idx in 1..segments.len() {
+        let previous = &segments[idx - 1];
+        let current = &segments[idx];
+        if previous.page_end > current.page_start {
+            return Err(EINVAL);
+        }
+    }
+
+    let entry = header.e_entry;
+    if entry < mm::USER_SPACE_START || !mm::is_user_addr(entry) {
+        return Err(EINVAL);
+    }
+
+    if !segments.iter().any(|segment| segment_contains_entry(segment, entry)) {
+        return Err(EINVAL);
+    }
+
+    Ok(ExecLoadPlan {
+        entry,
+        image_len: image.len(),
+        segments,
+        segment_pages,
+        stack_top: mm::USER_STACK_TOP,
+        stack_pages: DEFAULT_USER_STACK_PAGES,
+    })
+}
+
+pub fn preview_pt_load_mapping(plan: &ExecLoadPlan) -> ExecMapPreview {
+    let mut preview = ExecMapPreview {
+        segment_count: plan.segments.len(),
+        segment_pages: plan.segment_pages,
+        stack_pages: plan.stack_pages,
+        total_pages: plan.segment_pages.saturating_add(plan.stack_pages),
+        ..ExecMapPreview::default()
+    };
+
+    for segment in plan.segments.iter() {
+        if segment.executable {
+            preview.executable_segments = preview.executable_segments.saturating_add(1);
+        }
+        if segment.writable {
+            preview.writable_segments = preview.writable_segments.saturating_add(1);
+        }
+    }
+
+    preview
+}
+
+pub fn stage_pt_load_mappings(
+    image: &[u8],
+    plan: &ExecLoadPlan,
+) -> Result<Vec<ExecMappedPage>, i32> {
+    let mut mapped_pages: Vec<ExecMappedPage> = Vec::new();
+
+    let stage_result = (|| {
+        let stack_bytes = plan.stack_pages.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
+        let stack_bottom = plan.stack_top.checked_sub(stack_bytes).ok_or(EINVAL)?;
+
+        if stack_bottom < mm::USER_SPACE_START {
+            return Err(EINVAL);
+        }
+        if plan.stack_top <= stack_bottom {
+            return Err(EINVAL);
+        }
+        if !mm::is_user_addr(stack_bottom) || !mm::is_user_addr(plan.stack_top - 1) {
+            return Err(EINVAL);
+        }
+
+        for segment in plan.segments.iter() {
+            if ranges_overlap(segment.page_start, segment.page_end, stack_bottom, plan.stack_top) {
+                return Err(EINVAL);
+            }
+        }
+
+        let pt_mgr = current_page_table_manager();
+        crate::kprintln!(
+            "[diag][execve] stage map begin entry={:#x} segs={} stack=[{:#x}, {:#x}) cr3={:#x}",
+            plan.entry,
+            plan.segments.len(),
+            stack_bottom,
+            plan.stack_top,
+            pt_mgr.pml4_phys(),
+        );
+        crate::kprintln!(
+            "[diag][execve] validate unmapped begin seg_pages={} stack_pages={}",
+            plan.segment_pages,
+            plan.stack_pages,
+        );
+        validate_target_unmapped(&pt_mgr, plan, stack_bottom)?;
+        crate::kprintln!("[diag][execve] validate unmapped done");
+
+        for (segment_idx, segment) in plan.segments.iter().enumerate() {
+            crate::kprintln!(
+                "[diag][execve] map segment idx={} range=[{:#x}, {:#x}) file_off={:#x} file_size={:#x} flags={:#x} pages={}",
+                segment_idx,
+                segment.page_start,
+                segment.page_end,
+                segment.file_offset,
+                segment.file_size,
+                segment.map_flags,
+                segment.page_count,
+            );
+
+            for page_idx in 0..segment.page_count {
+                let page_offset = page_idx.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
+                let virt = segment.page_start.checked_add(page_offset).ok_or(E2BIG)?;
+                let edge_page =
+                    page_idx == 0 || page_idx == segment.page_count.saturating_sub(1);
+
+                if edge_page {
+                    crate::kprintln!(
+                        "[diag][execve] map seg page begin seg={} page_idx={} virt={:#x}",
+                        segment_idx,
+                        page_idx,
+                        virt,
+                    );
+                }
+
+                let phys = map_zero_page(
+                    &pt_mgr,
+                    virt,
+                    segment.map_flags,
+                    ExecMappedPageKind::Segment,
+                    &mut mapped_pages,
+                )?;
+
+                if edge_page {
+                    crate::kprintln!(
+                        "[diag][execve] copy seg page begin seg={} page_idx={} virt={:#x}",
+                        segment_idx,
+                        page_idx,
+                        virt,
+                    );
+                }
+
+                copy_segment_page_data(image, segment, virt, phys)?;
+
+                if edge_page {
+                    crate::kprintln!(
+                        "[diag][execve] map seg page done seg={} page_idx={} virt={:#x}",
+                        segment_idx,
+                        page_idx,
+                        virt,
+                    );
+                }
+            }
+        }
+
+        let stack_flags = mm::PTE_PRESENT | mm::PTE_USER | mm::PTE_WRITABLE | mm::PTE_NO_EXECUTE;
+        for page_idx in 0..plan.stack_pages {
+            let page_offset = page_idx.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
+            let virt = stack_bottom.checked_add(page_offset).ok_or(E2BIG)?;
+            let edge_page = page_idx == 0 || page_idx == plan.stack_pages.saturating_sub(1);
+
+            if edge_page {
+                crate::kprintln!(
+                    "[diag][execve] map stack page begin page_idx={} virt={:#x}",
+                    page_idx,
+                    virt,
+                );
+            }
+
+            map_zero_page(
+                &pt_mgr,
+                virt,
+                stack_flags,
+                ExecMappedPageKind::Stack,
+                &mut mapped_pages,
+            )?;
+
+            if edge_page {
+                crate::kprintln!(
+                    "[diag][execve] map stack page done page_idx={} virt={:#x}",
+                    page_idx,
+                    virt,
+                );
+            }
+        }
+
+        crate::kprintln!(
+            "[diag][execve] stage map done mapped_pages={}",
+            mapped_pages.len()
+        );
+
+        Ok(())
+    })();
+
+    if let Err(errno) = stage_result {
+        crate::kprintln!(
+            "[diag][execve] stage map rollback errno={} mapped_pages={}",
+            errno,
+            mapped_pages.len()
+        );
+        rollback_exec_mappings(&mapped_pages);
+        return Err(errno);
+    }
+
+    Ok(mapped_pages)
+}
+
+fn release_mapped_phys_page(phys: u64) {
+    let pfn = phys / mm::PAGE_SIZE;
+
+    unsafe {
+        if pfn >= mm::MAX_PFN {
+            return;
+        }
+
+        let page = mm::pfn_to_page(pfn);
+
+        if page.mapcount() >= 0 {
+            page.dec_mapcount();
+        }
+
+        if page.refcount() == 0 {
+            return;
+        }
+
+        mm::free_page(page);
+    }
+}
+
+pub fn rollback_exec_mappings(mapped_pages: &[ExecMappedPage]) {
+    if mapped_pages.is_empty() {
+        return;
+    }
+
+    let pt_mgr = current_page_table_manager();
+
+    for page in mapped_pages.iter().rev() {
+        unsafe {
+            let _ = pt_mgr.unmap_page(page.virt);
+        }
+        release_mapped_phys_page(page.phys);
+    }
+}

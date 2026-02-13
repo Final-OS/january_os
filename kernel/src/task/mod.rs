@@ -1,5 +1,6 @@
 pub mod arch;
 pub mod context;
+pub mod exec;
 pub mod id;
 pub mod ipc;
 pub mod manager;
@@ -10,7 +11,21 @@ pub mod task;
 
 pub use id::{ProcessId, TaskId};
 pub use manager::find_process_by_pid;
+pub use exec::{
+    build_elf_load_plan,
+    builtin_exec_paths,
+    lookup_builtin_exec_image,
+    preview_pt_load_mapping,
+    rollback_exec_mappings,
+    stage_pt_load_mappings,
+    ExecLoadPlan,
+    ExecMapPreview,
+    ExecMappedPage,
+    ExecMappedPageKind,
+};
 pub use manager::find_task_by_pid;
+pub use manager::record_current_exec_request;
+pub use manager::set_current_exec_mappings;
 pub use manager::spawn_kernel_thread;
 pub use manager::WaitChildConsumeEvent;
 pub use manager::WaitChildOptions;

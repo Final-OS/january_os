@@ -1,5 +1,11 @@
-use crate::syscall::{ECHILD, EFAULT, EINVAL, SyscallArgs, SyscallRet, err, ok};
+use crate::syscall::{
+    E2BIG, ECHILD, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOSYS, EPERM, ESRCH,
+    SyscallArgs, SyscallRet, err, ok,
+};
 use crate::task;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 const WNOHANG: usize = 1;
 const WUNTRACED: usize = 2;
@@ -9,6 +15,30 @@ const __WALL: usize = 0x4000_0000;
 const __WCLONE: usize = 0x8000_0000;
 const WAIT4_SUPPORTED_OPTS: usize =
     WNOHANG | WUNTRACED | WCONTINUED | __WNOTHREAD | __WALL | __WCLONE;
+
+const SIGCHLD: i32 = 17;
+const SIGKILL: i32 = 9;
+const SIGTERM: i32 = 15;
+const SIGSTOP: i32 = 19;
+const SIGCONT: i32 = 18;
+const MAX_SIGNAL: i32 = 64;
+
+const CSIGNAL: usize = 0x0000_00ff;
+const CLONE_VM: usize = 0x0000_0100;
+const CLONE_VFORK: usize = 0x0000_4000;
+const CLONE_THREAD: usize = 0x0001_0000;
+const CLONE_PARENT_SETTID: usize = 0x0010_0000;
+const CLONE_CHILD_CLEARTID: usize = 0x0020_0000;
+const CLONE_CHILD_SETTID: usize = 0x0100_0000;
+const CLONE_SETTLS: usize = 0x0008_0000;
+const CLONE_DETACHED: usize = 0x0040_0000;
+const CLONE_SUPPORTED_FLAGS: usize = CSIGNAL | CLONE_VM | CLONE_VFORK;
+
+const EXEC_PATH_MAX: usize = 4096;
+const EXEC_ARG_STR_MAX: usize = 4096;
+const EXEC_ARG_LIST_MAX: usize = 256;
+const EXEC_ENV_LIST_MAX: usize = 256;
+const EXEC_TOTAL_BYTES_MAX: usize = 128 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Wait4Options {
@@ -166,13 +196,9 @@ fn parse_wait_options(raw: usize) -> Result<Wait4Options, i32> {
     })
 }
 
-fn validate_write_ptr(ptr: usize, size: usize, align: usize) -> Result<(), i32> {
+fn validate_write_ptr(ptr: usize, size: usize, _align: usize) -> Result<(), i32> {
     if ptr == 0 {
         return Ok(());
-    }
-
-    if align == 0 || ptr % align != 0 {
-        return Err(EFAULT);
     }
 
     let last = ptr
@@ -224,6 +250,254 @@ fn write_wait_rusage(rusage_ptr: usize, usage: &Rusage) -> Result<(), i32> {
     Ok(())
 }
 
+fn validate_read_ptr(ptr: usize, size: usize, _align: usize) -> Result<(), i32> {
+    if ptr == 0 {
+        return Err(EFAULT);
+    }
+
+    let last = ptr
+        .checked_add(size.saturating_sub(1))
+        .ok_or(EFAULT)?;
+
+    let start = ptr as u64;
+    let end = last as u64;
+    if start < crate::mm::USER_SPACE_START || end < crate::mm::USER_SPACE_START {
+        return Err(EFAULT);
+    }
+
+    if !crate::mm::is_user_addr(start) || !crate::mm::is_user_addr(end) {
+        return Err(EFAULT);
+    }
+
+    Ok(())
+}
+
+fn read_user_u8(ptr: usize) -> Result<u8, i32> {
+    validate_read_ptr(ptr, core::mem::size_of::<u8>(), core::mem::align_of::<u8>())?;
+
+    let value = unsafe { core::ptr::read(ptr as *const u8) };
+    Ok(value)
+}
+
+fn read_user_usize(ptr: usize) -> Result<usize, i32> {
+    validate_read_ptr(
+        ptr,
+        core::mem::size_of::<usize>(),
+        core::mem::align_of::<usize>(),
+    )?;
+
+    let value = unsafe { core::ptr::read(ptr as *const usize) };
+    Ok(value)
+}
+
+fn read_user_cstring(ptr: usize, max_len: usize) -> Result<String, i32> {
+    if ptr == 0 {
+        return Err(EFAULT);
+    }
+
+    let mut bytes: Vec<u8> = Vec::new();
+    for offset in 0..max_len {
+        let addr = ptr.checked_add(offset).ok_or(EFAULT)?;
+        let value = read_user_u8(addr)?;
+        if value == 0 {
+            let string = core::str::from_utf8(bytes.as_slice()).map_err(|_| EINVAL)?;
+            return Ok(String::from(string));
+        }
+
+        bytes.push(value);
+    }
+
+    Err(ENAMETOOLONG)
+}
+
+fn read_user_string_array(
+    list_ptr: usize,
+    max_items: usize,
+    item_len_limit: usize,
+) -> Result<(Vec<String>, usize), i32> {
+    if list_ptr == 0 {
+        return Ok((Vec::new(), 0));
+    }
+
+    let mut result: Vec<String> = Vec::new();
+    let mut used_bytes = 0usize;
+    let ptr_size = core::mem::size_of::<usize>();
+
+    for index in 0..max_items {
+        let index_offset = index.checked_mul(ptr_size).ok_or(E2BIG)?;
+        let entry_ptr = list_ptr.checked_add(index_offset).ok_or(EFAULT)?;
+        let value_ptr = read_user_usize(entry_ptr)?;
+
+        if value_ptr == 0 {
+            return Ok((result, used_bytes));
+        }
+
+        let value = read_user_cstring(value_ptr, item_len_limit)?;
+        used_bytes = used_bytes
+            .checked_add(value.len().saturating_add(1))
+            .ok_or(E2BIG)?;
+
+        if used_bytes > EXEC_TOTAL_BYTES_MAX {
+            return Err(E2BIG);
+        }
+
+        result.push(value);
+    }
+
+    Err(E2BIG)
+}
+
+fn parse_execve_payload(
+    path_ptr: usize,
+    argv_ptr: usize,
+    envp_ptr: usize,
+) -> Result<(String, Vec<String>, Vec<String>), i32> {
+    let path = read_user_cstring(path_ptr, EXEC_PATH_MAX)?;
+    if path.is_empty() {
+        return Err(ENOENT);
+    }
+
+    let (argv, argv_bytes) = read_user_string_array(argv_ptr, EXEC_ARG_LIST_MAX, EXEC_ARG_STR_MAX)?;
+    let (envp, envp_bytes) = read_user_string_array(envp_ptr, EXEC_ENV_LIST_MAX, EXEC_ARG_STR_MAX)?;
+
+    let total_bytes = argv_bytes.checked_add(envp_bytes).ok_or(E2BIG)?;
+    if total_bytes > EXEC_TOTAL_BYTES_MAX {
+        return Err(E2BIG);
+    }
+
+    Ok((path, argv, envp))
+}
+
+pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
+    let path_ptr = args.arg0;
+    let argv_ptr = args.arg1;
+    let envp_ptr = args.arg2;
+
+    let (path, argv, envp) = match parse_execve_payload(path_ptr, argv_ptr, envp_ptr) {
+        Ok(payload) => payload,
+        Err(errno) => {
+            crate::kprintln!(
+                "[diag][execve] parse failed errno={} path_ptr={:#x} argv_ptr={:#x} envp_ptr={:#x}",
+                errno,
+                path_ptr,
+                argv_ptr,
+                envp_ptr
+            );
+            return err(errno);
+        }
+    };
+
+    let image = match task::lookup_builtin_exec_image(path.as_str()) {
+        Some(image) => image,
+        None => {
+            crate::kprintln!(
+                "[diag][execve] image not found path={} supported={:?}",
+                path,
+                task::builtin_exec_paths()
+            );
+            return err(ENOENT);
+        }
+    };
+
+    let load_plan = match task::build_elf_load_plan(image) {
+        Ok(plan) => plan,
+        Err(errno) => {
+            crate::kprintln!(
+                "[diag][execve] invalid elf path={} errno={} image_len={}",
+                path,
+                errno,
+                image.len()
+            );
+            return err(errno);
+        }
+    };
+
+    let map_preview = task::preview_pt_load_mapping(&load_plan);
+    let user_frame = task::arch::build_user_enter_frame(load_plan.entry, load_plan.stack_top);
+
+    let staged_mappings = match task::stage_pt_load_mappings(image, &load_plan) {
+        Ok(mapped) => mapped,
+        Err(errno) => {
+            crate::kprintln!(
+                "[diag][execve] stage PT_LOAD failed path={} errno={} segs={} pages={}",
+                path,
+                errno,
+                map_preview.segment_count,
+                map_preview.total_pages,
+            );
+            return err(errno);
+        }
+    };
+
+    if task::record_current_exec_request(path.as_str(), argv.len(), envp.len()).is_none() {
+        crate::kprintln!(
+            "[diag][execve] current process missing while path={} argc={} envc={}",
+            path,
+            argv.len(),
+            envp.len()
+        );
+        task::rollback_exec_mappings(&staged_mappings);
+        return err(ESRCH);
+    }
+
+    let argv0 = argv.first().map(|arg| arg.as_str()).unwrap_or("");
+    let mapped_segment_pages = staged_mappings
+        .iter()
+        .filter(|page| page.kind == task::ExecMappedPageKind::Segment)
+        .count();
+    let mapped_stack_pages = staged_mappings
+        .iter()
+        .filter(|page| page.kind == task::ExecMappedPageKind::Stack)
+        .count();
+
+    crate::kprintln!(
+        "[diag][execve] accepted request path={} argc={} envc={} argv0={}",
+        path,
+        argv.len(),
+        envp.len(),
+        argv0
+    );
+
+    crate::kprintln!(
+        "[diag][execve] elf plan path={} image_len={} entry={:#x} segs={} seg_pages={} stack_pages={} total_pages={}",
+        path,
+        load_plan.image_len,
+        load_plan.entry,
+        map_preview.segment_count,
+        map_preview.segment_pages,
+        map_preview.stack_pages,
+        map_preview.total_pages,
+    );
+
+    crate::kprintln!(
+        "[diag][execve] stage mapping done path={} mapped_segment_pages={} mapped_stack_pages={} first_virt={:#x}",
+        path,
+        mapped_segment_pages,
+        mapped_stack_pages,
+        staged_mappings.first().map(|page| page.virt).unwrap_or(0),
+    );
+
+    crate::kprintln!(
+        "[diag][execve] user frame rip={:#x} rsp={:#x} cs={:#x} ss={:#x} rflags={:#x}",
+        user_frame.rip,
+        user_frame.rsp,
+        user_frame.cs,
+        user_frame.ss,
+        user_frame.rflags
+    );
+
+    task::rollback_exec_mappings(&staged_mappings);
+    crate::kprintln!(
+        "[diag][execve] staged mappings rolled back: pages={} (transition disabled)",
+        staged_mappings.len()
+    );
+    crate::kprintln!(
+        "[diag][execve] PT_LOAD real-mapping path is ready, ring3 transition remains disabled -> -ENOSYS",
+    );
+
+    err(ENOSYS)
+}
+
 pub(crate) fn sys_getpid(_args: &SyscallArgs) -> SyscallRet {
     if let Some(pid) = task::current_pid() {
         ok(pid.0)
@@ -245,6 +519,531 @@ pub(crate) fn sys_gettid(_args: &SyscallArgs) -> SyscallRet {
         ok(tid.0)
     } else {
         err(EINVAL)
+    }
+}
+
+extern "C" fn syscall_child_stub() {}
+
+fn parse_signal(raw_sig: usize) -> Result<i32, i32> {
+    let sig = raw_sig as i32;
+    if sig < 0 || sig > MAX_SIGNAL {
+        return Err(EINVAL);
+    }
+    Ok(sig)
+}
+
+fn spawn_minimal_child(name: &str, is_clone_child: bool) -> Result<task::ProcessId, i32> {
+    let child_task = task::spawn_kernel_thread(name, syscall_child_stub);
+    let child_pid = child_task.lock().pid;
+
+    let Some(child_process) = task::find_process_by_pid(child_pid) else {
+        return Err(ESRCH);
+    };
+
+    child_process.lock().is_clone_child = is_clone_child;
+
+    crate::kprintln!(
+        "[diag][task] syscall spawn child: pid={} clone_child={} name={}",
+        child_pid.0,
+        is_clone_child,
+        name
+    );
+
+    Ok(child_pid)
+}
+
+fn wait_for_vfork_release(child_pid: task::ProcessId) {
+    let options = task::WaitChildOptions {
+        clone_filter: task::WaitCloneFilter::All,
+        ..task::WaitChildOptions::default()
+    };
+
+    let mut logged_wait = false;
+    loop {
+        match task::wait_child_observe_by_target_with_options(task::WaitTarget::Pid(child_pid), options)
+        {
+            task::WaitChildObserveResult::Reapable(_, _)
+            | task::WaitChildObserveResult::NoMatchedChild => {
+                break;
+            }
+            task::WaitChildObserveResult::Stopped(_, _)
+            | task::WaitChildObserveResult::Continued(_)
+            | task::WaitChildObserveResult::ChildRunning => {
+                if !logged_wait {
+                    crate::kprintln!(
+                        "[diag][task] vfork parent waiting child_pid={}",
+                        child_pid.0
+                    );
+                    logged_wait = true;
+                }
+                task::scheduler::schedule();
+            }
+        }
+    }
+}
+
+fn clone_impl(
+    flags: usize,
+    child_stack: usize,
+    parent_tid: usize,
+    child_tid: usize,
+    tls: usize,
+) -> Result<task::ProcessId, i32> {
+    let unsupported = flags & !CLONE_SUPPORTED_FLAGS;
+    if unsupported != 0 {
+        crate::kprintln!(
+            "[diag][clone] unsupported flags={:#x} allowed={:#x}",
+            unsupported,
+            CLONE_SUPPORTED_FLAGS
+        );
+        return Err(EINVAL);
+    }
+
+    if (flags & CLONE_VFORK) != 0 && (flags & CLONE_VM) == 0 {
+        crate::kprintln!(
+            "[diag][clone] invalid flags: CLONE_VFORK without CLONE_VM flags={:#x}",
+            flags
+        );
+        return Err(EINVAL);
+    }
+
+    if (flags & CLONE_VM) != 0 && (flags & CLONE_VFORK) == 0 {
+        crate::kprintln!(
+            "[diag][clone] unsupported CLONE_VM without CLONE_VFORK flags={:#x}",
+            flags
+        );
+        return Err(EINVAL);
+    }
+
+    if child_stack != 0
+        || parent_tid != 0
+        || child_tid != 0
+        || tls != 0
+        || (flags & CLONE_THREAD) != 0
+        || (flags & CLONE_PARENT_SETTID) != 0
+        || (flags & CLONE_CHILD_SETTID) != 0
+        || (flags & CLONE_CHILD_CLEARTID) != 0
+        || (flags & CLONE_SETTLS) != 0
+        || (flags & CLONE_DETACHED) != 0
+    {
+        crate::kprintln!(
+            "[diag][clone] unsupported args/flags child_stack={:#x} ptid={:#x} ctid={:#x} tls={:#x} flags={:#x}",
+            child_stack,
+            parent_tid,
+            child_tid,
+            tls,
+            flags
+        );
+        return Err(EINVAL);
+    }
+
+    let exit_signal = (flags & CSIGNAL) as i32;
+    if exit_signal < 0 || exit_signal > MAX_SIGNAL {
+        return Err(EINVAL);
+    }
+
+    let is_clone_child = exit_signal != 0 && exit_signal != SIGCHLD;
+    let child_name = if (flags & CLONE_VFORK) != 0 {
+        "vfork_child"
+    } else if is_clone_child {
+        "clone_child"
+    } else {
+        "fork_child"
+    };
+
+    let child_pid = spawn_minimal_child(child_name, is_clone_child)?;
+
+    if (flags & CLONE_VFORK) != 0 {
+        wait_for_vfork_release(child_pid);
+    }
+
+    Ok(child_pid)
+}
+
+fn collect_kill_targets(raw_pid: isize) -> Result<Vec<task::ProcessId>, i32> {
+    match raw_pid {
+        pid if pid > 0 => {
+            let target = task::ProcessId(pid as usize);
+            if task::find_process_by_pid(target).is_some() {
+                Ok(vec![target])
+            } else {
+                Err(ESRCH)
+            }
+        }
+        0 => {
+            let Some(current_pgid) = task::current_pgid() else {
+                return Err(ESRCH);
+            };
+            let targets = task::manager::process_ids_by_pgid(current_pgid);
+            if targets.is_empty() {
+                Err(ESRCH)
+            } else {
+                Ok(targets)
+            }
+        }
+        -1 => {
+            let mut targets: Vec<task::ProcessId> = task::manager::all_process_ids()
+                .into_iter()
+                .filter(|pid| pid.0 != 0)
+                .collect();
+            targets.sort_by_key(|pid| pid.0);
+            if targets.is_empty() {
+                Err(ESRCH)
+            } else {
+                Ok(targets)
+            }
+        }
+        pid => {
+            let group_raw = pid.checked_neg().ok_or(EINVAL)?;
+            if group_raw <= 1 {
+                return Err(EINVAL);
+            }
+            let group = task::ProcessId(group_raw as usize);
+            let targets = task::manager::process_ids_by_pgid(group);
+            if targets.is_empty() {
+                Err(ESRCH)
+            } else {
+                Ok(targets)
+            }
+        }
+    }
+}
+
+fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
+    let Some(process_ref) = task::find_process_by_pid(pid) else {
+        return Err(ESRCH);
+    };
+
+    if sig == 0 || sig == SIGCHLD {
+        return Ok(false);
+    }
+
+    let current_pid = task::current_pid();
+    let target_is_current = current_pid == Some(pid);
+
+    match sig {
+        SIGTERM | SIGKILL => {
+            let exit_code = 128 + sig;
+            let tasks = {
+                let process = process_ref.lock();
+                process.tasks.clone()
+            };
+
+            for task_ref in tasks.iter() {
+                let mut task = task_ref.lock();
+                task.status = task::TaskStatus::Exited;
+                task.exit_code = Some(exit_code);
+            }
+
+            {
+                let mut process = process_ref.lock();
+                process.mark_exiting(exit_code);
+                process.mark_zombie();
+            }
+
+            let removed_ready = task::scheduler::SCHEDULER.lock().remove_tasks_by_pid(pid);
+            crate::kprintln!(
+                "[diag][signal] terminate pid={} sig={} removed_ready={}",
+                pid.0,
+                sig,
+                removed_ready
+            );
+
+            Ok(target_is_current)
+        }
+        SIGSTOP => {
+            let tasks = {
+                let mut process = process_ref.lock();
+                process.mark_stopped(SIGSTOP);
+                process.tasks.clone()
+            };
+
+            let mut blocked_tasks = 0usize;
+            for task_ref in tasks {
+                let mut task = task_ref.lock();
+                if task.status != task::TaskStatus::Exited {
+                    task.status = task::TaskStatus::Blocked;
+                    blocked_tasks = blocked_tasks.saturating_add(1);
+                }
+            }
+
+            let removed_ready = task::scheduler::SCHEDULER.lock().remove_tasks_by_pid(pid);
+            crate::kprintln!(
+                "[diag][signal] stop pid={} blocked_tasks={} removed_ready={}",
+                pid.0,
+                blocked_tasks,
+                removed_ready
+            );
+
+            Ok(target_is_current)
+        }
+        SIGCONT => {
+            let tasks = {
+                let mut process = process_ref.lock();
+                process.mark_continued();
+                process.tasks.clone()
+            };
+
+            let mut resumed_tasks = 0usize;
+            for task_ref in tasks {
+                let mut should_queue = false;
+                {
+                    let mut task = task_ref.lock();
+                    if task.status == task::TaskStatus::Blocked {
+                        task.status = task::TaskStatus::Ready;
+                        should_queue = true;
+                    }
+                }
+
+                if should_queue {
+                    task::scheduler::SCHEDULER.lock().add_task(task_ref);
+                    resumed_tasks = resumed_tasks.saturating_add(1);
+                }
+            }
+
+            crate::kprintln!(
+                "[diag][signal] continue pid={} resumed_tasks={}",
+                pid.0,
+                resumed_tasks
+            );
+            Ok(false)
+        }
+        _ => Err(EINVAL),
+    }
+}
+
+pub(crate) fn sys_clone(args: &SyscallArgs) -> SyscallRet {
+    match clone_impl(args.arg0, args.arg1, args.arg2, args.arg3, args.arg4) {
+        Ok(child_pid) => ok(child_pid.0),
+        Err(errno) => err(errno),
+    }
+}
+
+pub(crate) fn sys_fork(_args: &SyscallArgs) -> SyscallRet {
+    match clone_impl(SIGCHLD as usize, 0, 0, 0, 0) {
+        Ok(child_pid) => ok(child_pid.0),
+        Err(errno) => err(errno),
+    }
+}
+
+pub(crate) fn sys_vfork(_args: &SyscallArgs) -> SyscallRet {
+    match clone_impl((SIGCHLD as usize) | CLONE_VM | CLONE_VFORK, 0, 0, 0, 0) {
+        Ok(child_pid) => ok(child_pid.0),
+        Err(errno) => err(errno),
+    }
+}
+
+pub(crate) fn sys_getpgid(args: &SyscallArgs) -> SyscallRet {
+    let raw_pid = args.arg0 as isize;
+    if raw_pid < 0 {
+        return err(EINVAL);
+    }
+
+    let target_pid = if raw_pid == 0 {
+        let Some(current_pid) = task::current_pid() else {
+            return err(ESRCH);
+        };
+        current_pid
+    } else {
+        task::ProcessId(raw_pid as usize)
+    };
+
+    let Some(process) = task::find_process_by_pid(target_pid) else {
+        return err(ESRCH);
+    };
+
+    ok(process.lock().pgid.0)
+}
+
+pub(crate) fn sys_getpgrp(_args: &SyscallArgs) -> SyscallRet {
+    if let Some(pgid) = task::current_pgid() {
+        ok(pgid.0)
+    } else {
+        err(ESRCH)
+    }
+}
+
+pub(crate) fn sys_setpgid(args: &SyscallArgs) -> SyscallRet {
+    let raw_pid = args.arg0 as isize;
+    let raw_pgid = args.arg1 as isize;
+
+    if raw_pid < 0 || raw_pgid < 0 {
+        return err(EINVAL);
+    }
+
+    let Some(caller_pid) = task::current_pid() else {
+        return err(ESRCH);
+    };
+
+    let target_pid = if raw_pid == 0 {
+        caller_pid
+    } else {
+        task::ProcessId(raw_pid as usize)
+    };
+
+    let Some(target_process_ref) = task::find_process_by_pid(target_pid) else {
+        return err(ESRCH);
+    };
+
+    if target_pid != caller_pid {
+        let target_parent = target_process_ref.lock().parent;
+        if target_parent != Some(caller_pid) {
+            return err(EPERM);
+        }
+    }
+
+    let new_pgid = if raw_pgid == 0 {
+        target_pid
+    } else {
+        task::ProcessId(raw_pgid as usize)
+    };
+
+    if new_pgid != target_pid {
+        let group_exists = task::find_process_by_pid(new_pgid).is_some()
+            || !task::manager::process_ids_by_pgid(new_pgid).is_empty();
+        if !group_exists {
+            return err(EPERM);
+        }
+    }
+
+    target_process_ref.lock().pgid = new_pgid;
+
+    crate::kprintln!(
+        "[diag][task] setpgid target_pid={} new_pgid={} caller_pid={}",
+        target_pid.0,
+        new_pgid.0,
+        caller_pid.0
+    );
+
+    ok(0)
+}
+
+pub(crate) fn sys_setsid(_args: &SyscallArgs) -> SyscallRet {
+    let Some(caller_pid) = task::current_pid() else {
+        return err(ESRCH);
+    };
+
+    let Some(process_ref) = task::find_process_by_pid(caller_pid) else {
+        return err(ESRCH);
+    };
+
+    let current_pgid = process_ref.lock().pgid;
+    if current_pgid == caller_pid {
+        return err(EPERM);
+    }
+
+    let conflicting_group = task::manager::process_ids_by_pgid(caller_pid)
+        .into_iter()
+        .any(|pid| pid != caller_pid);
+    if conflicting_group {
+        return err(EPERM);
+    }
+
+    process_ref.lock().pgid = caller_pid;
+
+    crate::kprintln!(
+        "[diag][task] setsid pid={} pgid={} done",
+        caller_pid.0,
+        caller_pid.0
+    );
+
+    ok(caller_pid.0)
+}
+
+pub(crate) fn sys_kill(args: &SyscallArgs) -> SyscallRet {
+    let raw_pid = args.arg0 as isize;
+    let sig = match parse_signal(args.arg1) {
+        Ok(sig) => sig,
+        Err(errno) => return err(errno),
+    };
+
+    let targets = match collect_kill_targets(raw_pid) {
+        Ok(targets) => targets,
+        Err(errno) => return err(errno),
+    };
+
+    let mut delivered = 0usize;
+    let mut need_schedule = false;
+
+    for pid in targets {
+        match signal_process(pid, sig) {
+            Ok(resched) => {
+                delivered = delivered.saturating_add(1);
+                need_schedule |= resched;
+            }
+            Err(ESRCH) => {}
+            Err(errno) => return err(errno),
+        }
+    }
+
+    if delivered == 0 {
+        return err(ESRCH);
+    }
+
+    if need_schedule {
+        task::scheduler::schedule();
+    }
+
+    ok(0)
+}
+
+pub(crate) fn sys_tkill(args: &SyscallArgs) -> SyscallRet {
+    let raw_tid = args.arg0 as isize;
+    if raw_tid <= 0 {
+        return err(EINVAL);
+    }
+
+    let sig = match parse_signal(args.arg1) {
+        Ok(sig) => sig,
+        Err(errno) => return err(errno),
+    };
+
+    let Some(target_task) = task::manager::find_task_by_tid(task::TaskId(raw_tid as usize)) else {
+        return err(ESRCH);
+    };
+    let target_pid = target_task.lock().pid;
+
+    match signal_process(target_pid, sig) {
+        Ok(need_schedule) => {
+            if need_schedule {
+                task::scheduler::schedule();
+            }
+            ok(0)
+        }
+        Err(errno) => err(errno),
+    }
+}
+
+pub(crate) fn sys_tgkill(args: &SyscallArgs) -> SyscallRet {
+    let raw_tgid = args.arg0 as isize;
+    let raw_tid = args.arg1 as isize;
+
+    if raw_tgid <= 0 || raw_tid <= 0 {
+        return err(EINVAL);
+    }
+
+    let sig = match parse_signal(args.arg2) {
+        Ok(sig) => sig,
+        Err(errno) => return err(errno),
+    };
+
+    let Some(target_task) = task::manager::find_task_by_tid(task::TaskId(raw_tid as usize)) else {
+        return err(ESRCH);
+    };
+
+    let target_pid = target_task.lock().pid;
+    if target_pid.0 != raw_tgid as usize {
+        return err(ESRCH);
+    }
+
+    match signal_process(target_pid, sig) {
+        Ok(need_schedule) => {
+            if need_schedule {
+                task::scheduler::schedule();
+            }
+            ok(0)
+        }
+        Err(errno) => err(errno),
     }
 }
 

@@ -2,12 +2,14 @@
 //!
 //! 负责任务的创建、销毁和查找。
 
+use super::exec::{rollback_exec_mappings, ExecMappedPage};
 use super::id::{ProcessId, TaskId};
 use super::process::{Process, ProcessStatus};
 use super::scheduler::SCHEDULER;
 use super::task::{Task, TaskStatus};
 use crate::libs::rdtree::RadixTree;
 use crate::sync::Mutex;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -116,6 +118,10 @@ impl TaskManager {
         self.processes.get(pid.0)
     }
 
+    pub fn find_task_by_tid(&self, tid: TaskId) -> Option<&Arc<Mutex<Task>>> {
+        self.tasks.get(tid.0)
+    }
+
     pub fn remove_task_by_tid(&mut self, tid: TaskId) -> Option<Arc<Mutex<Task>>> {
         self.tasks.remove(tid.0)
     }
@@ -147,6 +153,20 @@ impl TaskManager {
     pub fn process_count(&self) -> usize {
         self.processes.len()
     }
+
+    pub fn all_process_ids(&self) -> Vec<ProcessId> {
+        self.processes
+            .iter()
+            .map(|(pid, _)| ProcessId(pid))
+            .collect()
+    }
+
+    pub fn process_ids_by_pgid(&self, pgid: ProcessId) -> Vec<ProcessId> {
+        self.processes
+            .iter()
+            .filter_map(|(pid, process)| (process.lock().pgid == pgid).then_some(ProcessId(pid)))
+            .collect()
+    }
 }
 
 pub fn init() {
@@ -161,6 +181,121 @@ pub fn find_task_by_pid(pid: ProcessId) -> Option<Arc<Mutex<Task>>> {
 /// 根据 PID 查找进程
 pub fn find_process_by_pid(pid: ProcessId) -> Option<Arc<Mutex<Process>>> {
     TASK_MANAGER.lock().find_process_by_pid(pid).cloned()
+}
+
+pub fn record_current_exec_request(path: &str, argc: usize, envc: usize) -> Option<ProcessId> {
+    let current_task = super::processor::current_task()?;
+
+    let pid = {
+        let mut task = current_task.lock();
+        task.name = String::from(path);
+        task.pid
+    };
+
+    let process_ref = find_process_by_pid(pid)?;
+
+    let (seq, pgid) = {
+        let mut process = process_ref.lock();
+        process.record_exec_request(path, argc, envc);
+        (process.exec_request_seq, process.pgid)
+    };
+
+    crate::kprintln!(
+        "[diag][execve] request recorded: pid={} pgid={} path={} argc={} envc={} seq={}",
+        pid.0,
+        pgid.0,
+        path,
+        argc,
+        envc,
+        seq
+    );
+
+    Some(pid)
+}
+
+pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize> {
+    let Some(current_task) = super::processor::current_task() else {
+        rollback_exec_mappings(&mappings);
+        crate::kprintln!(
+            "[diag][execve] set current mappings failed: no current task, rolled back pages={}",
+            mappings.len()
+        );
+        return None;
+    };
+
+    let pid = {
+        let task = current_task.lock();
+        task.pid
+    };
+
+    let Some(process_ref) = find_process_by_pid(pid) else {
+        rollback_exec_mappings(&mappings);
+        crate::kprintln!(
+            "[diag][execve] set current mappings failed: missing process pid={}, rolled back pages={}",
+            pid.0,
+            mappings.len()
+        );
+        return None;
+    };
+
+    let replaced = {
+        let mut process = process_ref.lock();
+        process.replace_exec_mappings(mappings)
+    };
+
+    let replaced_count = replaced.len();
+    if replaced_count > 0 {
+        rollback_exec_mappings(&replaced);
+        crate::kprintln!(
+            "[diag][execve] replaced stale exec mappings: pid={} pages={}",
+            pid.0,
+            replaced_count
+        );
+    }
+
+    Some(replaced_count)
+}
+
+fn reap_orphan_zombie_process(pid: ProcessId) {
+    let can_reap = match find_process_by_pid(pid) {
+        Some(process_ref) => {
+            let process = process_ref.lock();
+            process.parent.is_none() && process.status == ProcessStatus::Zombie
+        }
+        None => false,
+    };
+
+    if !can_reap {
+        return;
+    }
+
+    let removed_tasks = {
+        let mut manager = TASK_MANAGER.lock();
+        if manager.remove_process_by_pid(pid).is_none() {
+            return;
+        }
+        manager.remove_tasks_by_process(pid)
+    };
+
+    let removed_ready = SCHEDULER.lock().remove_tasks_by_pid(pid);
+    crate::kprintln!(
+        "[diag][task] auto reap orphan process: pid={} removed_tasks={} removed_ready={}",
+        pid.0,
+        removed_tasks,
+        removed_ready
+    );
+}
+
+pub fn find_task_by_tid(tid: TaskId) -> Option<Arc<Mutex<Task>>> {
+    TASK_MANAGER.lock().find_task_by_tid(tid).cloned()
+}
+
+pub fn all_process_ids() -> Vec<ProcessId> {
+    TASK_MANAGER.lock().all_process_ids()
+}
+
+pub fn process_ids_by_pgid(pgid: ProcessId) -> Vec<ProcessId> {
+    TASK_MANAGER.lock().process_ids_by_pgid(pgid)
 }
 
 fn child_matches_target(child_pid: ProcessId, target: WaitTarget) -> bool {
@@ -293,13 +428,15 @@ pub fn wait_child_observe_by_target(target: WaitTarget) -> WaitChildObserveResul
 pub fn reap_observed_child(child_pid: ProcessId) -> Option<(ProcessId, i32)> {
     let (parent_pid, parent_process) = parent_owns_child(child_pid)?;
 
-    let exit_code = {
+    let (exit_code, exec_mappings) = {
         let child_process = find_process_by_pid(child_pid)?;
-        let child = child_process.lock();
+        let mut child = child_process.lock();
         if child.status != ProcessStatus::Zombie {
             return None;
         }
-        child.exit_code.unwrap_or(0)
+        let exit_code = child.exit_code.unwrap_or(0);
+        let exec_mappings = child.take_exec_mappings();
+        (exit_code, exec_mappings)
     };
 
     {
@@ -315,12 +452,18 @@ pub fn reap_observed_child(child_pid: ProcessId) -> Option<(ProcessId, i32)> {
 
     let removed_ready = SCHEDULER.lock().remove_tasks_by_pid(child_pid);
 
+    let released_mappings = exec_mappings.len();
+    if released_mappings > 0 {
+        rollback_exec_mappings(&exec_mappings);
+    }
+
     crate::kprintln!(
-        "[diag][task] reap child: parent_pid={} child_pid={} code={} removed_ready={}",
+        "[diag][task] reap child: parent_pid={} child_pid={} code={} removed_ready={} released_exec_pages={}",
         parent_pid.0,
         child_pid.0,
         exit_code,
-        removed_ready
+        removed_ready,
+        released_mappings
     );
 
     Some((child_pid, exit_code))
@@ -448,20 +591,36 @@ pub fn exit_current_task(exit_code: i32) {
     };
 
     if let Some(process_ref) = find_process_by_pid(pid) {
-        let mut process = process_ref.lock();
-        let all_exited = process
-            .tasks
-            .iter()
-            .all(|task| task.lock().status == TaskStatus::Exited);
+        let mut should_reap_orphan = false;
+        let mut released_exec_mappings: Vec<ExecMappedPage> = Vec::new();
 
-        if all_exited {
-            process.mark_exiting(exit_code);
-            process.mark_zombie();
-            crate::kprintln!(
-                "[diag][task] process became zombie: pid={} code={}",
-                pid.0,
-                exit_code
-            );
+        {
+            let mut process = process_ref.lock();
+            let all_exited = process
+                .tasks
+                .iter()
+                .all(|task| task.lock().status == TaskStatus::Exited);
+
+            if all_exited {
+                process.mark_exiting(exit_code);
+                process.mark_zombie();
+                released_exec_mappings = process.take_exec_mappings();
+                should_reap_orphan = process.parent.is_none();
+                crate::kprintln!(
+                    "[diag][task] process became zombie: pid={} code={} exec_pages={}",
+                    pid.0,
+                    exit_code,
+                    released_exec_mappings.len()
+                );
+            }
+        }
+
+        if !released_exec_mappings.is_empty() {
+            rollback_exec_mappings(&released_exec_mappings);
+        }
+
+        if should_reap_orphan {
+            reap_orphan_zombie_process(pid);
         }
     }
 }
@@ -496,19 +655,31 @@ pub fn exit_current_process(exit_code: i32) {
         task.exit_code = Some(exit_code);
     }
 
-    let mut process = process_ref.lock();
-    process.mark_exiting(exit_code);
-    process.mark_zombie();
+    let (released_exec_mappings, should_reap_orphan) = {
+        let mut process = process_ref.lock();
+        process.mark_exiting(exit_code);
+        process.mark_zombie();
+        (process.take_exec_mappings(), process.parent.is_none())
+    };
+
+    if !released_exec_mappings.is_empty() {
+        rollback_exec_mappings(&released_exec_mappings);
+    }
 
     // 清理同进程残留的就绪队列项，避免退出任务再次被调度。
     let removed_ready = SCHEDULER.lock().remove_tasks_by_pid(pid);
     crate::kprintln!(
-        "[diag][task] exit_group: pid={} code={} tasks={} removed_ready={}",
+        "[diag][task] exit_group: pid={} code={} tasks={} removed_ready={} exec_pages={}",
         pid.0,
         exit_code,
         task_count,
-        removed_ready
+        removed_ready,
+        released_exec_mappings.len()
     );
+
+    if should_reap_orphan {
+        reap_orphan_zombie_process(pid);
+    }
 }
 
 /// 等待子进程退出（按目标回收 Zombie 子进程）

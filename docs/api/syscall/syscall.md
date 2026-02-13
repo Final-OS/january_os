@@ -6,9 +6,9 @@
 
 ## 系统调用机制
 
-### syscall/sysret 指令
+### syscall 指令入口
 
-x86_64 Long Mode 使用 `syscall` 和 `sysret` 指令实现快速系统调用。
+x86_64 Long Mode 使用 `syscall` 指令进入内核态，当前实现通过 `iretq` 返回用户态。
 
 **寄存器约定**:
 - `rax`: 系统调用号（输入）/ 返回值（输出）
@@ -19,12 +19,10 @@ x86_64 Long Mode 使用 `syscall` 和 `sysret` 指令实现快速系统调用。
 - `r8`: 参数 4
 - `r9`: 参数 5
 
-**调用流程**:
-1. 用户态设置系统调用号和参数
-2. 执行 `syscall` 指令
-3. CPU 切换到内核态
-4. 内核处理系统调用
-5. 执行 `sysret` 指令返回用户态
+**当前实现要点**:
+- BSP/AP 初始化阶段会写入 `STAR/LSTAR/SFMASK/EFER.SCE`。
+- `syscall_entry` 汇编入口会把寄存器参数组装后转发到统一 syscall 分发。
+- 返回路径当前使用 `iretq`（后续可继续收敛到 `sysretq`）。
 
 ---
 
@@ -100,8 +98,10 @@ pub fn dispatch(
 
 ```rust
 pub const EBADF: i32 = 9;      // Bad file descriptor
-pub const EFAULT: i32 = 14;    // Bad address
 pub const ECHILD: i32 = 10;    // No child processes
+pub const ENOMEM: i32 = 12;    // Out of memory
+pub const EFAULT: i32 = 14;    // Bad address
+pub const EBUSY: i32 = 16;     // Resource busy
 pub const EINVAL: i32 = 22;    // Invalid argument
 pub const ENOSYS: i32 = 38;    // Function not implemented
 ```
@@ -161,6 +161,90 @@ pub(crate) fn sys_gettid(_args: &SyscallArgs) -> SyscallRet
 ```
 
 **返回**: 线程 ID 或错误码
+
+#### sys_clone (56)
+
+创建子进程（最小 Linux ABI 语义）。
+
+```rust
+pub(crate) fn sys_clone(args: &SyscallArgs) -> SyscallRet
+```
+
+**当前实现约束**:
+- 支持 `CSIGNAL` 与 `CLONE_VFORK|CLONE_VM` 的最小子集。
+- 暂不支持 `CLONE_THREAD/CLONE_SETTLS/CLONE_*TID` 等线程共享语义；命中后返回 `-EINVAL`。
+- 暂不支持 `child_stack/ptid/ctid/tls` 非零参数；命中后返回 `-EINVAL`。
+- 目前子进程以最小内核线程形态创建，用于打通创建/退出/回收链路。
+
+#### sys_fork (57)
+
+`fork` 的最小可用语义，当前内部基于 `clone(SIGCHLD)` 路径。
+
+```rust
+pub(crate) fn sys_fork(_args: &SyscallArgs) -> SyscallRet
+```
+
+#### sys_vfork (58)
+
+`vfork` 的最小可用语义，当前内部基于 `clone(CLONE_VFORK|CLONE_VM|SIGCHLD)`，父进程会等待子进程释放执行权。
+
+```rust
+pub(crate) fn sys_vfork(_args: &SyscallArgs) -> SyscallRet
+```
+
+#### sys_execve (59)
+
+执行新程序映像（Batch 3 第三阶段）。
+
+```rust
+pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet
+```
+
+**当前行为**:
+- 已接入 `pathname/argv/envp` 的用户指针范围与字符串边界校验。
+- 支持 `EFAULT/E2BIG/ENAMETOOLONG/ENOENT` 等基础错误路径。
+- 已接入最小 ELF64 解析、`PT_LOAD` 规划与权限检查（含段重叠校验）。
+- 已接入 `PT_LOAD + user stack` 真实映射（按段 PTE 权限），并在失败路径执行回滚。
+- 映射目标页若已存在映射，返回 `-EBUSY`（避免覆盖现有地址空间）。
+- 已接入用户态 `iretq` 入口帧构建骨架（`rip/rsp/cs/ss/rflags`）。
+- 当前内置可解析镜像路径：`/init`、`/bin/demo_user`。
+- 会记录本次 exec 请求到进程可观测状态（path/argc/envc/seq）。
+- 当前仍返回 `-ENOSYS`：ring3 实际切换尚未并入 `sys_execve` 主路径，映射在本阶段会回滚。
+- 可通过 shell `runuser` 命令验证 ring3 + syscall 最小链路（演示路径）。
+- `runuser` 演示链路已可稳定完成 `ring3 -> sys_exit(60) -> 任务回收 -> 返回 shell`。
+- 映射阶段已补充页级诊断日志（含冲突检测、映射/回滚、syscall 入口与返回日志）。
+
+#### sys_getpgid (121) / sys_getpgrp (111)
+
+获取进程组 ID。
+
+```rust
+pub(crate) fn sys_getpgid(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_getpgrp(_args: &SyscallArgs) -> SyscallRet
+```
+
+#### sys_setpgid (109) / sys_setsid (112)
+
+设置进程组和会话（最小语义）。
+
+```rust
+pub(crate) fn sys_setpgid(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_setsid(_args: &SyscallArgs) -> SyscallRet
+```
+
+#### sys_kill (62) / sys_tkill (200) / sys_tgkill (234)
+
+发送信号（当前支持 `0/SIGCHLD/SIGTERM/SIGKILL/SIGSTOP/SIGCONT`）。
+
+```rust
+pub(crate) fn sys_kill(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_tkill(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_tgkill(args: &SyscallArgs) -> SyscallRet
+```
+
+**注意**:
+- `SIGSTOP/SIGCONT` 会驱动进程停止/继续事件，并可由 `wait4 + WUNTRACED/WCONTINUED` 观测。
+- `SIGTERM/SIGKILL` 走进程退出路径并进入 `Zombie`，随后可由 `wait4` 回收。
 
 #### sys_exit (60)
 
@@ -261,14 +345,22 @@ pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet
 | 3 | close | ❌ 未实现 |
 | 9 | mmap | ❌ 未实现 |
 | 39 | getpid | ✅ 已实现 |
-| 56 | clone | ❌ 未实现 |
-| 57 | fork | ❌ 未实现 |
-| 59 | execve | ❌ 未实现 |
+| 56 | clone | ⚠️ 最小实现（受限 flags） |
+| 57 | fork | ⚠️ 最小实现 |
+| 58 | vfork | ⚠️ 最小实现 |
+| 59 | execve | ⚠️ 参数校验+真实映射回滚（返回 -ENOSYS） |
 | 60 | exit | ✅ 已实现 |
 | 61 | wait4 | ✅ 增强实现 |
+| 62 | kill | ⚠️ 子集实现 |
+| 109 | setpgid | ⚠️ 最小实现 |
 | 110 | getppid | ✅ 已实现 |
+| 111 | getpgrp | ✅ 已实现 |
+| 112 | setsid | ⚠️ 最小实现 |
+| 121 | getpgid | ✅ 已实现 |
 | 186 | gettid | ✅ 已实现 |
+| 200 | tkill | ⚠️ 子集实现 |
 | 231 | exit_group | ✅ 已实现 |
+| 234 | tgkill | ⚠️ 子集实现 |
 
 ### 获取系统调用表
 

@@ -50,6 +50,9 @@ pub unsafe fn init_bsp(info: &InterruptInitInfo) -> Result<(), &'static str> {
     // 1. 初始化 GDT 和 TSS (BSP ID = 0)
     init_gdt(0, info.kernel_stack_top);
 
+    // 1.0 初始化 syscall 指令入口 (MSR: STAR/LSTAR/SFMASK/EFER.SCE)
+    crate::arch::syscall::init_syscall();
+
     // 1.1 分配并设置 IST1 栈 (用于 Double Fault)
     // 分配 4 个页 (16KB)
     if let Some(ist_page) = mm::alloc_pages(2, mm::GFP_KERNEL) {
@@ -106,6 +109,9 @@ pub unsafe fn init(info: &InterruptInitInfo) -> Result<(), &'static str> {
 pub unsafe fn init_ap(cpu_id: usize, kernel_stack_top: u64, local_apic_addr: u64, direct_map_base: u64) -> Result<(), &'static str> {
     // 1. 初始化 GDT 和 TSS (Local)
     init_gdt(cpu_id, kernel_stack_top);
+
+    // 1.0 AP 同步初始化 syscall 指令入口
+    crate::arch::syscall::init_syscall();
 
     // 1.1 分配并设置 IST1 栈 (用于 Double Fault)
     if let Some(ist_page) = mm::alloc_pages(2, mm::GFP_KERNEL) {

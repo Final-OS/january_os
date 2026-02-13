@@ -6,6 +6,47 @@ january_os 当前开发状态与功能完成情况。
 
 ## 最近更新 🆕
 
+**2026-02-13 - Batch 3 第四阶段补强（runuser 全链路稳定性）**
+- ✅ 修复 `PT_LOAD` 段数据拷贝路径：改为写入物理页直映地址，避免对 RX 用户映射写入导致卡死
+- ✅ 修复 `syscall` 入口栈切换：进入 ring3 前武装内核栈，入口按 SysV 对齐后分发
+- ✅ 修复 exec 映射回收计数错误，消除退出路径 `double-free detected` 告警
+- ✅ 增强 `runuser/execve/syscall` 页级可观测日志，可直接定位映射与回收阶段
+- ✅ `runuser` 已打通 `ring3 -> syscall(60) -> task exit -> shell` 闭环
+
+**2026-02-13 - Batch 3 第四阶段（ring3 demo + syscall 入口）**
+- ✅ 接入 x86_64 `syscall` 指令入口（`STAR/LSTAR/SFMASK/EFER.SCE` 初始化）
+- ✅ 新增汇编 `syscall_entry`，打通寄存器参数到 syscall 分发
+- ✅ 新增 shell 命令 `runuser`，可启动内置 `/bin/demo_user` 进入 ring3
+- ✅ 新增进程退出时 exec 映射回收（含 orphan 自动回收日志）
+- ⚠️ `sys_execve` 主路径仍返回 `-ENOSYS`（已具备映射链路，真实切换暂走 `runuser` 演示路径）
+
+**2026-02-13 - Batch 3 第三阶段（PT_LOAD 真实映射与回滚）**
+- ✅ 新增 `execve` PT_LOAD + 用户栈真实页映射（按段权限设置 PTE）
+- ✅ 新增映射目标页冲突检测（已映射用户页返回 `-EBUSY`）
+- ✅ 新增 exec 映射失败回滚（`unmap + free_page`，避免泄漏）
+- ✅ 新增 `execve` 映射阶段可观测日志（mapped segment/stack pages）
+- ⚠️ 当前仍返回 `-ENOSYS`（ring3 跳转尚未启用，映射在本阶段回滚）
+
+**2026-02-13 - Batch 3 第二阶段（ELF/PT_LOAD 骨架）**
+- ✅ 新增最小 ELF64 解析与 `PT_LOAD` 映射规划（exec loader skeleton）
+- ✅ 新增 x86_64 用户态 `iretq` 入口帧与切换函数骨架（未实际启用）
+- ✅ `sys_execve` 已接入内置镜像路径 `/init`、`/bin/demo_user`
+- ✅ 增强 `execve` 诊断日志（entry/segment/page/frame）
+- ⚠️ 当前仍返回 `-ENOSYS`（真实用户态映射与 ring3 切换待接入）
+
+**2026-02-13 - Batch 3 启动（execve 第一阶段）**
+- ✅ 新增 `execve(59)` syscall 分发与处理入口
+- ✅ 增加 `pathname/argv/envp` 用户指针与边界校验（`EFAULT/E2BIG/ENAMETOOLONG/ENOENT`）
+- ✅ 增加进程 exec 请求可观测状态（path/argc/envc/seq）
+- ⚠️ 当前仍返回 `-ENOSYS`（用户态 ELF 加载与 ring3 切换待接入）
+
+**2026-02-13 - 任务管理阶段推进（Batch 2/4）**
+- ✅ 新增进程创建 syscall：`clone/fork/vfork`（最小语义）
+- ✅ 新增进程组 syscall：`getpgid/getpgrp/setpgid/setsid`（最小语义）
+- ✅ 新增信号 syscall：`kill/tkill/tgkill`（支持 `SIGCHLD/SIGTERM/SIGKILL/SIGSTOP/SIGCONT`）
+- ✅ `wait4` 与 `SIGSTOP/SIGCONT/SIGKILL` 事件链路联动
+- ✅ 补充任务回收/信号路径可观测日志
+
 **2026-02-08 - 任务管理与系统调用实现**
 - ✅ 任务管理基础（PCB/TCB、内核栈、任务状态）
 - ✅ 上下文切换（x86_64 汇编实现）

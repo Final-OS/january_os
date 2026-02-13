@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 
 use crate::sync::Mutex;
 
+use super::exec::ExecMappedPage;
 use super::id::{ProcessId, TaskId};
 use super::task::Task;
 
@@ -24,6 +25,10 @@ pub struct Process {
     pub pgid: ProcessId,
     pub is_clone_child: bool,
     pub name: String,
+    pub last_exec_path: String,
+    pub last_exec_argc: usize,
+    pub last_exec_envc: usize,
+    pub exec_request_seq: u64,
     pub status: ProcessStatus,
     pub parent: Option<ProcessId>,
     pub parent_tid: Option<TaskId>,
@@ -33,6 +38,7 @@ pub struct Process {
     pub wait_stop_signal: Option<i32>,
     pub wait_stop_reported: bool,
     pub wait_continued_pending: bool,
+    pub exec_mappings: Vec<ExecMappedPage>,
 }
 
 impl Process {
@@ -53,6 +59,10 @@ impl Process {
             pgid,
             is_clone_child: false,
             name: String::from(name),
+            last_exec_path: String::from(name),
+            last_exec_argc: 0,
+            last_exec_envc: 0,
+            exec_request_seq: 0,
             status: ProcessStatus::Running,
             parent,
             parent_tid,
@@ -62,6 +72,7 @@ impl Process {
             wait_stop_signal: None,
             wait_stop_reported: false,
             wait_continued_pending: false,
+            exec_mappings: Vec::new(),
         }
     }
 
@@ -124,6 +135,31 @@ impl Process {
     }
 
     pub fn clear_wait_continued_pending(&mut self) {
+        self.wait_continued_pending = false;
+    }
+
+    pub fn replace_exec_mappings(&mut self, mappings: Vec<ExecMappedPage>) -> Vec<ExecMappedPage> {
+        core::mem::replace(&mut self.exec_mappings, mappings)
+    }
+
+    pub fn take_exec_mappings(&mut self) -> Vec<ExecMappedPage> {
+        core::mem::take(&mut self.exec_mappings)
+    }
+
+    #[inline]
+    pub fn exec_mapping_count(&self) -> usize {
+        self.exec_mappings.len()
+    }
+
+    pub fn record_exec_request(&mut self, path: &str, argc: usize, envc: usize) {
+        self.last_exec_path = String::from(path);
+        self.last_exec_argc = argc;
+        self.last_exec_envc = envc;
+        self.exec_request_seq = self.exec_request_seq.saturating_add(1);
+        self.name = String::from(path);
+        self.status = ProcessStatus::Running;
+        self.wait_stop_signal = None;
+        self.wait_stop_reported = false;
         self.wait_continued_pending = false;
     }
 }

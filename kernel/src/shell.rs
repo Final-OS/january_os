@@ -8,13 +8,14 @@ use crate::interrupt;
 use crate::mm;
 use crate::config;
 use crate::drivers::tty::{serial_read_char};
+use crate::task;
 use crate::drivers::input::hid::keyboard;
 use crate::arch::{shutdown, reboot};
 use core::arch::asm;
 
 /// 进入 Shell 主循环
 pub fn run() -> ! {
-    kprintln!("Commands: shutdown, status, help");
+    kprintln!("Commands: shutdown, status, runuser, help");
     kprintln!();
     kprint!("> ");
 
@@ -51,6 +52,148 @@ pub fn run() -> ! {
             interrupt::halt_with_interrupts();
         }
     }
+}
+
+extern "C" fn run_user_demo_task() {
+    const DEMO_PATH: &str = "/bin/demo_user";
+
+    let image = match task::lookup_builtin_exec_image(DEMO_PATH) {
+        Some(image) => image,
+        None => {
+            crate::kprintln!("[diag][user] demo image missing path={}", DEMO_PATH);
+            task::exit_current_task(127);
+            task::scheduler::schedule();
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+
+    let load_plan = match task::build_elf_load_plan(image) {
+        Ok(plan) => plan,
+        Err(errno) => {
+            crate::kprintln!(
+                "[diag][user] build load plan failed path={} errno={}",
+                DEMO_PATH,
+                errno
+            );
+            task::exit_current_task(127);
+            task::scheduler::schedule();
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+
+    let map_preview = task::preview_pt_load_mapping(&load_plan);
+    let stack_bytes = map_preview.stack_pages.saturating_mul(mm::PAGE_SIZE);
+    let stack_bottom = load_plan.stack_top.saturating_sub(stack_bytes);
+
+    crate::kprintln!(
+        "[diag][user] load plan path={} entry={:#x} segs={} seg_pages={} stack=[{:#x}, {:#x}) total_pages={}",
+        DEMO_PATH,
+        load_plan.entry,
+        map_preview.segment_count,
+        map_preview.segment_pages,
+        stack_bottom,
+        load_plan.stack_top,
+        map_preview.total_pages,
+    );
+
+    let staged_mappings = match task::stage_pt_load_mappings(image, &load_plan) {
+        Ok(mappings) => mappings,
+        Err(errno) => {
+            crate::kprintln!(
+                "[diag][user] stage mappings failed path={} errno={} segs={} seg_pages={} stack=[{:#x}, {:#x}) total_pages={}",
+                DEMO_PATH,
+                errno,
+                map_preview.segment_count,
+                map_preview.segment_pages,
+                stack_bottom,
+                load_plan.stack_top,
+                map_preview.total_pages,
+            );
+            task::exit_current_task(127);
+            task::scheduler::schedule();
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+
+    let staged_pages = staged_mappings.len();
+    let staged_first = staged_mappings.first().map(|page| page.virt).unwrap_or(0);
+    crate::kprintln!(
+        "[diag][user] stage mappings ok path={} pages={} first_virt={:#x}",
+        DEMO_PATH,
+        staged_pages,
+        staged_first,
+    );
+
+    if task::record_current_exec_request(DEMO_PATH, 1, 0).is_none() {
+        crate::kprintln!(
+            "[diag][user] record exec request failed path={} -> rollback staged mappings",
+            DEMO_PATH
+        );
+        task::rollback_exec_mappings(&staged_mappings);
+        task::exit_current_task(127);
+        task::scheduler::schedule();
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    let replaced_pages = match task::set_current_exec_mappings(staged_mappings) {
+        Some(replaced) => replaced,
+        None => {
+            crate::kprintln!(
+                "[diag][user] set current exec mappings failed path={}",
+                DEMO_PATH
+            );
+            task::exit_current_task(127);
+            task::scheduler::schedule();
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+
+    crate::kprintln!(
+        "[diag][user] exec mappings installed path={} staged_pages={} replaced_pages={}",
+        DEMO_PATH,
+        staged_pages,
+        replaced_pages,
+    );
+
+    let user_frame = task::arch::build_user_enter_frame(load_plan.entry, load_plan.stack_top);
+    crate::kprintln!(
+        "[diag][user] enter ring3 path={} rip={:#x} rsp={:#x}",
+        DEMO_PATH,
+        user_frame.rip,
+        user_frame.rsp
+    );
+
+    unsafe {
+        task::arch::enter_user_mode_iret(&user_frame);
+    }
+}
+
+fn execute_runuser_command() {
+    let demo_task = task::spawn_kernel_thread("user_demo", run_user_demo_task);
+    let demo_pid = demo_task.lock().pid;
+
+    crate::kprintln!(
+        "[diag][shell] spawned user demo pid={} path=/bin/demo_user",
+        demo_pid.0
+    );
+
+    // 切换到新任务；当用户任务退出后，会回到 shell 空闲上下文。
+    task::scheduler::schedule();
+
+    crate::kprintln!(
+        "[diag][shell] user demo returned to shell pid={}",
+        demo_pid.0
+    );
 }
 
 /// 处理输入字符
@@ -123,6 +266,9 @@ fn execute_command(cmd: &[u8]) {
         "test" => {
             execute_test_command(args);
         }
+        "runuser" => {
+            execute_runuser_command();
+        }
         "help" => {
             kprintln!("Available commands:");
             kprintln!("  shutdown   - Power off system");
@@ -133,6 +279,7 @@ fn execute_command(cmd: &[u8]) {
             kprintln!("  pci        - Show PCI devices");
             kprintln!("  usb        - Show USB devices");
             kprintln!("  test       - Run system tests");
+            kprintln!("  runuser    - Launch built-in ring3 demo");
             kprintln!("  help       - Show this help message");
             kprintln!("Type 'drivers help' or 'mm help' for more info.");
         }
