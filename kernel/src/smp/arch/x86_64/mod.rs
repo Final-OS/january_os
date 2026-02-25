@@ -238,11 +238,7 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
     
     crate::kprintln!("      [SMP] AP Started (CPU {})", cpu_id);
 
-    // TODO: 接入调度器后改为 scheduler::run_idle()
-    // 当前使用 hlt 等待中断，比 spin_loop 节省功耗
-    loop {
-        unsafe { core::arch::asm!("sti; hlt; cli", options(nostack, nomem)); }
-    }
+    crate::task::scheduler::run_idle()
 }
 
 /// Prepare trampoline code (Legacy)

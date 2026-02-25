@@ -4,7 +4,7 @@
 //!
 //! - PS/2 键盘/鼠标
 //! - USB HID 键盘/鼠标
-//! - ACPI 热键 (TODO)
+//! - ACPI 热键
 //!
 //! # 架构
 //!
@@ -20,6 +20,7 @@
 
 pub mod ps2;
 pub mod hid;
+pub mod acpi_hotkey;
 
 // 导出 PS/2 键盘接口
 pub use ps2::keyboard::{
@@ -59,9 +60,13 @@ pub use hid::{
     KeyEvent, KeyCode, Modifiers, KeyEventType,
     MouseEvent, MouseButton, MouseEventType,
 };
+pub use acpi_hotkey::HotkeyEvent;
 
 /// 初始化所有输入设备驱动
 pub fn init() {
+    // 初始化 ACPI 热键
+    acpi_hotkey::init();
+
     // 初始化 USB HID
     let _ = hid::init();
 
@@ -74,5 +79,31 @@ pub fn init() {
 
 /// 轮询所有输入设备
 pub fn poll() {
+    acpi_hotkey::poll();
     hid::poll();
+}
+
+/// 读取一个 ACPI 热键事件
+pub fn read_hotkey_event() -> Option<HotkeyEvent> {
+    acpi_hotkey::read_event()
+}
+
+/// 检查是否有 ACPI 热键事件
+pub fn has_hotkey_event() -> bool {
+    acpi_hotkey::has_event()
+}
+
+/// 注入 ACPI 热键事件（测试/调试用）
+pub fn inject_hotkey_event(event: HotkeyEvent) {
+    acpi_hotkey::push_event(event);
+}
+
+/// 获取 ACPI 热键缓冲区状态 (head, tail)
+pub fn hotkey_buffer_status() -> (usize, usize) {
+    acpi_hotkey::buffer_status()
+}
+
+/// 获取 ACPI 热键事件源信息
+pub fn hotkey_source_info() -> Option<acpi_hotkey::HotkeySourceInfo> {
+    acpi_hotkey::source_info()
 }

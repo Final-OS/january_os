@@ -253,7 +253,8 @@ pub fn init() {
 
 /// 轮询 USB 鼠标
 pub fn poll() {
-    // TODO: 实际轮询 USB 设备
+    // 鼠标报告由 xHCI 中断或 usb::poll() 通过 handle_boot_report 推送到缓冲区。
+    // 该函数保留为统一输入框架的轮询入口。
 }
 
 /// 检查鼠标是否存在

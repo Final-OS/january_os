@@ -10,7 +10,7 @@ use crate::mm::page::page::{PageFlags, pfn_to_page, page_to_pfn};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::page::buddy::{alloc_page, free_page};
 use super::paging::PageTableManager;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // ============================================================================
 // 页错误类型
@@ -146,6 +146,8 @@ impl FaultContext {
 /// # Returns
 /// 处理结果
 pub fn handle_page_fault(ctx: &mut FaultContext) -> FaultResult {
+    FAULT_STATS.total_faults.fetch_add(1, Ordering::Relaxed);
+
     let address = ctx.address;
     let error = ctx.error_code;
 
@@ -258,6 +260,10 @@ fn handle_not_present(ctx: &FaultContext) -> FaultResult {
 
 /// 处理匿名页错误
 fn handle_anonymous_fault(ctx: &FaultContext) -> FaultResult {
+    map_zero_page(ctx, true)
+}
+
+fn map_zero_page(ctx: &FaultContext, mark_anon: bool) -> FaultResult {
     let address = ctx.address & !(PAGE_SIZE - 1); // 页对齐
 
     // 分配新页
@@ -268,7 +274,7 @@ fn handle_anonymous_fault(ctx: &FaultContext) -> FaultResult {
 
     // 设置页标志
     page.set_flag(PageFlags::UPTODATE);
-    if ctx.vma_flags.is_anonymous() {
+    if mark_anon {
         page.set_flag(PageFlags::ANON);
     }
 
@@ -288,16 +294,52 @@ fn handle_anonymous_fault(ctx: &FaultContext) -> FaultResult {
     // 页已映射到页表，增加 mapcount
     page.inc_mapcount();
 
+    // 零页按需分配不涉及外部 I/O，按 minor fault 统计。
+    FAULT_STATS.minor_faults.fetch_add(1, Ordering::Relaxed);
+
     FaultResult::Retry
 }
 
 /// 处理文件映射页错误
-fn handle_file_fault(_ctx: &FaultContext) -> FaultResult {
-    // TODO: 实现文件映射
-    // 1. 从 vma->vm_file 读取页面
-    // 2. 映射到地址空间
+fn handle_file_fault(ctx: &FaultContext) -> FaultResult {
+    let address = ctx.address & !(PAGE_SIZE - 1);
 
-    FaultResult::Sigsegv
+    // 过渡实现：若当前进程记录了该虚拟页的 exec 映射，优先复用其物理页重建 PTE。
+    // 这可以覆盖“已知文件后备页”的缺页场景；完整的 VFS/page cache 路径后续再接入。
+    if let Some(mapped) = crate::task::lookup_current_exec_mapping(address) {
+        if mapped.phys == 0 || (mapped.phys & (PAGE_SIZE - 1)) != 0 {
+            return FaultResult::Sigbus;
+        }
+
+        let pte_flags = if mapped.flags != 0 {
+            mapped.flags
+        } else {
+            ctx.vma_flags.to_pte_flags()
+        };
+
+        unsafe {
+            let mut pt_mgr = PageTableManager::new((*ctx.mm).pgd, ctx.direct_map_offset);
+            if !pt_mgr.map_page(address, mapped.phys, pte_flags) {
+                return FaultResult::Oom;
+            }
+        }
+
+        let page = unsafe { pfn_to_page(mapped.phys / PAGE_SIZE) };
+        page.inc_mapcount();
+        FAULT_STATS.minor_faults.fetch_add(1, Ordering::Relaxed);
+        return FaultResult::Retry;
+    }
+
+    // 兜底：尚未接入统一页缓存时，文件缺页仍退化为零页映射，避免直接崩溃。
+    if FILE_FAULT_FALLBACK_WARNED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::warn!(
+            "vm fault: file-backed page fallback to zero page (page cache/VFS path not ready)"
+        );
+    }
+    map_zero_page(ctx, false)
 }
 
 /// 处理写保护错误 (Copy-on-Write)
@@ -368,6 +410,9 @@ fn do_cow_fault(ctx: &FaultContext, address: u64) -> FaultResult {
         new_page.inc_mapcount();
     }
 
+    FAULT_STATS.cow_faults.fetch_add(1, Ordering::Relaxed);
+    FAULT_STATS.minor_faults.fetch_add(1, Ordering::Relaxed);
+
     FaultResult::Retry
 }
 
@@ -405,6 +450,7 @@ fn handle_stack_expansion(ctx: &FaultContext, mm: &mut Mm, address: u64) -> Faul
             if !mm.expand_stack(vma_start, page_addr) {
                 return FaultResult::Sigsegv;
             }
+            FAULT_STATS.stack_grows.fetch_add(1, Ordering::Relaxed);
 
             // 更新上下文中的 VMA 信息
             // 重新查找以获取更新后的信息
@@ -472,6 +518,7 @@ static FAULT_STATS: FaultStats = FaultStats {
     cow_faults: AtomicU64::new(0),
     stack_grows: AtomicU64::new(0),
 };
+static FILE_FAULT_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// 获取页错误统计
 pub fn get_fault_stats() -> &'static FaultStats {

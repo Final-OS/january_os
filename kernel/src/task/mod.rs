@@ -24,6 +24,7 @@ pub use exec::{
     ExecMappedPageKind,
 };
 pub use manager::find_task_by_pid;
+pub use manager::lookup_current_exec_mapping;
 pub use manager::record_current_exec_request;
 pub use manager::set_current_exec_mappings;
 pub use manager::spawn_kernel_thread;

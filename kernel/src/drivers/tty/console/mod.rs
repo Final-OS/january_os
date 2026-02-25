@@ -21,12 +21,14 @@ use crate::sync::IrqMutex;
 
 pub struct Console {
     vt_parser: VtParser,
+    sgr_ext_state: SgrExtState,
 }
 
 impl Console {
     pub const fn new() -> Self {
         Self {
             vt_parser: VtParser::new(),
+            sgr_ext_state: SgrExtState::None,
         }
     }
 
@@ -72,11 +74,18 @@ impl Console {
             VtAction::SetAttr(attr) => {
                 self.handle_sgr(attr);
             }
+            VtAction::DeviceStatusReport(mode) => {
+                self.respond_dsr(mode);
+            }
+            VtAction::DeviceAttributes => {
+                self.respond_da();
+            }
             VtAction::Reset => {
                 fbcon::set_fg_color(DEFAULT_FG);
                 fbcon::set_bg_color(DEFAULT_BG);
                 fbcon::clear_screen();
                 self.vt_parser.reset();
+                self.sgr_ext_state = SgrExtState::None;
             }
             _ => {}
         }
@@ -85,22 +94,27 @@ impl Console {
     /// 处理 SGR 属性
     fn handle_sgr(&mut self, attr: u8) {
         use crate::drivers::tty::fbcon;
-        
+
+        if self.handle_extended_sgr(attr) {
+            return;
+        }
+
         match attr {
             0 => { // Reset
                 fbcon::set_fg_color(DEFAULT_FG);
                 fbcon::set_bg_color(DEFAULT_BG);
+                self.sgr_ext_state = SgrExtState::None;
             }
             1 => { // Bold (Bright) - 简化处理：如果是深色则变亮
                 let (fg, _) = fbcon::get_colors();
-                // TODO: 更好的加粗处理
+                fbcon::set_fg_color(brighten_rgb(fg));
             }
             30..=37 => { // FG Color
                 let color = ansi_to_rgb(attr - 30);
                 fbcon::set_fg_color(color);
             }
             38 => {
-                // TODO: Extended FG (next params)
+                self.sgr_ext_state = SgrExtState::ExpectColorMode(SgrColorTarget::Foreground);
             }
             39 => { // Default FG
                 fbcon::set_fg_color(DEFAULT_FG);
@@ -110,7 +124,7 @@ impl Console {
                 fbcon::set_bg_color(color);
             }
             48 => {
-                // TODO: Extended BG (next params)
+                self.sgr_ext_state = SgrExtState::ExpectColorMode(SgrColorTarget::Background);
             }
             49 => { // Default BG
                 fbcon::set_bg_color(DEFAULT_BG);
@@ -126,6 +140,105 @@ impl Console {
             _ => {}
         }
     }
+
+    fn handle_extended_sgr(&mut self, attr: u8) -> bool {
+        use crate::drivers::tty::fbcon;
+
+        match self.sgr_ext_state {
+            SgrExtState::None => false,
+            SgrExtState::ExpectColorMode(target) => match attr {
+                5 => {
+                    self.sgr_ext_state = SgrExtState::ExpectAnsi256(target);
+                    true
+                }
+                2 => {
+                    self.sgr_ext_state = SgrExtState::ExpectRgbR(target);
+                    true
+                }
+                _ => {
+                    self.sgr_ext_state = SgrExtState::None;
+                    false
+                }
+            },
+            SgrExtState::ExpectAnsi256(target) => {
+                let color = ansi_to_rgb(attr);
+                match target {
+                    SgrColorTarget::Foreground => fbcon::set_fg_color(color),
+                    SgrColorTarget::Background => fbcon::set_bg_color(color),
+                }
+                self.sgr_ext_state = SgrExtState::None;
+                true
+            }
+            SgrExtState::ExpectRgbR(target) => {
+                self.sgr_ext_state = SgrExtState::ExpectRgbG(target, attr);
+                true
+            }
+            SgrExtState::ExpectRgbG(target, r) => {
+                self.sgr_ext_state = SgrExtState::ExpectRgbB(target, r, attr);
+                true
+            }
+            SgrExtState::ExpectRgbB(target, r, g) => {
+                let color = ((r as u32) << 16) | ((g as u32) << 8) | (attr as u32);
+                match target {
+                    SgrColorTarget::Foreground => fbcon::set_fg_color(color),
+                    SgrColorTarget::Background => fbcon::set_bg_color(color),
+                }
+                self.sgr_ext_state = SgrExtState::None;
+                true
+            }
+        }
+    }
+
+    fn respond_dsr(&self, mode: u8) {
+        match mode {
+            5 => {
+                // 终端状态 OK
+                let _ = write!(crate::drivers::tty::serial::SerialWriter, "\x1B[0n");
+            }
+            6 => {
+                // 光标位置报告，使用 1-based 行列
+                let (col, row) = crate::drivers::tty::fbcon::get_cursor_pos();
+                let _ = write!(
+                    crate::drivers::tty::serial::SerialWriter,
+                    "\x1B[{};{}R",
+                    row + 1,
+                    col + 1
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn respond_da(&self) {
+        // 报告为 VT100 + ANSI 颜色
+        let _ = write!(crate::drivers::tty::serial::SerialWriter, "\x1B[?1;2c");
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SgrColorTarget {
+    Foreground,
+    Background,
+}
+
+#[derive(Clone, Copy)]
+enum SgrExtState {
+    None,
+    ExpectColorMode(SgrColorTarget),
+    ExpectAnsi256(SgrColorTarget),
+    ExpectRgbR(SgrColorTarget),
+    ExpectRgbG(SgrColorTarget, u8),
+    ExpectRgbB(SgrColorTarget, u8, u8),
+}
+
+fn brighten_rgb(rgb: u32) -> u32 {
+    let brighten = |c: u8| c.saturating_add(0x55) as u32;
+
+    let r = brighten(((rgb >> 16) & 0xFF) as u8);
+    let g = brighten(((rgb >> 8) & 0xFF) as u8);
+    let b = brighten((rgb & 0xFF) as u8);
+
+    (r << 16) | (g << 8) | b
 }
 
 /// 全局控制台锁，确保多核输出不乱序，且中断安全

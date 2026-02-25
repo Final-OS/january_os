@@ -158,6 +158,45 @@ pub fn find_table<T: AcpiTable>() -> Option<&'static T> {
     None
 }
 
+/// 检查是否存在指定签名的 ACPI 表
+pub fn has_table(signature: &[u8; 4]) -> bool {
+    let state = if let Some(s) = ACPI_STATE.get() { s } else {
+        return false;
+    };
+
+    let virt_addr = state.xsdt_addr + crate::config::DIRECT_MAP_OFFSET;
+
+    if state.revision >= 2 {
+        let xsdt = unsafe { &*(virt_addr as *const Xsdt) };
+        for i in 0..xsdt.entry_count() {
+            let entry_addr = unsafe { xsdt.entry(i) };
+            if entry_addr == 0 {
+                continue;
+            }
+            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let header = unsafe { &*(entry_virt as *const SdtHeader) };
+            if &header.signature == signature {
+                return true;
+            }
+        }
+    } else {
+        let rsdt = unsafe { &*(virt_addr as *const Rsdt) };
+        for i in 0..rsdt.entry_count() {
+            let entry_addr = unsafe { rsdt.entry(i) } as u64;
+            if entry_addr == 0 {
+                continue;
+            }
+            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let header = unsafe { &*(entry_virt as *const SdtHeader) };
+            if &header.signature == signature {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// 打印所有 ACPI 表信息
 pub fn dump_tables() {
     let state = if let Some(s) = ACPI_STATE.get() { s } else {
@@ -222,6 +261,53 @@ pub fn get_shutdown_info() -> Option<(u32, u32)> {
         }
     }
     None
+}
+
+/// PM1 事件块信息
+#[derive(Debug, Clone, Copy)]
+pub struct Pm1EventInfo {
+    /// PM1a 事件块 I/O 端口
+    pub pm1a_evt_blk: u32,
+    /// PM1b 事件块 I/O 端口（可选）
+    pub pm1b_evt_blk: u32,
+    /// PM1_STS 寄存器字节宽度（通常为 2）
+    pub pm1_sts_len: u8,
+}
+
+/// 获取 PM1 事件块信息（用于电源键/睡眠键状态轮询）
+pub fn get_pm1_event_info() -> Option<Pm1EventInfo> {
+    let fadt = find_table::<Fadt>()?;
+
+    // 优先使用 32 位 I/O 端口字段
+    let mut pm1a = fadt.pm1a_evt_blk;
+    let mut pm1b = fadt.pm1b_evt_blk;
+
+    // 若 ACPI 1.0 字段为空，尝试 ACPI 2.0+ 扩展 GAS
+    if pm1a == 0 && fadt.x_pm1a_evt_blk.address_space == AddressSpace::SystemIo as u8 {
+        pm1a = fadt.x_pm1a_evt_blk.address as u32;
+        if fadt.x_pm1b_evt_blk.address_space == AddressSpace::SystemIo as u8 {
+            pm1b = fadt.x_pm1b_evt_blk.address as u32;
+        } else {
+            pm1b = 0;
+        }
+    }
+
+    if pm1a == 0 {
+        return None;
+    }
+
+    // PM1_EVT 总长度 = STS + EN，通常各占一半。
+    let pm1_sts_len = if fadt.pm1_evt_len >= 2 {
+        core::cmp::max(1, fadt.pm1_evt_len / 2)
+    } else {
+        2
+    };
+
+    Some(Pm1EventInfo {
+        pm1a_evt_blk: pm1a,
+        pm1b_evt_blk: pm1b,
+        pm1_sts_len,
+    })
 }
 
 /// 获取 DSDT 表头和物理地址
@@ -350,8 +436,8 @@ pub fn detect_system_config() -> AcpiConfig {
         }
     }
 
-    // 检测 DMAR (IOMMU)
-    if find_table::<Dmar>().is_some() {
+    // 检测 DMAR/IVRS (IOMMU)
+    if find_table::<Dmar>().is_some() || has_table(b"IVRS") {
         config.has_iommu = true;
     }
 

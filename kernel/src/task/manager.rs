@@ -256,6 +256,22 @@ pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize>
     Some(replaced_count)
 }
 
+pub fn lookup_current_exec_mapping(virt: u64) -> Option<ExecMappedPage> {
+    let current_task = super::processor::current_task()?;
+    let pid = {
+        let task = current_task.lock();
+        task.pid
+    };
+
+    let process_ref = find_process_by_pid(pid)?;
+    let process = process_ref.lock();
+    process
+        .exec_mappings
+        .iter()
+        .find(|page| page.virt == virt)
+        .copied()
+}
+
 fn reap_orphan_zombie_process(pid: ProcessId) {
     let can_reap = match find_process_by_pid(pid) {
         Some(process_ref) => {

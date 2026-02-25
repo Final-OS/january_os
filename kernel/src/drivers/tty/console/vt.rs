@@ -57,6 +57,10 @@ pub enum VtAction {
     ShowCursor,
     /// 隐藏光标
     HideCursor,
+    /// 设备状态报告请求 (DSR)
+    DeviceStatusReport(u8),
+    /// 设备属性请求 (DA)
+    DeviceAttributes,
     /// 响铃
     Bell,
     /// 重置
@@ -403,11 +407,12 @@ impl VtParser {
             }
             'n' => {
                 // DSR - 设备状态报告
-                // TODO: 需要响应
+                let mode = self.get_param(0, 0) as u8;
+                actions.push(VtAction::DeviceStatusReport(mode));
             }
             'c' => {
                 // DA - 设备属性
-                // TODO: 需要响应
+                actions.push(VtAction::DeviceAttributes);
             }
             _ => {
                 // 未知序列，忽略

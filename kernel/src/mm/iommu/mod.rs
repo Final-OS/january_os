@@ -166,8 +166,8 @@ pub fn init(direct_map_offset: u64) {
         return;
     }
     
-    // 尝试初始化 AMD-Vi (未实现)
-    // if try_init_amdvi(mgr) { ... }
+    // 尝试探测 AMD-Vi（当前尚无硬件后端，探测到后降级到 SWIOTLB）
+    let _ = try_probe_amdvi();
     
     // 无硬件 IOMMU，使用 SWIOTLB
     init_swiotlb(&mut mgr);
@@ -336,6 +336,18 @@ fn try_init_vtd(mgr: &mut IommuManager, direct_map_offset: u64) -> bool {
     }
     
     mgr.nr_vtd_units > 0
+}
+
+/// 探测 AMD-Vi（IVRS）并报告当前支持状态
+fn try_probe_amdvi() -> bool {
+    if !crate::drivers::acpi::has_table(b"IVRS") {
+        return false;
+    }
+
+    crate::warn!(
+        "IOMMU: ACPI IVRS detected, but AMD-Vi backend is not implemented; falling back to SWIOTLB"
+    );
+    false
 }
 
 /// 初始化 SWIOTLB

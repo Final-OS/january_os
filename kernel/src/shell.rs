@@ -3,7 +3,7 @@
 //! 提供基本的命令行交互功能。
 
 use crate::{kprintln, kprint, info};
-use crate::drivers::{self, acpi};
+use crate::drivers;
 use crate::interrupt;
 use crate::mm;
 use crate::config;
@@ -15,7 +15,7 @@ use core::arch::asm;
 
 /// 进入 Shell 主循环
 pub fn run() -> ! {
-    kprintln!("Commands: shutdown, status, runuser, help");
+    kprintln!("Commands: shutdown, status, runuser, hotkey, help");
     kprintln!();
     kprint!("> ");
 
@@ -26,6 +26,9 @@ pub fn run() -> ! {
     // 主循环
     loop {
         let mut activity = false;
+
+        // 轮询输入后端（例如 USB/xHCI 事件环）。
+        drivers::input::poll();
 
         // 检查键盘输入 (PS/2)
         while let Some(c) = interrupt::read_char() {
@@ -42,6 +45,12 @@ pub fn run() -> ! {
         // 检查 USB 键盘输入
         while let Some(c) = keyboard::read_char() {
             handle_input(c, &mut cmd_buf, &mut cmd_len);
+            activity = true;
+        }
+
+        // 检查 ACPI 热键事件
+        while let Some(event) = drivers::input::read_hotkey_event() {
+            handle_hotkey_event(event);
             activity = true;
         }
         
@@ -269,6 +278,9 @@ fn execute_command(cmd: &[u8]) {
         "runuser" => {
             execute_runuser_command();
         }
+        "hotkey" => {
+            execute_hotkey_command(args);
+        }
         "help" => {
             kprintln!("Available commands:");
             kprintln!("  shutdown   - Power off system");
@@ -280,6 +292,7 @@ fn execute_command(cmd: &[u8]) {
             kprintln!("  usb        - Show USB devices");
             kprintln!("  test       - Run system tests");
             kprintln!("  runuser    - Launch built-in ring3 demo");
+            kprintln!("  hotkey     - ACPI hotkey debug commands");
             kprintln!("  help       - Show this help message");
             kprintln!("Type 'drivers help' or 'mm help' for more info.");
         }
@@ -299,9 +312,42 @@ fn execute_mm_command(mut args: core::str::SplitWhitespace) {
                 .filter(|z| z.initialized)
                 .map(|z| z.nr_free_pages())
                 .sum();
+            let fault_stats = mm::get_fault_stats();
             kprintln!("Memory Status:");
             kprintln!("  Free pages:  {}", total_free);
             kprintln!("  Heap size:   {} MB", config::KERNEL_HEAP_INIT_SIZE / 1024 / 1024);
+            kprintln!(
+                "  Faults:      total={} minor={} major={} cow={} stack_grow={}",
+                fault_stats.total_faults.load(core::sync::atomic::Ordering::Relaxed),
+                fault_stats.minor_faults.load(core::sync::atomic::Ordering::Relaxed),
+                fault_stats.major_faults.load(core::sync::atomic::Ordering::Relaxed),
+                fault_stats.cow_faults.load(core::sync::atomic::Ordering::Relaxed),
+                fault_stats.stack_grows.load(core::sync::atomic::Ordering::Relaxed),
+            );
+        }
+        "faults" => {
+            let fault_stats = mm::get_fault_stats();
+            kprintln!("Page Fault Stats:");
+            kprintln!(
+                "  total_faults: {}",
+                fault_stats.total_faults.load(core::sync::atomic::Ordering::Relaxed)
+            );
+            kprintln!(
+                "  minor_faults: {}",
+                fault_stats.minor_faults.load(core::sync::atomic::Ordering::Relaxed)
+            );
+            kprintln!(
+                "  major_faults: {}",
+                fault_stats.major_faults.load(core::sync::atomic::Ordering::Relaxed)
+            );
+            kprintln!(
+                "  cow_faults:   {}",
+                fault_stats.cow_faults.load(core::sync::atomic::Ordering::Relaxed)
+            );
+            kprintln!(
+                "  stack_grows:  {}",
+                fault_stats.stack_grows.load(core::sync::atomic::Ordering::Relaxed)
+            );
         }
         "memblock" => {
             kprintln!("Memblock Status:");
@@ -338,6 +384,7 @@ fn execute_mm_command(mut args: core::str::SplitWhitespace) {
             kprintln!("Usage: mm <subcommand>");
             kprintln!("Subcommands:");
             kprintln!("  status    - Show general memory usage");
+            kprintln!("  faults    - Show page-fault statistics");
             kprintln!("  memblock  - Show early memory map (memblock)");
             kprintln!("  iommu     - Show IOMMU status");
         }
@@ -392,6 +439,20 @@ fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
             kprintln!("  HID Mouse:     {}", if drivers::input::hid::mouse::is_present() { "Present" } else { "Not Present" });
             let (m_head, m_tail) = drivers::input::hid::mouse::buffer_status();
             kprintln!("    Buffer: {}/{} (Head/Tail)", m_head, m_tail);
+
+            let (h_head, h_tail) = drivers::input::hotkey_buffer_status();
+            kprintln!("  ACPI Hotkey:   {}", if drivers::input::has_hotkey_event() { "Pending" } else { "Empty" });
+            kprintln!("    Buffer: {}/{} (Head/Tail)", h_head, h_tail);
+            if let Some(src) = drivers::input::hotkey_source_info() {
+                kprintln!(
+                    "    Source: pm1a={:#x} pm1b={:#x} sts_len={}",
+                    src.pm1a_evt_port,
+                    src.pm1b_evt_port,
+                    src.pm1_sts_len,
+                );
+            } else {
+                kprintln!("    Source: unavailable");
+            }
         }
         "mouse" => {
             kprintln!("Mouse Test Mode (ID: {:#x}) (Press any key to exit)", drivers::input::mouse_device_id());
@@ -436,6 +497,89 @@ fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
             kprintln!("  interrupt - Show interrupt status");
         }
     }
+}
+
+fn execute_hotkey_command(mut args: core::str::SplitWhitespace) {
+    let subcommand = args.next().unwrap_or("help");
+
+    match subcommand {
+        "status" => {
+            let (head, tail) = drivers::input::hotkey_buffer_status();
+            kprintln!("ACPI Hotkey Status:");
+            kprintln!("  Pending: {}", drivers::input::has_hotkey_event());
+            kprintln!("  Buffer:  {}/{} (Head/Tail)", head, tail);
+            if let Some(src) = drivers::input::hotkey_source_info() {
+                kprintln!("  Source:");
+                kprintln!("    PM1A_EVT: {:#x}", src.pm1a_evt_port);
+                kprintln!("    PM1B_EVT: {:#x}", src.pm1b_evt_port);
+                kprintln!("    PM1_STS_LEN: {}", src.pm1_sts_len);
+            } else {
+                kprintln!("  Source: unavailable");
+            }
+        }
+        "read" => {
+            let mut drained = 0usize;
+            while let Some(event) = drivers::input::read_hotkey_event() {
+                drained += 1;
+                kprintln!("  [{}] {}", drained, hotkey_event_name(event));
+            }
+            if drained == 0 {
+                kprintln!("No ACPI hotkey events.");
+            }
+        }
+        "inject" => {
+            let name = args.next().unwrap_or("");
+            match parse_hotkey_name(name) {
+                Some(event) => {
+                    drivers::input::inject_hotkey_event(event);
+                    kprintln!("Injected ACPI hotkey event: {}", hotkey_event_name(event));
+                }
+                None => {
+                    kprintln!("Invalid hotkey name: '{}'", name);
+                    kprintln!("Valid names: power, sleep, hibernate, volup, voldown, mute, briup, bridown");
+                }
+            }
+        }
+        "help" | _ => {
+            kprintln!("Usage: hotkey <subcommand>");
+            kprintln!("Subcommands:");
+            kprintln!("  status              - Show ACPI hotkey queue status");
+            kprintln!("  read                - Drain and print queued hotkey events");
+            kprintln!("  inject <event>      - Inject a test hotkey event");
+            kprintln!("Events: power, sleep, hibernate, volup, voldown, mute, briup, bridown");
+        }
+    }
+}
+
+fn parse_hotkey_name(name: &str) -> Option<drivers::input::HotkeyEvent> {
+    match name {
+        "power" | "pwrbtn" | "powerbtn" => Some(drivers::input::HotkeyEvent::PowerButton),
+        "sleep" => Some(drivers::input::HotkeyEvent::Sleep),
+        "hibernate" => Some(drivers::input::HotkeyEvent::Hibernate),
+        "volup" | "volumeup" => Some(drivers::input::HotkeyEvent::VolumeUp),
+        "voldown" | "volumedown" => Some(drivers::input::HotkeyEvent::VolumeDown),
+        "mute" | "volumemute" => Some(drivers::input::HotkeyEvent::VolumeMute),
+        "briup" | "brightnessup" => Some(drivers::input::HotkeyEvent::BrightnessUp),
+        "bridown" | "brightnessdown" => Some(drivers::input::HotkeyEvent::BrightnessDown),
+        _ => None,
+    }
+}
+
+fn hotkey_event_name(event: drivers::input::HotkeyEvent) -> &'static str {
+    match event {
+        drivers::input::HotkeyEvent::PowerButton => "power_button",
+        drivers::input::HotkeyEvent::Sleep => "sleep",
+        drivers::input::HotkeyEvent::Hibernate => "hibernate",
+        drivers::input::HotkeyEvent::VolumeUp => "volume_up",
+        drivers::input::HotkeyEvent::VolumeDown => "volume_down",
+        drivers::input::HotkeyEvent::VolumeMute => "volume_mute",
+        drivers::input::HotkeyEvent::BrightnessUp => "brightness_up",
+        drivers::input::HotkeyEvent::BrightnessDown => "brightness_down",
+    }
+}
+
+fn handle_hotkey_event(event: drivers::input::HotkeyEvent) {
+    kprintln!("[hotkey] event={}", hotkey_event_name(event));
 }
 
 fn execute_pci_command() {

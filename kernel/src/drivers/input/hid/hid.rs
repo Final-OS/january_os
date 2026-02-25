@@ -201,13 +201,24 @@ impl HidReportItem {
             let size = data[1];
             let tag = data[2];
             let item_type = HidItemType::Reserved;
-            // 长项目暂不支持
+            let consumed = 3 + size as usize;
+            if data.len() < consumed {
+                return None;
+            }
+
+            // 长项目在现代 HID 报告描述符中极少使用。
+            // 为保持接口兼容，仅保留前 4 字节数据，其余字节由调用方按 consumed 跳过。
+            let payload = &data[3..consumed];
+            let mut item_data = 0u32;
+            for (idx, b) in payload.iter().take(4).enumerate() {
+                item_data |= (*b as u32) << (idx * 8);
+            }
             return Some((Self {
                 item_type,
                 tag,
                 size,
-                data: 0,
-            }, 3 + size as usize));
+                data: item_data,
+            }, consumed));
         }
         
         // 短项目

@@ -1,5 +1,5 @@
 use crate::syscall::{
-    E2BIG, ECHILD, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOSYS, EPERM, ESRCH,
+    E2BIG, ECHILD, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, EPERM, ESRCH,
     SyscallArgs, SyscallRet, err, ok,
 };
 use crate::task;
@@ -486,16 +486,35 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         user_frame.rflags
     );
 
-    task::rollback_exec_mappings(&staged_mappings);
+    let staged_count = staged_mappings.len();
+    let replaced_pages = match task::set_current_exec_mappings(staged_mappings) {
+        Some(replaced) => replaced,
+        None => {
+            crate::kprintln!(
+                "[diag][execve] install mappings failed path={} staged_pages={}",
+                path,
+                staged_count,
+            );
+            return err(ESRCH);
+        }
+    };
+
     crate::kprintln!(
-        "[diag][execve] staged mappings rolled back: pages={} (transition disabled)",
-        staged_mappings.len()
+        "[diag][execve] mappings installed path={} staged_pages={} replaced_pages={}",
+        path,
+        staged_count,
+        replaced_pages,
     );
     crate::kprintln!(
-        "[diag][execve] PT_LOAD real-mapping path is ready, ring3 transition remains disabled -> -ENOSYS",
+        "[diag][execve] enter ring3 path={} rip={:#x} rsp={:#x}",
+        path,
+        user_frame.rip,
+        user_frame.rsp,
     );
 
-    err(ENOSYS)
+    unsafe {
+        task::arch::enter_user_mode_iret(&user_frame);
+    }
 }
 
 pub(crate) fn sys_getpid(_args: &SyscallArgs) -> SyscallRet {

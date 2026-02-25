@@ -123,9 +123,12 @@ pub extern "x86-interrupt" fn page_fault_handler(
         asm!("mov {}, cr2", out(reg) fault_addr, options(nostack, preserves_flags));
     }
 
-    // 调用 mm 模块的页错误处理
+    // 调用 mm 模块的页错误处理。
+    // 当前尚未引入 per-process mm，上下文先绑定到 init_mm，避免空指针路径。
     let direct_map = crate::config::DIRECT_MAP_OFFSET;
-    let mut ctx = FaultContext::new(fault_addr, error_code, core::ptr::null_mut(), direct_map);
+    let mut init_mm = crate::mm::get_init_mm();
+    let mm_ptr: *mut crate::mm::Mm = &mut *init_mm;
+    let mut ctx = FaultContext::new(fault_addr, error_code, mm_ptr, direct_map);
     let result = handle_page_fault(&mut ctx);
 
     match result {

@@ -163,6 +163,9 @@ pub fn device_count() -> usize {
 
 /// 轮询所有 HID 设备
 pub fn poll() {
+    // 先处理 USB 事件环，新的 HID 报告会在此阶段分发到键盘/鼠标子模块。
+    crate::drivers::usb::poll();
+
     // 轮询键盘
     keyboard::poll();
     

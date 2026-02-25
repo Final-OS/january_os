@@ -157,3 +157,12 @@ pub fn schedule() {
         }
     }
 }
+
+/// 调度器空闲循环
+///
+/// 当前先提供统一的 idle 入口，后续可在这里接入更复杂的调度策略。
+pub fn run_idle() -> ! {
+    loop {
+        interrupt::halt_with_interrupts();
+    }
+}

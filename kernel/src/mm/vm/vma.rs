@@ -566,5 +566,18 @@ pub fn get_init_mm() -> crate::sync::SpinLockGuard<'static, Mm> {
 /// 初始化 VMA 子系统
 pub fn init_vma() {
     let mut mm = INIT_MM.get_or_init(|| SpinLock::new(Mm::uninit())).lock();
-    mm.init(0); // 内核 pgd 后续设置
+    mm.init(kernel_pgd_phys());
+}
+
+#[inline]
+fn kernel_pgd_phys() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::mm::arch::read_cr3() & crate::mm::arch::PTE_ADDR_MASK
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        0
+    }
 }

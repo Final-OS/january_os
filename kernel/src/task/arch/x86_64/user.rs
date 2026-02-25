@@ -34,7 +34,7 @@ pub fn build_user_enter_frame(entry: u64, stack_top: u64) -> UserEnterFrame {
 
 /// 通过 iretq 进入 ring3。
 ///
-/// 当前作为后续用户态切换的骨架接口，尚未在 execve 中实际调用。
+/// 当前用于 shell runuser 和 syscall execve 的用户态切换路径。
 pub unsafe fn enter_user_mode_iret(frame: &UserEnterFrame) -> ! {
     let frame_rip = frame.rip;
     let frame_rsp = frame.rsp;
