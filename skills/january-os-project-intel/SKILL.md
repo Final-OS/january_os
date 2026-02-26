@@ -52,6 +52,8 @@ If there are edits, hand off to `$january-os-docs-skills-sync`.
 - Prefer facts from repository files and command outputs over assumptions.
 - If info is missing, mark uncertainty explicitly and propose the next file/command to resolve it.
 - Keep the report structured and actionable; avoid narrative-only summaries.
+- Flag any API/behavior change that is not reflected in `docs/api/**`.
+- Flag any architecture-specific logic implemented outside `boot/<arch>/` or `kernel/src/**/arch/<arch>/`, and require either relocation or explicit temporary rationale.
 
 ## Resources
 

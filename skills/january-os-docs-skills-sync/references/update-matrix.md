@@ -4,6 +4,12 @@
 
 If a file in the left column changes, evaluate and update every target in the right column unless explicitly not applicable.
 
+## Guardrails
+
+- API or externally visible behavior changes require same-change updates to `docs/api/**`.
+- Architecture-specific code changes require same-change updates to `docs/api/arch/**` and relevant `docs/implementation/**`.
+- Architecture-specific code should be placed under `boot/<arch>/` or `kernel/src/**/arch/<arch>/`; if not, add refactor item and document temporary rationale.
+
 ## Path -> Required Updates
 
 - `boot/**`

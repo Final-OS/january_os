@@ -162,6 +162,19 @@ unsafe {
 
 ### 文件: kernel/src/main.rs
 
+### 内核链接脚本布局
+
+### 文件: kernel/arch/x86_64/linker.ld
+
+内核 ELF 的链接基址固定为 `0x0010_0000`，并导出关键边界符号：
+
+- `__kernel_start` / `__kernel_end`：内核映像内存范围（页对齐）。
+- `__kernel_file_end` / `__kernel_file_size`：文件镜像末尾与大小（不含 `NOLOAD` 的 `.bss`）。
+- `__kernel_mem_end` / `__kernel_mem_size`：内存镜像末尾与大小（包含 `.bss`）。
+- `__text_*` / `__rodata_*` / `__got_*` / `__data_*` / `__bss_*`：各段边界。
+
+其中 `.bss` 使用 `NOLOAD`，因此 `kernel.bin` 体积由 `__kernel_file_size` 决定，运行时仍需依赖内核早期 `zero_bss()` 清零。
+
 #### 1. 清零 BSS
 
 ```rust

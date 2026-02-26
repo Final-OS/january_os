@@ -10,6 +10,11 @@
 - `kernel/src/task/arch/x86_64/`: task switching and user-mode entry glue.
 - `tools/cfg/`: config generator for `os_cfg.toml`.
 
+## Placement Rule
+
+- Architecture-specific implementation code belongs in `boot/<arch>/` or `kernel/src/**/arch/<arch>/`.
+- Generic module paths should only contain architecture-agnostic interfaces/policies.
+
 ## Documentation Ownership
 
 - `docs/guide/`: user/developer workflow guides.

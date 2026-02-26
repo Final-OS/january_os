@@ -19,9 +19,12 @@ This skill enforces post-change information hygiene. It maps changed code/config
 ## Non-Negotiable Rules
 
 - Every meaningful code/config change must include a docs/skills impact decision.
+- Any API or externally observable behavior change must update related pages in `docs/api/**` in the same change.
+- Any architecture-specific behavior change must update related pages in `docs/api/arch/**` and `docs/implementation/**` in the same change.
 - If no docs/skills update is needed, explain exactly why in final report.
 - Do not leave `docs/.vitepress/config.ts` stale when adding/renaming docs pages.
 - Keep skill metadata (`SKILL.md` frontmatter and `agents/openai.yaml`) consistent.
+- Architecture-specific code must live under architecture paths (`boot/<arch>/`, `kernel/src/**/arch/<arch>/`); do not keep arch logic in generic modules without explicit abstraction.
 
 ## Workflow
 
