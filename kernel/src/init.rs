@@ -2,17 +2,17 @@
 //!
 //! 负责按顺序初始化各个子系统。
 
-use core::fmt::Write;
-use crate::drivers::{self, acpi};
-use crate::drivers::tty::{serial, serial_enable_rx_interrupt, SerialWriter};
-use crate::drivers::tty::fbcon;
-use crate::mm::{self, MemoryRegion};
-use crate::interrupt;
-use crate::smp;
 use crate::arch;
-use crate::config;
 use crate::boot::{BootInfo, BOOTINFO_MAGIC};
-use crate::{kprintln, kprint, info, ok, warn, error};
+use crate::config;
+use crate::drivers::tty::fbcon;
+use crate::drivers::tty::{serial, serial_enable_rx_interrupt, SerialWriter};
+use crate::drivers::{self, acpi};
+use crate::interrupt;
+use crate::mm::{self, MemoryRegion};
+use crate::smp;
+use crate::{error, info, kprint, kprintln, ok, warn};
+use core::fmt::Write;
 
 fn resolve_direct_map_offset(boot_direct_map: u64) -> u64 {
     const KERNEL_ADDR_MIN: u64 = 0xFFFF_0000_0000_0000;
@@ -58,9 +58,9 @@ pub fn init_kernel(info: &BootInfo) {
     kprint!("\x1b[2J\x1b[1;1H"); // Clear screen, move cursor to 1,1
     kprintln!("\n\x1b[36;1m   January OS \x1b[0;36mv0.1.0\x1b[0m");
     kprintln!("\x1b[90m   --------------------------------\x1b[0m\n");
-    
+
     info!("Booting kernel...");
-    
+
     // 早期 ACPI 初始化 (为了获取 SRAT 表进行 NUMA 初始化)
     if info.acpi_rsdp_addr != 0 {
         let _ = drivers::acpi::init(info.acpi_rsdp_addr);
@@ -95,9 +95,15 @@ pub fn init_kernel(info: &BootInfo) {
     kprintln!("[diag][boot] step7: init_interrupts done");
 
     // 8. 启动 AP 核心 (SMP)
-    kprintln!("[diag][boot] step8: smp::init begin expected_cpus={}", cpu_count);
+    kprintln!(
+        "[diag][boot] step8: smp::init begin expected_cpus={}",
+        cpu_count
+    );
     smp::init(direct_map, cpu_count as usize);
-    kprintln!("[diag][boot] step8: smp::init done online_cpus={}", smp::cpu_count());
+    kprintln!(
+        "[diag][boot] step8: smp::init done online_cpus={}",
+        smp::cpu_count()
+    );
 
     // 9. IOMMU 初始化
     kprintln!("[diag][boot] step9: init_iommu begin");
@@ -126,18 +132,18 @@ pub fn init_kernel(info: &BootInfo) {
     kprintln!();
     ok!("Kernel initialization complete.");
     kprintln!();
-    
+
     // 系统摘要
     print_system_summary(info, &acpi_config);
 }
 
 fn init_graphics(info: &BootInfo, direct_map: u64) {
     let fb = &info.framebuffer;
-    
+
     // 先用串口输出调试信息
     // let _ = write!(SerialWriter, "\n[FB Debug] phys={:#x} size={} {}x{} stride={} fmt={}\n",
     //    fb.address, fb.size, fb.width, fb.height, fb.stride, fb.pixel_format);
-    
+
     if fb.address != 0 && fb.width > 0 && fb.height > 0 {
         let fb_virt_addr = direct_map + fb.address;
         fbcon::init(
@@ -153,14 +159,17 @@ fn init_graphics(info: &BootInfo, direct_map: u64) {
 /// 检测 NUMA 节点信息
 fn detect_numa_nodes() -> ([mm::numa::NumaNodeInfo; mm::numa::MAX_NUMNODES], usize) {
     let mut nodes = [mm::numa::NumaNodeInfo {
-        node_id: 0, start_addr: 0, size: 0, cpu_mask: 0
+        node_id: 0,
+        start_addr: 0,
+        size: 0,
+        cpu_mask: 0,
     }; mm::numa::MAX_NUMNODES];
     let mut node_count = 0;
-    
+
     // 尝试从 SRAT 获取信息
     if let Some(srat) = drivers::acpi::find_table::<drivers::acpi::Srat>() {
         let mut max_node_id = 0;
-        
+
         for entry in srat.entries() {
             match entry {
                 drivers::acpi::SratEntry::MemoryAffinity(mem) => {
@@ -169,7 +178,7 @@ fn detect_numa_nodes() -> ([mm::numa::NumaNodeInfo; mm::numa::MAX_NUMNODES], usi
                         if node_id < mm::numa::MAX_NUMNODES {
                             let info = &mut nodes[node_id];
                             info.node_id = node_id as u32;
-                            
+
                             // 合并内存区域 (简单的取最小起始和最大结束)
                             if info.size == 0 {
                                 info.start_addr = mem.base_address();
@@ -178,36 +187,36 @@ fn detect_numa_nodes() -> ([mm::numa::NumaNodeInfo; mm::numa::MAX_NUMNODES], usi
                                 let current_end = info.start_addr + info.size;
                                 let mem_start = mem.base_address();
                                 let mem_end = mem_start + mem.length();
-                                
+
                                 let new_start = info.start_addr.min(mem_start);
                                 let new_end = current_end.max(mem_end);
-                                
+
                                 info.start_addr = new_start;
                                 info.size = new_end - new_start;
                             }
-                            
+
                             if node_id > max_node_id {
                                 max_node_id = node_id;
                             }
                         }
                     }
-                },
+                }
                 drivers::acpi::SratEntry::LocalApicAffinity(apic) => {
                     if apic.is_enabled() {
                         let node_id = apic.proximity_domain() as usize;
                         if node_id < mm::numa::MAX_NUMNODES && (apic.apic_id as usize) < 64 {
                             nodes[node_id].cpu_mask |= 1 << apic.apic_id;
-                            
+
                             if node_id > max_node_id {
                                 max_node_id = node_id;
                             }
                         }
                     }
-                },
+                }
                 _ => {}
             }
         }
-        
+
         // 将有效节点移动到数组前面
         let mut valid_idx = 0;
         for i in 0..=max_node_id {
@@ -221,13 +230,13 @@ fn detect_numa_nodes() -> ([mm::numa::NumaNodeInfo; mm::numa::MAX_NUMNODES], usi
         }
         node_count = valid_idx;
     }
-    
+
     (nodes, node_count)
 }
 
 fn init_memory(info: &BootInfo, direct_map: u64) {
     info!("Initializing Memory Management...");
-    
+
     let mem_regions = info.memory_map_addr as *const MemoryRegion;
     let entries_count = info.memory_map_entries as usize;
     let kernel_end_phys = info.kernel_phys_addr + info.kernel_size;
@@ -237,7 +246,9 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
         let region = unsafe { &*mem_regions.add(i) };
         let region_end = region.phys_start + region.page_count * 4096;
         if region.region_type == 0 {
-            if region_end > max_phys_addr { max_phys_addr = region_end; }
+            if region_end > max_phys_addr {
+                max_phys_addr = region_end;
+            }
         }
     }
     let max_managed = max_phys_addr.min(4 * 1024 * 1024 * 1024);
@@ -245,8 +256,11 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
 
     // 构建内存区域信息
     const MAX_REGIONS: usize = 64;
-    let mut region_infos: [mm::MemoryRegionInfo; MAX_REGIONS] = 
-        [mm::MemoryRegionInfo { phys_start: 0, page_count: 0, is_usable: false }; MAX_REGIONS];
+    let mut region_infos: [mm::MemoryRegionInfo; MAX_REGIONS] = [mm::MemoryRegionInfo {
+        phys_start: 0,
+        page_count: 0,
+        is_usable: false,
+    }; MAX_REGIONS];
     let mut region_info_count = 0usize;
     for i in 0..entries_count.min(MAX_REGIONS) {
         let region = unsafe { &*mem_regions.add(i) };
@@ -260,17 +274,21 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
 
     // Memblock
     unsafe {
-        mm::init_memblock(&region_infos[..region_info_count], info.kernel_phys_addr, kernel_end_phys)
-            .expect("Memblock init failed");
-        
+        mm::init_memblock(
+            &region_infos[..region_info_count],
+            info.kernel_phys_addr,
+            kernel_end_phys,
+        )
+        .expect("Memblock init failed");
+
         // Buddy System
         mm::init_buddy_system(&region_infos[..region_info_count], max_pfn, direct_map)
             .expect("Buddy init failed");
-        
+
         // SLUB
         mm::init_slub().expect("SLUB init failed");
         mm::finish_mm_init();
-        
+
         // 初始化堆
         if let Some(heap_page) = mm::alloc_pages(8, mm::GFP_KERNEL) {
             let heap_phys = mm::page_to_pfn(heap_page) * 4096;
@@ -281,7 +299,7 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
 
     // 初始化其他内存组件
     mm::init_vma();
-    
+
     // 根据配置初始化内存模型
     if config::MEMORY_MODEL_NUMA {
         let (nodes, count) = detect_numa_nodes();
@@ -290,7 +308,9 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
         } else {
             warn!("SRAT not found or empty. Using UMA.");
         }
-        unsafe { mm::init_numa(&nodes[..count]); }
+        unsafe {
+            mm::init_numa(&nodes[..count]);
+        }
     } else {
         mm::init_uma();
     }
@@ -303,13 +323,13 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
         let pt_mgr_ptr = Box::leak(Box::new(pt_mgr));
         unsafe { mm::vmalloc::init_vmalloc(direct_map, pt_mgr_ptr) };
     }
-    
+
     ok!("Memory subsystems initialized (Buddy, SLUB, VMA).");
 }
 
 fn init_acpi(info: &BootInfo) -> acpi::AcpiConfig {
     info!("Parsing ACPI Tables...");
-    
+
     if info.acpi_rsdp_addr != 0 {
         // 如果尚未初始化，则初始化
         if !acpi::is_initialized() {
@@ -320,8 +340,12 @@ fn init_acpi(info: &BootInfo) -> acpi::AcpiConfig {
         }
 
         let config = acpi::detect_system_config();
-        ok!("ACPI: {} CPUs | APIC: {:#x} | IOMMU: {}",
-            config.cpu_count, config.local_apic_addr, if config.has_iommu { "yes" } else { "no" });
+        ok!(
+            "ACPI: {} CPUs | APIC: {:#x} | IOMMU: {}",
+            config.cpu_count,
+            config.local_apic_addr,
+            if config.has_iommu { "yes" } else { "no" }
+        );
         config
     } else {
         warn!("ACPI not available");
@@ -331,7 +355,7 @@ fn init_acpi(info: &BootInfo) -> acpi::AcpiConfig {
 
 fn init_interrupts(acpi_config: &acpi::AcpiConfig, kernel_stack_top: u64, direct_map: u64) {
     info!("Initializing Interrupt Controller...");
-    
+
     let int_info = interrupt::InterruptInitInfo {
         kernel_stack_top,
         local_apic_addr: acpi_config.local_apic_addr,
@@ -339,13 +363,16 @@ fn init_interrupts(acpi_config: &acpi::AcpiConfig, kernel_stack_top: u64, direct
         ioapic_gsi_base: acpi_config.ioapic_gsi_base,
         direct_map_base: direct_map,
     };
-    
+
     unsafe {
         interrupt::init(&int_info).expect("Interrupt init failed");
     }
-    
-    ok!("Local APIC: {:#x} | I/O APIC: {:#x}",
-        acpi_config.local_apic_addr, acpi_config.ioapic_addr);
+
+    ok!(
+        "Local APIC: {:#x} | I/O APIC: {:#x}",
+        acpi_config.local_apic_addr,
+        acpi_config.ioapic_addr
+    );
 }
 
 fn init_iommu() {
@@ -375,10 +402,7 @@ fn init_drivers() {
 
 fn init_timer_and_enable_interrupts() {
     let if_step11a = interrupt::interrupts_enabled();
-    kprintln!(
-        "[diag][boot] step11a: IF(before timer init)={}",
-        if_step11a
-    );
+    kprintln!("[diag][boot] step11a: IF(before timer init)={}", if_step11a);
 
     // 1. 校准 TSC (System Clock)
     interrupt::calibrate_tsc();
@@ -387,37 +411,32 @@ fn init_timer_and_enable_interrupts() {
     let timer_freq = interrupt::calibrate_timer();
     const TIMER_HZ: u32 = interrupt::TIMER_TICK_HZ as u32;
     interrupt::init_apic_timer(interrupt::IRQ_TIMER, TIMER_HZ);
-    
+
     // 启用串口接收中断
     serial_enable_rx_interrupt();
 
     let if_step11b = interrupt::interrupts_enabled();
-    kprintln!(
-        "[diag][boot] step11b: IF(before sti)={}",
-        if_step11b
-    );
-    
+    kprintln!("[diag][boot] step11b: IF(before sti)={}", if_step11b);
+
     interrupt::enable_interrupts();
 
-    // STI 在下一条指令边界后生效，先插入一个 NOP 再读取 IF。
-    unsafe {
-        core::arch::asm!("nop", options(nostack, nomem));
-    }
+    // STI 在下一条指令边界后生效，先执行一条无副作用指令再读取 IF。
+    core::hint::spin_loop();
 
     let if_step11c = interrupt::interrupts_enabled();
 
-    kprintln!(
-        "[diag][boot] step11c: IF(after sti)={}",
-        if_step11c
+    kprintln!("[diag][boot] step11c: IF(after sti)={}", if_step11c);
+
+    ok!(
+        "Timer: {} MHz | Tick: {} Hz | Interrupts: ENABLED",
+        timer_freq / 1_000_000,
+        TIMER_HZ
     );
-    
-    ok!("Timer: {} MHz | Tick: {} Hz | Interrupts: ENABLED",
-        timer_freq / 1_000_000, TIMER_HZ);
 }
 
 fn print_system_summary(info: &BootInfo, acpi_config: &acpi::AcpiConfig) {
     let total_usable = info.usable_memory; // 这里原来是重新计算的，现在直接用 BootInfo 的字段或者重新计算
-    
+
     // 重新计算 usable memory (为了保持一致性)
     let mem_regions = info.memory_map_addr as *const MemoryRegion;
     let entries_count = info.memory_map_entries as usize;
@@ -434,14 +453,24 @@ fn print_system_summary(info: &BootInfo, acpi_config: &acpi::AcpiConfig) {
         .filter(|z| z.initialized)
         .map(|z| z.nr_free_pages())
         .sum::<u64>();
-    
+
     kprintln!("\x1b[90m--------------------------------------------------------\x1b[0m");
     kprintln!(" \x1b[36;1mSYSTEM SUMMARY\x1b[0m");
     kprintln!("\x1b[90m--------------------------------------------------------\x1b[0m");
-    kprintln!("  \x1b[37mMemory:\x1b[0m     \x1b[33m{}\x1b[0m MB total, \x1b[32m{}\x1b[0m MB free", 
-        total_usable_calc / 1024 / 1024, (total_free * 4) / 1024);
-    kprintln!("  \x1b[37mCPUs:\x1b[0m       \x1b[33m{}\x1b[0m (BSP APIC ID: {})", acpi_config.cpu_count, interrupt::local_apic_id());
-    kprintln!("  \x1b[37mDisks:\x1b[0m      \x1b[33m{}\x1b[0m", info.disk_count);
+    kprintln!(
+        "  \x1b[37mMemory:\x1b[0m     \x1b[33m{}\x1b[0m MB total, \x1b[32m{}\x1b[0m MB free",
+        total_usable_calc / 1024 / 1024,
+        (total_free * 4) / 1024
+    );
+    kprintln!(
+        "  \x1b[37mCPUs:\x1b[0m       \x1b[33m{}\x1b[0m (BSP APIC ID: {})",
+        acpi_config.cpu_count,
+        interrupt::local_apic_id()
+    );
+    kprintln!(
+        "  \x1b[37mDisks:\x1b[0m      \x1b[33m{}\x1b[0m",
+        info.disk_count
+    );
     kprintln!();
 
     // Timer 测试 (已移至 shell 'test timer' 命令)

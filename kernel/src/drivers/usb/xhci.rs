@@ -2,20 +2,20 @@
 //!
 //! xHCI 是 USB 3.0+ 的主机控制器标准接口
 
-use crate::drivers::pci::{self, PciAddress, PciHeader};
-use crate::{kprintln, kprint, info, ok, warn, error, debug};
-use crate::mm::vmalloc::{ioremap, iounmap};
-use crate::interrupt::arch::x86_64::idt::IRQ_XHCI;
-use crate::mm::buddy::alloc_pages;
-use crate::mm::page::page_to_pfn;
-use crate::mm::zone::{GfpFlags, GFP_KERNEL_ZERO};
-use crate::config::{PAGE_SIZE, DIRECT_MAP_OFFSET};
-use crate::sync::SpinLock;
-use core::ptr::{read_volatile, write_volatile, addr_of, addr_of_mut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use crate::config::{DIRECT_MAP_OFFSET, PAGE_SIZE};
 use crate::drivers::input::hid::hid::{BootKeyboardReport, BootMouseReport};
 use crate::drivers::input::hid::keyboard;
 use crate::drivers::input::hid::mouse;
+use crate::drivers::pci::{self, PciAddress, PciHeader};
+use crate::interrupt::IRQ_XHCI;
+use crate::mm::buddy::alloc_pages;
+use crate::mm::page::page_to_pfn;
+use crate::mm::vmalloc::{ioremap, iounmap};
+use crate::mm::zone::{GfpFlags, GFP_KERNEL_ZERO};
+use crate::sync::SpinLock;
+use crate::{debug, error, info, kprint, kprintln, ok, warn};
+use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 // ============================================================================
 // 寄存器定义
@@ -79,12 +79,12 @@ struct RuntimeRegisters {
 /// 中断寄存器集 (Interrupter Register Set)
 #[repr(C)]
 struct InterrupterRegisters {
-    iman: u32, // Management
-    imod: u32, // Moderation
+    iman: u32,   // Management
+    imod: u32,   // Moderation
     erstsz: u32, // Segment Table Size
     reserved: u32,
     erstba: u64, // Segment Table Base Address
-    erdp: u64, // Dequeue Pointer
+    erdp: u64,   // Dequeue Pointer
 }
 
 /// 门铃寄存器组 (Doorbell Registers)
@@ -193,15 +193,15 @@ const XHCI_RESET_SPIN_DELAY: usize = 10_000;
 
 // CRCR 位定义
 const CRCR_RCS: u64 = 1 << 0; // Ring Cycle State
-const CRCR_CS: u64 = 1 << 1;  // Command Stop
-const CRCR_CA: u64 = 1 << 2;  // Command Abort
+const CRCR_CS: u64 = 1 << 1; // Command Stop
+const CRCR_CA: u64 = 1 << 2; // Command Abort
 const CRCR_CRR: u64 = 1 << 3; // Command Ring Running
 
 // PORTSC 位定义
 const PORTSC_CCS: u32 = 1 << 0; // Current Connect Status
 const PORTSC_PED: u32 = 1 << 1; // Port Enabled/Disabled
-const PORTSC_PR: u32 = 1 << 4;  // Port Reset
-const PORTSC_PP: u32 = 1 << 9;  // Port Power
+const PORTSC_PR: u32 = 1 << 4; // Port Reset
+const PORTSC_PP: u32 = 1 << 9; // Port Power
 const PORTSC_CSC: u32 = 1 << 17; // Connect Status Change
 const PORTSC_PRC: u32 = 1 << 21; // Port Reset Change
 
@@ -333,26 +333,26 @@ struct XhciController {
     op_regs: *mut OperationalRegisters,
     rt_regs: *mut RuntimeRegisters,
     db_regs: *mut DoorbellRegisters,
-    
+
     // Capabilities
     max_slots: u8,
     max_ports: u8,
     context_size_64: bool,
-    
+
     // Data Structures
     dcbaap_phys: u64,
     dcbaap_virt: *mut u64,
-    
+
     cmd_ring_phys: u64,
     cmd_ring_virt: *mut Trb,
     cmd_ring_enqueue_idx: usize,
     cmd_ring_cycle_state: u32,
-    
+
     event_ring_phys: u64,
     event_ring_virt: *mut Trb,
     event_ring_dequeue_idx: usize,
     event_ring_cycle_state: u32,
-    
+
     erst_phys: u64,
 
     // Slot Management
@@ -367,7 +367,7 @@ static XHCI_CONTROLLER: SpinLock<Option<XhciController>> =
 impl XhciController {
     unsafe fn enqueue_command(&mut self, param: u64, status: u32, control: u32) {
         let mut idx = self.cmd_ring_enqueue_idx;
-        
+
         // Check for Link TRB (assume ring size 256, last one is Link)
         if idx == 255 {
             let link_trb = self.cmd_ring_virt.add(255);
@@ -375,32 +375,32 @@ impl XhciController {
             if self.cmd_ring_cycle_state != 0 {
                 link_control |= 1; // Set Cycle bit
             }
-            
+
             (*link_trb).parameter = self.cmd_ring_phys;
             (*link_trb).status = 0;
             write_volatile(&mut (*link_trb).control, link_control);
-            
+
             // Toggle Cycle State
             self.cmd_ring_cycle_state ^= 1;
             idx = 0;
         }
-        
+
         let trb = self.cmd_ring_virt.add(idx);
         (*trb).parameter = param;
         (*trb).status = status;
-        
+
         let mut final_control = control;
         if self.cmd_ring_cycle_state != 0 {
             final_control |= 1; // Set Cycle bit
         } else {
             final_control &= !1; // Clear Cycle bit
         }
-        
+
         write_volatile(&mut (*trb).control, final_control);
-        
+
         self.cmd_ring_enqueue_idx = idx + 1;
     }
-    
+
     unsafe fn ring_doorbell(&mut self, slot: u8) {
         let db_reg = (self.db_regs as *mut u32).add(slot as usize);
         write_volatile(db_reg, 0);
@@ -411,12 +411,19 @@ impl XhciController {
         write_volatile(db_reg, dci as u32);
     }
 
-    unsafe fn enqueue_transfer(&mut self, slot_id: u8, dci: u8, param: u64, status: u32, control: u32) {
+    unsafe fn enqueue_transfer(
+        &mut self,
+        slot_id: u8,
+        dci: u8,
+        param: u64,
+        status: u32,
+        control: u32,
+    ) {
         if let Some(slot_state) = &mut self.slots[slot_id as usize] {
             if let Some(ep_state) = &mut slot_state.endpoints[dci as usize] {
                 let ring = &mut ep_state.ring;
                 let mut idx = ring.enqueue_idx;
-                
+
                 // Check for Link TRB (assume ring size 256, last one is Link)
                 if idx == 255 {
                     let link_trb = ring.virt.add(255);
@@ -424,34 +431,34 @@ impl XhciController {
                     if ring.cycle_state != 0 {
                         link_control |= 1; // Set Cycle bit
                     }
-                    
+
                     (*link_trb).parameter = ring.phys;
                     (*link_trb).status = 0;
                     write_volatile(&mut (*link_trb).control, link_control);
-                    
+
                     // Toggle Cycle State
                     ring.cycle_state ^= 1;
                     idx = 0;
                 }
-                
+
                 let trb = ring.virt.add(idx);
                 (*trb).parameter = param;
                 (*trb).status = status;
-                
+
                 let mut final_control = control;
                 if ring.cycle_state != 0 {
                     final_control |= 1; // Set Cycle bit
                 } else {
                     final_control &= !1; // Clear Cycle bit
                 }
-                
+
                 write_volatile(&mut (*trb).control, final_control);
-                
+
                 ring.enqueue_idx = idx + 1;
             }
         }
     }
-    
+
     unsafe fn wait_for_event(&mut self, trb_type: u32, timeout_ms: usize) -> Option<Trb> {
         let mut timeout = timeout_ms * 1000;
         while timeout > 0 {
@@ -462,20 +469,22 @@ impl XhciController {
                 }
                 // kprintln!("USB: Ignored event type {}", type_);
             }
-            
-            for _ in 0..100 { core::hint::spin_loop(); }
+
+            for _ in 0..100 {
+                core::hint::spin_loop();
+            }
             timeout -= 1;
         }
         None
     }
-    
+
     unsafe fn poll_event(&mut self) -> Option<Trb> {
         let idx = self.event_ring_dequeue_idx;
         let trb_ptr = self.event_ring_virt.add(idx);
         let trb = read_volatile(trb_ptr);
-        
+
         let cycle_bit = (trb.control & 1) as u32;
-        
+
         if cycle_bit == self.event_ring_cycle_state {
             // Event available
             self.event_ring_dequeue_idx += 1;
@@ -483,18 +492,18 @@ impl XhciController {
                 self.event_ring_dequeue_idx = 0;
                 self.event_ring_cycle_state ^= 1;
             }
-            
+
             // Update ERDP
             let ir_set = addr_of_mut!((*self.rt_regs).irs) as *mut InterrupterRegisters;
             let ir0 = &mut *ir_set;
             let er_seg_phys = self.event_ring_phys;
             let new_dequeue_ptr = er_seg_phys + (self.event_ring_dequeue_idx as u64 * 16);
-            
+
             write_volatile(&mut ir0.erdp, new_dequeue_ptr | (1 << 3));
-            
+
             return Some(trb);
         }
-        
+
         None
     }
 
@@ -502,123 +511,131 @@ impl XhciController {
         let slot_id = (trb.control >> 24) & 0xFF;
         let dci = (trb.control >> 16) & 0x1F;
         let cc = (trb.status >> 24) & 0xFF;
-        
+
         if cc != TRB_CC_SUCCESS && cc != TRB_CC_SHORT_PACKET {
-             warn!("USB: Transfer Event Failed Slot {} DCI {} CC {}", slot_id, dci, cc);
-             return;
+            warn!(
+                "USB: Transfer Event Failed Slot {} DCI {} CC {}",
+                slot_id, dci, cc
+            );
+            return;
         }
-        
+
         if let Some(slot_state) = &mut self.slots[slot_id as usize] {
             if let Some(ep_state) = &mut slot_state.endpoints[dci as usize] {
                 if let Some((_, buf_virt, len)) = ep_state.buffer {
-                     // Data received!
-                     // kprintln!("USB: Data received from Slot {} DCI {}", slot_id, dci);
-                     
-                     // Print first few bytes
-                     let slice = core::slice::from_raw_parts(buf_virt, len);
-                     // kprintln!("USB: Data: {:02x?}", slice);
-                     
-                     // If it is HID data, we could parse it
-                     // Assume DCI 3 = EP1 IN (Interrupt)
-                     if dci == 3 {
-                         match slot_state.device_type {
-                             DeviceType::Keyboard => {
-                                 if slice.len() >= 8 {
-                                     let report = &*(buf_virt as *const BootKeyboardReport);
-                                     // kprint!("Keyboard [Slot {}]: Mods={:02x} Keys=[", slot_id, report.modifiers);
-                                     // for k in report.keycodes.iter() {
-                                     //     if *k != 0 { kprint!("{:02x} ", k); }
-                                     // }
-                                     // kprintln!("]");
-                                     
-                                     // Send to HID subsystem
-                                     keyboard::handle_boot_report(*report);
-                                 }
-                             },
-                             DeviceType::Mouse => {
-                                 if slice.len() >= 3 {
-                                     let buttons = slice[0];
-                                     let x = slice[1] as i8;
-                                     let y = slice[2] as i8;
-                                     let wheel = if slice.len() >= 4 { slice[3] as i8 } else { 0 };
-                                     // kprintln!("Mouse [Slot {}]: Btn={:02x} X={} Y={} Wheel={}", 
-                                     //     slot_id, buttons, x, y, wheel);
-                                     
-                                     let report = BootMouseReport {
-                                         buttons,
-                                         x,
-                                         y,
-                                         wheel,
-                                     };
-                                     
-                                     // Send to HID subsystem
-                                     mouse::handle_boot_report(report);
-                                 }
-                             },
-                             _ => {
-                                 // Just print for now
-                                 debug!("USB Input [Slot {}]: {:02x?}", slot_id, slice);
-                             }
-                         }
-                     }
-                     
-                     // Re-queue transfer
-                     let trb_type = 1; // Normal TRB
-                     let control = (trb_type << 10) | (1 << 5) | (1 << 2); // IOC, ISP
-                     
-                     // Reuse buffer
-                     let (phys, _, len) = ep_state.buffer.unwrap();
-                     
-                     // Need to call enqueue_transfer but we have mutable borrow of slot_state
-                     // We cannot call self.enqueue_transfer directly because of borrow checker?
-                     // self is borrowed mutably.
-                     // But we have reference to slot_state inside self.
-                     // We need to access ring inside ep_state.
-                     
-                     let ring = &mut ep_state.ring;
-                     let mut idx = ring.enqueue_idx;
-                     
-                     if idx == 255 {
+                    // Data received!
+                    // kprintln!("USB: Data received from Slot {} DCI {}", slot_id, dci);
+
+                    // Print first few bytes
+                    let slice = core::slice::from_raw_parts(buf_virt, len);
+                    // kprintln!("USB: Data: {:02x?}", slice);
+
+                    // If it is HID data, we could parse it
+                    // Assume DCI 3 = EP1 IN (Interrupt)
+                    if dci == 3 {
+                        match slot_state.device_type {
+                            DeviceType::Keyboard => {
+                                if slice.len() >= 8 {
+                                    let report = &*(buf_virt as *const BootKeyboardReport);
+                                    // kprint!("Keyboard [Slot {}]: Mods={:02x} Keys=[", slot_id, report.modifiers);
+                                    // for k in report.keycodes.iter() {
+                                    //     if *k != 0 { kprint!("{:02x} ", k); }
+                                    // }
+                                    // kprintln!("]");
+
+                                    // Send to HID subsystem
+                                    keyboard::handle_boot_report(*report);
+                                }
+                            }
+                            DeviceType::Mouse => {
+                                if slice.len() >= 3 {
+                                    let buttons = slice[0];
+                                    let x = slice[1] as i8;
+                                    let y = slice[2] as i8;
+                                    let wheel = if slice.len() >= 4 { slice[3] as i8 } else { 0 };
+                                    // kprintln!("Mouse [Slot {}]: Btn={:02x} X={} Y={} Wheel={}",
+                                    //     slot_id, buttons, x, y, wheel);
+
+                                    let report = BootMouseReport {
+                                        buttons,
+                                        x,
+                                        y,
+                                        wheel,
+                                    };
+
+                                    // Send to HID subsystem
+                                    mouse::handle_boot_report(report);
+                                }
+                            }
+                            _ => {
+                                // Just print for now
+                                debug!("USB Input [Slot {}]: {:02x?}", slot_id, slice);
+                            }
+                        }
+                    }
+
+                    // Re-queue transfer
+                    let trb_type = 1; // Normal TRB
+                    let control = (trb_type << 10) | (1 << 5) | (1 << 2); // IOC, ISP
+
+                    // Reuse buffer
+                    let (phys, _, len) = ep_state.buffer.unwrap();
+
+                    // Need to call enqueue_transfer but we have mutable borrow of slot_state
+                    // We cannot call self.enqueue_transfer directly because of borrow checker?
+                    // self is borrowed mutably.
+                    // But we have reference to slot_state inside self.
+                    // We need to access ring inside ep_state.
+
+                    let ring = &mut ep_state.ring;
+                    let mut idx = ring.enqueue_idx;
+
+                    if idx == 255 {
                         let link_trb = ring.virt.add(255);
                         let mut link_control = (TRB_TYPE_LINK << 10) | (1 << 1);
-                        if ring.cycle_state != 0 { link_control |= 1; }
+                        if ring.cycle_state != 0 {
+                            link_control |= 1;
+                        }
                         (*link_trb).parameter = ring.phys;
                         (*link_trb).status = 0;
                         write_volatile(&mut (*link_trb).control, link_control);
                         ring.cycle_state ^= 1;
                         idx = 0;
-                     }
-                     
-                     let trb = ring.virt.add(idx);
-                     (*trb).parameter = phys;
-                     (*trb).status = len as u32; // Transfer Length
-                     
-                     let mut final_control = control;
-                     if ring.cycle_state != 0 { final_control |= 1; } else { final_control &= !1; }
-                     write_volatile(&mut (*trb).control, final_control);
-                     
-                     ring.enqueue_idx = idx + 1;
-                     
-                     // Doorbell
-                     // We can't call self.ring_doorbell_ep either.
-                     // Calculate address manually.
-                     let db_reg = (self.db_regs as *mut u32).add(slot_id as usize);
-                     write_volatile(db_reg, dci as u32);
+                    }
+
+                    let trb = ring.virt.add(idx);
+                    (*trb).parameter = phys;
+                    (*trb).status = len as u32; // Transfer Length
+
+                    let mut final_control = control;
+                    if ring.cycle_state != 0 {
+                        final_control |= 1;
+                    } else {
+                        final_control &= !1;
+                    }
+                    write_volatile(&mut (*trb).control, final_control);
+
+                    ring.enqueue_idx = idx + 1;
+
+                    // Doorbell
+                    // We can't call self.ring_doorbell_ep either.
+                    // Calculate address manually.
+                    let db_reg = (self.db_regs as *mut u32).add(slot_id as usize);
+                    write_volatile(db_reg, dci as u32);
                 }
             }
         }
     }
 
     unsafe fn enable_slot(&mut self) -> Option<u8> {
-
         kprintln!("USB: Sending Enable Slot Command...");
-        
+
         // Enable Slot Command: Type = 9
         let cmd_trb_control = (TRB_TYPE_ENABLE_SLOT << 10);
         self.enqueue_command(0, 0, cmd_trb_control);
-        
+
         self.ring_doorbell(0);
-        
+
         // Wait for Command Completion Event
         if let Some(event) = self.wait_for_event(TRB_TYPE_CMD_COMPLETION, 1000) {
             let completion_code = (event.status >> 24) & 0xFF;
@@ -632,43 +649,48 @@ impl XhciController {
         } else {
             kprintln!("USB: Enable Slot Timeout");
         }
-        
+
         None
     }
 
     unsafe fn address_device(&mut self, slot_id: u8, port_id: u8, speed: u32) -> bool {
-        kprintln!("USB: Addressing Device on Slot {} (Port {}, Speed {})", slot_id, port_id, speed);
-        
+        kprintln!(
+            "USB: Addressing Device on Slot {} (Port {}, Speed {})",
+            slot_id,
+            port_id,
+            speed
+);
+
         // 1. Allocate Device Context
         let (dc_phys, dc_virt) = match alloc_dma_zeroed() {
             Some(x) => x,
             None => return false,
         };
-        
+
         // Update DCBAAP
         let dcbaap = self.dcbaap_virt;
         *dcbaap.add(slot_id as usize) = dc_phys;
-        
+
         // 2. Allocate Input Context
         let (ic_phys, ic_virt) = match alloc_dma_zeroed() {
             Some(x) => x,
             None => return false,
         };
-        
+
         let input_ctx = &mut *(ic_virt as *mut InputContext);
-        
+
         // 3. Setup Input Control Context
         // Add Flags: Slot Context (Bit 0) | Endpoint 0 Context (Bit 1)
         input_ctx.control.add_flags = (1 << 0) | (1 << 1);
-        
+
         // 4. Setup Slot Context
         // Info1: Speed, Context Entries (1 for EP0)
         input_ctx.slot.info1 |= (speed << 20);
         input_ctx.slot.info1 |= (1 << 27); // Context Entries = 1
-        
+
         // Info2: Root Hub Port Number
         input_ctx.slot.info2 |= (port_id as u32) << 16;
-        
+
         // 5. Setup Endpoint 0 Context
         // EP Type = Control (Value 4)
         // Max Packet Size: Super=512, High=64, Others=8
@@ -677,23 +699,23 @@ impl XhciController {
             3 => 64,
             _ => 8,
         };
-        
+
         input_ctx.endpoints[0].info2 |= (4 << 3); // EP Type = Control
         input_ctx.endpoints[0].info2 |= (mps << 16); // Max Packet Size
         input_ctx.endpoints[0].info2 |= (3 << 1); // CErr = 3
-        
+
         // Allocate Transfer Ring for EP0
         let (tr_phys, tr_virt) = match alloc_dma_zeroed() {
             Some(x) => x,
             None => return false,
         };
-        
+
         // Initialize Link TRB at end of Transfer Ring
         let link_trb = (tr_virt as *mut Trb).add(255);
         let link_control = (TRB_TYPE_LINK << 10) | (1 << 1); // Link, TC
         (*link_trb).parameter = tr_phys;
         write_volatile(&mut (*link_trb).control, link_control);
-        
+
         // Save Slot State
         let mut endpoints = [None; 32];
         endpoints[1] = Some(EndpointState {
@@ -705,21 +727,21 @@ impl XhciController {
             },
             buffer: None,
         });
-        
+
         self.slots[slot_id as usize] = Some(SlotState {
             endpoints,
             device_type: DeviceType::Unknown,
         });
-        
+
         // Set Dequeue Pointer in EP Context (DCS=1)
         input_ctx.endpoints[0].tr_dequeue_ptr_lo = (tr_phys as u32) | 1;
         input_ctx.endpoints[0].tr_dequeue_ptr_hi = (tr_phys >> 32) as u32;
-        
+
         // 6. Issue Address Device Command
         let cmd_control = (TRB_TYPE_ADDRESS_DEVICE << 10) | ((slot_id as u32) << 24);
         self.enqueue_command(ic_phys, 0, cmd_control);
         self.ring_doorbell(0);
-        
+
         // Wait for completion
         if let Some(event) = self.wait_for_event(TRB_TYPE_CMD_COMPLETION, 1000) {
             let cc = (event.status >> 24) & 0xFF;
@@ -732,37 +754,52 @@ impl XhciController {
         } else {
             kprintln!("USB: Address Device Timeout");
         }
-        
+
         false
     }
 
-    unsafe fn send_control_transfer(&mut self, slot_id: u8, setup: SetupPacket, buffer: Option<(u64, usize)>) -> bool {
+    unsafe fn send_control_transfer(
+        &mut self,
+        slot_id: u8,
+        setup: SetupPacket,
+        buffer: Option<(u64, usize)>,
+    ) -> bool {
         // 1. Setup Stage
         let setup_ptr = addr_of!(setup) as *const u32;
         let setup_trb_param_low = read_volatile(setup_ptr);
         let setup_trb_param_high = read_volatile(setup_ptr.add(1));
-        
+
         // TRB Type = Setup Stage (2)
         // IDT = 1 (Immediate Data)
         // TRT = 2 (IN Data Stage) or 3 (OUT Data Stage) or 0 (No Data Stage)
         let trt = if setup.length > 0 {
-            if (setup.request_type & 0x80) != 0 { 3 } else { 2 } // 3=IN, 2=OUT
+            if (setup.request_type & 0x80) != 0 {
+                3
+            } else {
+                2
+            } // 3=IN, 2=OUT
         } else {
             0
         };
-        
+
         let setup_control = (TRB_TYPE_SETUP_STAGE << 10) | (1 << 6) | (trt << 16);
-        self.enqueue_transfer(slot_id, 1, (setup_trb_param_high as u64) << 32 | (setup_trb_param_low as u64), 8, setup_control);
-        
+        self.enqueue_transfer(
+            slot_id,
+            1,
+            (setup_trb_param_high as u64) << 32 | (setup_trb_param_low as u64),
+            8,
+            setup_control,
+);
+
         // 2. Data Stage (Optional)
         if let Some((buf_phys, buf_len)) = buffer {
             let dir_in = (setup.request_type & 0x80) != 0;
             let direction_bit = if dir_in { 1 << 16 } else { 0 };
-            
+
             let data_control = (TRB_TYPE_DATA_STAGE << 10) | direction_bit;
             self.enqueue_transfer(slot_id, 1, buf_phys, buf_len as u32, data_control);
         }
-        
+
         // 3. Status Stage
         // Direction is opposite to Data Stage
         // If No Data Stage, Direction is IN (1)
@@ -771,26 +808,26 @@ impl XhciController {
         } else {
             true // No Data -> Status IN
         };
-        
+
         let direction_bit = if dir_in { 1 << 16 } else { 0 };
         let status_control = (TRB_TYPE_STATUS_STAGE << 10) | direction_bit | (1 << 5); // IOC (Interrupt On Completion)
-        
+
         self.enqueue_transfer(slot_id, 1, 0, 0, status_control);
-        
+
         // Ring Doorbell for Slot, EP0 (DCI = 1)
         self.ring_doorbell_ep(slot_id, 1);
-        
+
         // Wait for Completion
         if let Some(event) = self.wait_for_event(TRB_TYPE_TRANSFER_EVENT, 1000) {
-             let cc = (event.status >> 24) & 0xFF;
-             if cc == TRB_CC_SUCCESS {
-                 return true;
-             }
-             kprintln!("USB: Control Transfer Failed, CC: {}", cc);
+            let cc = (event.status >> 24) & 0xFF;
+            if cc == TRB_CC_SUCCESS {
+                return true;
+            }
+            kprintln!("USB: Control Transfer Failed, CC: {}", cc);
         } else {
             kprintln!("USB: Control Transfer Timeout");
         }
-        
+
         false
     }
 
@@ -805,7 +842,13 @@ impl XhciController {
         self.send_control_transfer(slot_id, setup, None)
     }
 
-    unsafe fn set_idle(&mut self, slot_id: u8, interface_num: u8, duration: u8, report_id: u8) -> bool {
+    unsafe fn set_idle(
+        &mut self,
+        slot_id: u8,
+        interface_num: u8,
+        duration: u8,
+        report_id: u8,
+    ) -> bool {
         let setup = SetupPacket {
             request_type: 0x21,
             request: 0x0A,
@@ -818,22 +861,22 @@ impl XhciController {
 
     unsafe fn configure_device(&mut self, slot_id: u8) {
         kprintln!("USB: Configuring Device on Slot {}", slot_id);
-        
+
         // Allocate buffer for Descriptor
         let (buf_phys, buf_virt) = match alloc_dma_zeroed() {
             Some(x) => x,
             None => return,
         };
-        
+
         // 1. Get Device Descriptor (First 8 bytes)
         let setup = SetupPacket {
             request_type: 0x80, // Device to Host, Standard, Device
-            request: 6, // GET_DESCRIPTOR
-            value: 1 << 8, // Descriptor Type (1=Device) << 8 | Index (0)
+            request: 6,         // GET_DESCRIPTOR
+            value: 1 << 8,      // Descriptor Type (1=Device) << 8 | Index (0)
             index: 0,
             length: 8,
         };
-        
+
         if !self.send_control_transfer(slot_id, setup, Some((buf_phys, 8))) {
             return;
         }
@@ -841,7 +884,7 @@ impl XhciController {
         let desc = &*(buf_virt as *const DeviceDescriptor);
         let mps = desc.max_packet_size0;
         kprintln!("USB: Slot {} MaxPacketSize0: {}", slot_id, mps);
-             
+
         // 2. Get Full Device Descriptor
         let setup_full = SetupPacket {
             request_type: 0x80,
@@ -850,7 +893,7 @@ impl XhciController {
             index: 0,
             length: 18,
         };
-             
+
         if !self.send_control_transfer(slot_id, setup_full, Some((buf_phys, 18))) {
             return;
         }
@@ -858,64 +901,70 @@ impl XhciController {
         let desc = &*(buf_virt as *const DeviceDescriptor);
         let vendor = desc.id_vendor;
         let product = desc.id_product;
-                 
-        kprintln!("USB: Slot {} Vendor: {:04x}, Product: {:04x}", 
-            slot_id, vendor, product);
-            
+
+kprintln!(
+   "USB: Slot {} Vendor: {:04x}, Product: {:04x}",
+            slot_id,
+            vendor,
+            product
+);
+
         if vendor == 0x0627 && product == 0x0001 {
-             kprintln!("USB: Found QEMU USB Tablet/Mouse");
+            kprintln!("USB: Found QEMU USB Tablet/Mouse");
         } else if vendor == 0x046d {
-             kprintln!("USB: Found Logitech Device");
+            kprintln!("USB: Found Logitech Device");
         }
 
         // 3. Get Configuration Descriptor Header (9 bytes)
         let setup_conf = SetupPacket {
             request_type: 0x80,
-            request: 6, // GET_DESCRIPTOR
+            request: 6,    // GET_DESCRIPTOR
             value: 2 << 8, // Type 2 (Configuration) | Index 0
             index: 0,
             length: 9,
         };
-        
-        if self.send_control_transfer(slot_id, setup_conf, Some((buf_phys, 9))) {
-             let conf = &*(buf_virt as *const ConfigurationDescriptor);
-             let total_len = conf.total_length as usize;
-             if total_len < core::mem::size_of::<ConfigurationDescriptor>() {
-                 warn!("USB: Slot {} invalid config descriptor length {}", slot_id, total_len);
-                 return;
-             }
 
-             let transfer_len = total_len.min(PAGE_SIZE as usize);
-             if transfer_len < total_len {
-                 warn!(
+        if self.send_control_transfer(slot_id, setup_conf, Some((buf_phys, 9))) {
+            let conf = &*(buf_virt as *const ConfigurationDescriptor);
+            let total_len = conf.total_length as usize;
+            if total_len < core::mem::size_of::<ConfigurationDescriptor>() {
+                warn!(
+                    "USB: Slot {} invalid config descriptor length {}",
+                    slot_id, total_len
+                );
+                return;
+            }
+
+            let transfer_len = total_len.min(PAGE_SIZE as usize);
+            if transfer_len < total_len {
+                warn!(
                     "USB: Slot {} config descriptor too large ({}), clamped to {}",
-                    slot_id,
-                    total_len,
-                    transfer_len,
-                 );
-             }
-             kprintln!("USB: Slot {} Config Total Length: {}", slot_id, total_len);
-             
-             // 4. Get Full Configuration Descriptor
-             let setup_full_conf = SetupPacket {
+                    slot_id, total_len, transfer_len,
+                );
+            }
+            kprintln!("USB: Slot {} Config Total Length: {}", slot_id, total_len);
+
+            // 4. Get Full Configuration Descriptor
+            let setup_full_conf = SetupPacket {
                 request_type: 0x80,
                 request: 6,
                 value: 2 << 8,
                 index: 0,
                 length: transfer_len as u16,
-             };
-             
-             if self.send_control_transfer(slot_id, setup_full_conf, Some((buf_phys, transfer_len))) {
-                 // Parse descriptors
-                 self.parse_configuration(slot_id, buf_virt, transfer_len);
-             }
+            };
+
+            if self.send_control_transfer(slot_id, setup_full_conf, Some((buf_phys, transfer_len)))
+            {
+                // Parse descriptors
+                self.parse_configuration(slot_id, buf_virt, transfer_len);
+            }
         }
     }
 
     unsafe fn parse_configuration(&mut self, slot_id: u8, buffer: *mut u8, length: usize) {
         let mut offset = 0;
         let mut current_interface = 0;
-        
+
         // Find Endpoints to configure
         let mut endpoints_to_config = [None; 16]; // Store EndpointDescriptors
         let mut ep_count = 0;
@@ -930,17 +979,17 @@ impl XhciController {
             let header = buffer.add(offset);
             let len = *header as usize;
             let type_ = *header.add(1);
-            
+
             if len < 2 || len > remaining {
                 warn!(
                     "USB: Invalid descriptor length {}, remaining {}",
-                    len,
-                    remaining,
+                    len, remaining,
                 );
                 break;
             }
-            
-            if type_ == 4 { // Interface Descriptor
+
+            if type_ == 4 {
+                // Interface Descriptor
                 if len < core::mem::size_of::<InterfaceDescriptor>() {
                     warn!("USB: Short interface descriptor len={}", len);
                     offset += len;
@@ -951,32 +1000,42 @@ impl XhciController {
                 let class = if_desc.interface_class;
                 let subclass = if_desc.interface_subclass;
                 let protocol = if_desc.interface_protocol;
-                
-                kprintln!("USB: Interface {} Class: {} Subclass: {} Protocol: {}", 
-                    current_interface, class, subclass, protocol);
-                
-                if class == 3 { // HID
-                     kprintln!("USB: Found HID Interface");
-                     
-                     {
-                         if let Some(slot_state) = &mut self.slots[slot_id as usize] {
-                             if protocol == 1 {
-                                 slot_state.device_type = DeviceType::Keyboard;
-                                 kprintln!("USB: Device Type: Keyboard");
-                             } else if protocol == 2 {
-                                 slot_state.device_type = DeviceType::Mouse;
-                                 kprintln!("USB: Device Type: Mouse");
-                             }
-                         }
-                     }
-                     
-                     if subclass == 1 {
-                         kprintln!("USB: Setting Boot Protocol and Idle for Interface {}", current_interface);
-                         self.set_protocol(slot_id, current_interface, 0);
-                         self.set_idle(slot_id, current_interface, 0, 0);
-                     }
+
+kprintln!(
+                    "USB: Interface {} Class: {} Subclass: {} Protocol: {}",
+                    current_interface,
+                    class,
+                    subclass,
+                    protocol
+);
+
+                if class == 3 {
+                    // HID
+                    kprintln!("USB: Found HID Interface");
+
+                    {
+                        if let Some(slot_state) = &mut self.slots[slot_id as usize] {
+                            if protocol == 1 {
+                                slot_state.device_type = DeviceType::Keyboard;
+                                kprintln!("USB: Device Type: Keyboard");
+                            } else if protocol == 2 {
+                                slot_state.device_type = DeviceType::Mouse;
+                                kprintln!("USB: Device Type: Mouse");
+                            }
+                        }
+                    }
+
+                    if subclass == 1 {
+                        kprintln!(
+                            "USB: Setting Boot Protocol and Idle for Interface {}",
+                            current_interface
+                        );
+                        self.set_protocol(slot_id, current_interface, 0);
+                        self.set_idle(slot_id, current_interface, 0, 0);
+                    }
                 }
-            } else if type_ == 5 { // Endpoint Descriptor
+            } else if type_ == 5 {
+                // Endpoint Descriptor
                 if len < core::mem::size_of::<EndpointDescriptor>() {
                     warn!("USB: Short endpoint descriptor len={}", len);
                     offset += len;
@@ -985,9 +1044,9 @@ impl XhciController {
                 let ep_desc = &*(header as *const EndpointDescriptor);
                 let addr = ep_desc.endpoint_address;
                 let attr = ep_desc.attributes;
-                
+
                 kprintln!("USB: Endpoint Addr: {:#x} Attr: {:#x}", addr, attr);
-                
+
                 // If Interrupt IN
                 if (addr & 0x80) != 0 && (attr & 0x03) == 3 {
                     if ep_count < 16 {
@@ -996,7 +1055,7 @@ impl XhciController {
                     }
                 }
             }
-            
+
             offset += len;
         }
 
@@ -1006,50 +1065,54 @@ impl XhciController {
                 self.configure_endpoint_xhci(slot_id, &ep_desc);
             }
         }
-        
+
         // SET_CONFIGURATION (USB Request)
         let setup_set_conf = SetupPacket {
-            request_type: 0x00, 
+            request_type: 0x00,
             request: 9, // SET_CONFIGURATION
-            value: 1, 
+            value: 1,
             index: 0,
             length: 0,
         };
         if self.send_control_transfer(slot_id, setup_set_conf, None) {
             kprintln!("USB: Device Configured");
-            
+
             // Start Polling for Interrupt Endpoints
-             for i in 0..ep_count {
+            for i in 0..ep_count {
                 if let Some(ep_desc) = endpoints_to_config[i] {
                     let ep_num = ep_desc.endpoint_address & 0x0F;
                     let dir_in = (ep_desc.endpoint_address & 0x80) != 0;
                     let dci = (ep_num * 2) + if dir_in { 1 } else { 0 };
-                    
+
                     self.queue_interrupt_transfer(slot_id, dci);
                 }
             }
         }
     }
 
-    unsafe fn configure_endpoint_xhci(&mut self, slot_id: u8, ep_desc: &EndpointDescriptor) -> bool {
-         let ep_num = ep_desc.endpoint_address & 0x0F;
-         let dir_in = (ep_desc.endpoint_address & 0x80) != 0;
-         let dci = (ep_num * 2) + if dir_in { 1 } else { 0 };
-         
-         kprintln!("USB: Configuring Endpoint {}, DCI: {}", ep_num, dci);
-         
-         // 1. Allocate Transfer Ring
-         let (tr_phys, tr_virt) = match alloc_dma_zeroed() {
+    unsafe fn configure_endpoint_xhci(
+        &mut self,
+        slot_id: u8,
+        ep_desc: &EndpointDescriptor,
+    ) -> bool {
+        let ep_num = ep_desc.endpoint_address & 0x0F;
+        let dir_in = (ep_desc.endpoint_address & 0x80) != 0;
+        let dci = (ep_num * 2) + if dir_in { 1 } else { 0 };
+
+        kprintln!("USB: Configuring Endpoint {}, DCI: {}", ep_num, dci);
+
+        // 1. Allocate Transfer Ring
+        let (tr_phys, tr_virt) = match alloc_dma_zeroed() {
             Some(x) => x,
             None => return false,
         };
-        
+
         // Link TRB
         let link_trb = (tr_virt as *mut Trb).add(255);
         let link_control = (TRB_TYPE_LINK << 10) | (1 << 1);
         (*link_trb).parameter = tr_phys;
         write_volatile(&mut (*link_trb).control, link_control);
-        
+
         let ring = RingState {
             phys: tr_phys,
             virt: tr_virt as *mut Trb,
@@ -1059,64 +1122,64 @@ impl XhciController {
 
         // Save Ring State
         if let Some(slot_state) = &mut self.slots[slot_id as usize] {
-            slot_state.endpoints[dci as usize] = Some(EndpointState {
-                ring,
-                buffer: None,
-            });
+            slot_state.endpoints[dci as usize] = Some(EndpointState { ring, buffer: None });
         }
-        
+
         // 2. Setup Input Context
         let (ic_phys, ic_virt) = match alloc_dma_zeroed() {
             Some(x) => x,
             None => return false,
         };
         let input_ctx = &mut *(ic_virt as *mut InputContext);
-        
+
         // Add Flags: DCI | Slot Context
-        input_ctx.control.add_flags = (1 << dci) | (1 << 0); 
-        
+        input_ctx.control.add_flags = (1 << dci) | (1 << 0);
+
         // Slot Context: Context Entries
-        input_ctx.slot.info1 |= (31 << 27); 
-        
+        input_ctx.slot.info1 |= (31 << 27);
+
         // Endpoint Context
         let ep_ctx = &mut input_ctx.endpoints[dci as usize - 1];
-        
+
         let ep_type = match (ep_desc.attributes & 0x03, dir_in) {
             (0, _) => 4, // Control
-            (1, false) => 1, (1, true) => 5,
-            (2, false) => 2, (2, true) => 6,
-            (3, false) => 3, (3, true) => 7,
+            (1, false) => 1,
+            (1, true) => 5,
+            (2, false) => 2,
+            (2, true) => 6,
+            (3, false) => 3,
+            (3, true) => 7,
             _ => 0,
         };
-        
+
         ep_ctx.info2 |= ((ep_type as u32) << 3);
         ep_ctx.info2 |= ((ep_desc.max_packet_size as u32) << 16);
-        
+
         // Interval: simplified
-        ep_ctx.info1 |= (6 << 16); 
-        
+        ep_ctx.info1 |= (6 << 16);
+
         ep_ctx.info2 |= (3 << 1); // CErr
-        
+
         // Dequeue Pointer
         ep_ctx.tr_dequeue_ptr_lo = (tr_phys as u32) | 1; // DCS=1
         ep_ctx.tr_dequeue_ptr_hi = (tr_phys >> 32) as u32;
-        
+
         ep_ctx.average_trb_len = 8;
-        
+
         // 3. Issue Configure Endpoint Command
         let cmd_control = (TRB_TYPE_CONFIGURE_ENDPOINT << 10) | ((slot_id as u32) << 24);
         self.enqueue_command(ic_phys, 0, cmd_control);
         self.ring_doorbell(0);
-        
+
         if let Some(event) = self.wait_for_event(TRB_TYPE_CMD_COMPLETION, 1000) {
-             let cc = (event.status >> 24) & 0xFF;
-             if cc == TRB_CC_SUCCESS {
-                 return true;
-             } else {
-                 kprintln!("USB: Configure Endpoint Failed, CC: {}", cc);
-             }
+            let cc = (event.status >> 24) & 0xFF;
+            if cc == TRB_CC_SUCCESS {
+                return true;
+            } else {
+                kprintln!("USB: Configure Endpoint Failed, CC: {}", cc);
+            }
         }
-        
+
         false
     }
 
@@ -1126,27 +1189,31 @@ impl XhciController {
             Some(x) => x,
             None => return,
         };
-        
+
         // Save Buffer in EndpointState
         if let Some(slot_state) = &mut self.slots[slot_id as usize] {
             if let Some(ep_state) = &mut slot_state.endpoints[dci as usize] {
                 ep_state.buffer = Some((buf_phys, buf_virt, 4096));
             }
         }
-        
+
         // Normal TRB
         // Type = Normal (1)
         // IOC = 1
         // Length = 8 (for mouse/keyboard usually enough)
-        
+
         let trb_type = 1; // Normal TRB
         let length = 8;
         let control = (trb_type << 10) | (1 << 5) | (1 << 2); // IOC, ISP (Interrupt on Short Packet)
-        
+
         self.enqueue_transfer(slot_id, dci, buf_phys, length, control);
         self.ring_doorbell_ep(slot_id, dci);
-        
-        kprintln!("USB: Queued Interrupt Transfer for Slot {} DCI {}", slot_id, dci);
+
+        kprintln!(
+            "USB: Queued Interrupt Transfer for Slot {} DCI {}",
+            slot_id,
+            dci
+        );
     }
 }
 
@@ -1161,18 +1228,18 @@ pub fn dump_devices() {
             let mut found = false;
             // 遍历所有可能的 Slot
             for i in 1..=xhci.max_slots {
-                 if i as usize >= xhci.slots.len() {
-                     break;
-                 }
-                 if let Some(slot) = &xhci.slots[i as usize] {
-                     let type_str = match slot.device_type {
-                         DeviceType::Keyboard => "HID Keyboard",
-                         DeviceType::Mouse => "HID Mouse",
-                         DeviceType::Unknown => "Unknown Device",
-                     };
-                     crate::kprintln!("  Slot {}: {}", i, type_str);
-                     found = true;
-                 }
+                if i as usize >= xhci.slots.len() {
+                    break;
+                }
+                if let Some(slot) = &xhci.slots[i as usize] {
+                    let type_str = match slot.device_type {
+                        DeviceType::Keyboard => "HID Keyboard",
+                        DeviceType::Mouse => "HID Mouse",
+                        DeviceType::Unknown => "Unknown Device",
+                    };
+                    crate::kprintln!("  Slot {}: {}", i, type_str);
+                    found = true;
+                }
             }
             if !found {
                 crate::kprintln!("  No devices connected.");
@@ -1217,9 +1284,13 @@ pub fn init() {
         // Subclass 0x03 (USB Controller)
         // ProgIF 0x30 (xHCI)
         if header.class_code == 0x0C && header.subclass == 0x03 && header.prog_if == 0x30 {
-            kprintln!("USB: Found xHCI Controller at {:?} (Vendor: {:04x}, Device: {:04x})", 
-                addr, header.vendor_id, header.device_id);
-            
+            kprintln!(
+                "USB: Found xHCI Controller at {:?} (Vendor: {:04x}, Device: {:04x})",
+                addr,
+                header.vendor_id,
+                header.device_id
+);
+
             // 初始化控制器
             if !INITIALIZED.load(Ordering::Relaxed) {
                 INITIALIZED.store(true, Ordering::Relaxed);
@@ -1237,14 +1308,14 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     // 1. 启用 Bus Master 和 Memory Space
     let cmd = header.command | 0x06; // Bit 1 (Memory), Bit 2 (Bus Master)
     pci::write_config_32(addr, 0x04, cmd as u32);
-    
+
     // 2. 读取 BAR0 获取 MMIO 基地址
     let bar0 = pci::read_config_32(addr, 0x10);
     let bar_type = (bar0 >> 1) & 0x03;
     let prefetchable = (bar0 >> 3) & 0x01;
-    
+
     let mut mmio_phys = (bar0 & 0xFFFF_FFF0) as u64;
-    
+
     // 如果是 64 位 BAR，读取 BAR1
     if bar_type == 0x02 {
         let bar1 = pci::read_config_32(addr, 0x14);
@@ -1258,22 +1329,25 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
         prefetchable,
         mmio_phys,
     );
-    
+
     kprintln!("USB: xHCI MMIO Phys Base: {:#x}", mmio_phys);
-    
+
     // 3. 映射 MMIO
     // 暂时映射 64KB，通常足够覆盖寄存器
     let mmio_size = 64 * 1024;
     let mmio_base = ioremap(mmio_phys, mmio_size);
-    kprintln!("[diag][xhci] ioremap returned mmio_base={:#x}", mmio_base as u64);
-    
+    kprintln!(
+        "[diag][xhci] ioremap returned mmio_base={:#x}",
+        mmio_base as u64
+);
+
     if mmio_base.is_null() {
         kprintln!("USB: Failed to map xHCI MMIO");
         return;
     }
-    
+
     kprintln!("USB: xHCI MMIO Mapped at {:#x}", mmio_base as u64);
-    
+
     // 4. 解析寄存器
     let cap_regs = mmio_base as *const CapabilityRegisters;
     if core::mem::size_of::<CapabilityRegisters>() > mmio_size {
@@ -1287,17 +1361,23 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     let hccparams1 = read_volatile(addr_of!((*cap_regs).hccparams1));
 
     xhci_legacy_handoff(mmio_base, mmio_size, hccparams1);
-    
-    kprintln!("USB: xHCI Version: {:x}.{:x} (Raw: {:#x}, CapLen: {})", 
-        hciversion >> 8, hciversion & 0xFF, hciversion, caplength);
-    
+
+    kprintln!(
+        "USB: xHCI Version: {:x}.{:x} (Raw: {:#x}, CapLen: {})",
+        hciversion >> 8,
+        hciversion & 0xFF,
+        hciversion,
+        caplength
+);
+
     let op_regs_offset = caplength as usize;
     if op_regs_offset < core::mem::size_of::<CapabilityRegisters>() {
         warn!("USB: Invalid CAPLENGTH {}", caplength);
         iounmap(mmio_base);
         return;
     }
-    let op_regs_end = match op_regs_offset.checked_add(core::mem::size_of::<OperationalRegisters>()) {
+    let op_regs_end = match op_regs_offset.checked_add(core::mem::size_of::<OperationalRegisters>())
+    {
         Some(v) => v,
         None => {
             warn!("USB: xHCI op regs overflow");
@@ -1316,14 +1396,18 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
         op_regs_offset,
         op_regs as u64,
     );
-    
+
     // 5. 解析参数
     let max_slots = (hcsparams1 & 0xFF) as u8;
     let max_ints = ((hcsparams1 >> 8) & 0x7FF) as u16;
     let max_ports = ((hcsparams1 >> 24) & 0xFF) as u8;
-    
-    kprintln!("USB: Max Slots: {}, Max Ports: {}, Max Ints: {}", 
-        max_slots, max_ports, max_ints);
+
+    kprintln!(
+        "USB: Max Slots: {}, Max Ports: {}, Max Ints: {}",
+        max_slots,
+        max_ports,
+        max_ints
+    );
 
     // Check Context Size (CSZ, bit 2 of HCCPARAMS1)
     let context_size_64 = (hccparams1 & (1 << 2)) != 0;
@@ -1336,11 +1420,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     // 计算 Runtime Registers 和 Doorbell Registers 地址
     let dboff = read_volatile(addr_of!((*cap_regs).dboff)) & !0x3;
     let rtsoff = read_volatile(addr_of!((*cap_regs).rtsoff)) & !0x1F;
-    kprintln!(
-        "[diag][xhci] dboff={:#x} rtsoff={:#x}",
-        dboff,
-        rtsoff,
-    );
+    kprintln!("[diag][xhci] dboff={:#x} rtsoff={:#x}", dboff, rtsoff,);
 
     let db_needed = (max_slots as usize).saturating_add(1) * core::mem::size_of::<u32>();
     let db_end = match (dboff as usize).checked_add(db_needed) {
@@ -1357,7 +1437,8 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
         return;
     }
 
-    let rt_needed = core::mem::size_of::<RuntimeRegisters>() + core::mem::size_of::<InterrupterRegisters>();
+    let rt_needed =
+        core::mem::size_of::<RuntimeRegisters>() + core::mem::size_of::<InterrupterRegisters>();
     let rt_end = match (rtsoff as usize).checked_add(rt_needed) {
         Some(v) => v,
         None => {
@@ -1371,7 +1452,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
         iounmap(mmio_base);
         return;
     }
-    
+
     let db_regs = mmio_base.add(dboff as usize) as *mut DoorbellRegisters;
     let rt_regs = mmio_base.add(rtsoff as usize) as *mut RuntimeRegisters;
     kprintln!(
@@ -1379,7 +1460,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
         db_regs as u64,
         rt_regs as u64,
     );
-    
+
     // 6. 重置控制器
     kprintln!("[diag][xhci] step6 reset_controller begin");
     reset_controller(op_regs);
@@ -1398,7 +1479,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
         }
     }
     kprintln!("[diag][xhci] step7 irq setup done");
-    
+
     // 7. 构造控制器实例
     let mut controller = XhciController {
         pci_addr: addr,
@@ -1424,7 +1505,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
         erst_phys: 0,
         slots: [None; 32],
     };
-    
+
     // 8. 初始化内存结构
     kprintln!("[diag][xhci] step8 init_memory_structures begin");
     if !init_memory_structures(&mut controller) {
@@ -1432,17 +1513,17 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
         return;
     }
     kprintln!("[diag][xhci] step8 init_memory_structures done");
-    
+
     // 9. 启动控制器
     kprintln!("[diag][xhci] step9 start_controller begin");
     start_controller(&mut controller);
     kprintln!("[diag][xhci] step9 start_controller done");
-    
+
     // 10. 检查端口状态
     kprintln!("[diag][xhci] step10 check_ports begin");
     check_ports(&mut controller);
     kprintln!("[diag][xhci] step10 check_ports done");
-    
+
     // Enable Global Interrupts (USBCMD_INTE)
     // Interrupts are enabled at Interrupter level in init_memory_structures (IMAN_IE)
     // Now we enable them at Controller level.
@@ -1450,73 +1531,83 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     let mut cmd = read_volatile(usbcmd);
     cmd |= USBCMD_INTE; // Enable Interrupter
     write_volatile(usbcmd, cmd);
-    kprintln!("[diag][xhci] usbcmd after INTE={:#x}", read_volatile(usbcmd));
+    kprintln!(
+        "[diag][xhci] usbcmd after INTE={:#x}",
+        read_volatile(usbcmd)
+    );
     ok!("USB: xHCI Interrupts Enabled (USBCMD_INTE)");
-    
+
     // 保存控制器实例
     *XHCI_CONTROLLER.lock() = Some(controller);
     kprintln!("[diag][xhci] controller published");
-    
+
     ok!("USB: xHCI Controller Initialized");
 }
 
 unsafe fn check_ports(xhci: &mut XhciController) {
     let op_base = xhci.op_regs as *mut u8;
     // Port Register Set is at offset 0x400 from Operational Registers Base
-    let port_base = op_base.add(0x400); 
-    
+    let port_base = op_base.add(0x400);
+
     info!("USB: Checking {} ports...", xhci.max_ports);
 
     for i in 0..xhci.max_ports {
         let port_sc_addr = port_base.add((i as usize) * 0x10) as *mut u32;
         let port_sc = read_volatile(port_sc_addr);
-        
+
         if (port_sc & PORTSC_CCS) != 0 {
-                    let speed = (port_sc >> 10) & 0xF;
-                    info!("USB: Port {} Connected (Status: {:#x}, Speed: {})", i + 1, port_sc, speed);
-                    
-                    // Reset Port to enable it
-                    if (port_sc & PORTSC_PED) == 0 {
-                        debug!("USB: Resetting Port {}...", i + 1);
-                        let mut new_sc = port_sc | PORTSC_PR;
-                        // 清除状态位 (Write 1 to Clear)
-                        new_sc &= !(PORTSC_CSC | PORTSC_PRC); // 不要写 1 到这些位，否则会清除它们? 
-                        // Wait, spec says RW1C. If we write 1, we clear them.
-                        // We want to SET PR.
-                        // Ideally we read, mask off RW1C bits, set PR, write back.
-                        // RW1C bits: CSC (17), PESC (18), WRC (19), OC (20), PRC (21), PLC (22), CEC (23)
-                        let change_bits = 0x00FE0000; // Bits 17-23
-                        new_sc = (port_sc & !change_bits) | PORTSC_PR;
-                        
-                        write_volatile(port_sc_addr, new_sc);
-                        
-                        // Wait for PRC
-                        let mut retries = 100;
-                        while retries > 0 {
-                            let sc = read_volatile(port_sc_addr);
-                            if (sc & PORTSC_PRC) != 0 {
-                                // Clear PRC
-                                write_volatile(port_sc_addr, (sc & !change_bits) | PORTSC_PRC);
-                                ok!("USB: Port {} Reset Complete (Status: {:#x})", i + 1, sc);
-                                
-                                // Try to enable slot for this port
-                                if let Some(slot_id) = xhci.enable_slot() {
-                                    info!("USB: Port {} Slot ID: {}", i + 1, slot_id);
-                                    // Next step: Address Device
-                                    if xhci.address_device(slot_id, (i + 1) as u8, speed) {
-                                        xhci.configure_device(slot_id);
-                                    }
-                                }
-                                
-                                break;
+            let speed = (port_sc >> 10) & 0xF;
+            info!(
+                "USB: Port {} Connected (Status: {:#x}, Speed: {})",
+                i + 1,
+                port_sc,
+speed
+        );
+
+            // Reset Port to enable it
+            if (port_sc & PORTSC_PED) == 0 {
+                debug!("USB: Resetting Port {}...", i + 1);
+                let mut new_sc = port_sc | PORTSC_PR;
+                // 清除状态位 (Write 1 to Clear)
+                new_sc &= !(PORTSC_CSC | PORTSC_PRC); // 不要写 1 到这些位，否则会清除它们?
+                                                      // Wait, spec says RW1C. If we write 1, we clear them.
+                                                      // We want to SET PR.
+                                                      // Ideally we read, mask off RW1C bits, set PR, write back.
+                                                      // RW1C bits: CSC (17), PESC (18), WRC (19), OC (20), PRC (21), PLC (22), CEC (23)
+                let change_bits = 0x00FE0000; // Bits 17-23
+                new_sc = (port_sc & !change_bits) | PORTSC_PR;
+
+                write_volatile(port_sc_addr, new_sc);
+
+                // Wait for PRC
+                let mut retries = 100;
+                while retries > 0 {
+                    let sc = read_volatile(port_sc_addr);
+                    if (sc & PORTSC_PRC) != 0 {
+                        // Clear PRC
+                        write_volatile(port_sc_addr, (sc & !change_bits) | PORTSC_PRC);
+                        ok!("USB: Port {} Reset Complete (Status: {:#x})", i + 1, sc);
+
+                        // Try to enable slot for this port
+                        if let Some(slot_id) = xhci.enable_slot() {
+                            info!("USB: Port {} Slot ID: {}", i + 1, slot_id);
+                            // Next step: Address Device
+                            if xhci.address_device(slot_id, (i + 1) as u8, speed) {
+                                xhci.configure_device(slot_id);
                             }
-                            // Simple delay
-                            for _ in 0..10000 { core::hint::spin_loop(); }
-                            retries -= 1;
                         }
+
+                        break;
                     }
-                } else {
-             // kprintln!("USB: Port {} Disconnected (Status: {:#x})", i + 1, port_sc);
+                    // Simple delay
+                    for _ in 0..10000 {
+                        core::hint::spin_loop();
+                    }
+                    retries -= 1;
+                }
+            }
+        } else {
+            // kprintln!("USB: Port {} Disconnected (Status: {:#x})", i + 1, port_sc);
         }
     }
 }
@@ -1526,10 +1617,10 @@ unsafe fn alloc_dma_zeroed() -> Option<(u64, *mut u8)> {
     let pfn = page_to_pfn(page);
     let phys = pfn * PAGE_SIZE;
     let virt = (phys + DIRECT_MAP_OFFSET) as *mut u8;
-    
+
     // 显式清零
     core::ptr::write_bytes(virt, 0, PAGE_SIZE as usize);
-    
+
     Some((phys, virt))
 }
 
@@ -1552,7 +1643,7 @@ unsafe fn init_memory_structures(xhci: &mut XhciController) -> bool {
     );
     xhci.dcbaap_phys = dcbaap_phys;
     xhci.dcbaap_virt = dcbaap_virt as *mut u64;
-    
+
     // 写入 DCBAAP 寄存器
     write_volatile(&mut (*xhci.op_regs).dcbaap, dcbaap_phys);
 
@@ -1568,7 +1659,7 @@ unsafe fn init_memory_structures(xhci: &mut XhciController) -> bool {
     );
     xhci.cmd_ring_phys = cmd_ring_phys;
     xhci.cmd_ring_virt = cmd_ring_virt as *mut Trb;
-    
+
     // 写入 CRCR 寄存器 (RCS = 1)
     write_volatile(&mut (*xhci.op_regs).crcr, cmd_ring_phys | CRCR_RCS);
 
@@ -1612,13 +1703,13 @@ unsafe fn init_memory_structures(xhci: &mut XhciController) -> bool {
 
     // 设置 ERSTSZ (Table Size = 1)
     write_volatile(&mut ir0.erstsz, 1);
-    
+
     // 设置 ERDP (Dequeue Pointer)
     write_volatile(&mut ir0.erdp, er_seg_phys);
-    
+
     // 设置 ERSTBA (Table Base Address)
     write_volatile(&mut ir0.erstba, erst_phys);
-    
+
     // 启用中断 (IMAN)
     // Bit 0: Interrupt Pending (RW1C) - Write 1 to clear
     // Bit 1: Interrupt Enable (RW) - Set to 1
@@ -1640,7 +1731,7 @@ unsafe fn start_controller(xhci: &mut XhciController) {
     let mut cmd = read_volatile(usbcmd);
     cmd |= USBCMD_RUN_STOP;
     write_volatile(usbcmd, cmd);
-    
+
     kprintln!("USB: xHCI Controller Started");
 }
 
@@ -1672,8 +1763,7 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
         if cap_off + core::mem::size_of::<u32>() > mmio_size {
             warn!(
                 "USB: xHCI ext cap out of mapped range off={:#x} size={:#x}",
-                cap_off,
-                mmio_size
+                cap_off, mmio_size
             );
             return;
         }
@@ -1787,17 +1877,20 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
             read_volatile(usbsts),
         );
     }
-    
+
     // 1. 停止控制器 (Clear RUN/STOP bit)
     let mut cmd = read_volatile(usbcmd);
-    kprintln!("[diag][xhci] reset step1 pre-clear runstop usbcmd={:#x}", cmd);
+    kprintln!(
+        "[diag][xhci] reset step1 pre-clear runstop usbcmd={:#x}",
+        cmd
+    );
     cmd &= !USBCMD_RUN_STOP;
     write_volatile(usbcmd, cmd);
     kprintln!(
         "[diag][xhci] reset step1 post-clear runstop usbcmd={:#x}",
         read_volatile(usbcmd)
     );
-    
+
     // 等待 HCH (Host Controller Halted)
     kprintln!("USB: Waiting for xHCI halt...");
     let mut timeout = XHCI_RESET_TIMEOUT_LOOPS;
@@ -1822,7 +1915,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
         read_volatile(usbcmd),
         read_volatile(usbsts),
     );
-    
+
     // 2. 重置控制器 (Set RESET bit)
     debug!("USB: Resetting xHCI...");
     cmd = read_volatile(usbcmd);
@@ -1832,7 +1925,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
         "[diag][xhci] reset step2 set HC reset usbcmd={:#x}",
         read_volatile(usbcmd),
     );
-    
+
     // 等待 RESET 位清除
     timeout = XHCI_RESET_TIMEOUT_LOOPS;
     while (read_volatile(usbcmd) & USBCMD_RESET) != 0 {
@@ -1882,7 +1975,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
         read_volatile(usbcmd),
         read_volatile(usbsts),
     );
-    
+
     // 3. 等待 CNR (Controller Not Ready) 清除
     timeout = XHCI_RESET_TIMEOUT_LOOPS;
     while (read_volatile(usbsts) & USBSTS_CNR) != 0 {
@@ -1906,7 +1999,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
         read_volatile(usbcmd),
         read_volatile(usbsts),
     );
-    
+
     debug!("USB: xHCI Reset Complete");
 }
 
@@ -1924,16 +2017,16 @@ pub fn handle_interrupt() {
             if (iman & 1) != 0 {
                 write_volatile(&mut ir0.iman, iman | 1);
             }
-            
+
             // 2. Process Event Ring
             // Loop until no more events
             while let Some(trb) = xhci.poll_event() {
-                 let trb_type = (trb.control >> 10) & 0x3F;
-                 if trb_type == TRB_TYPE_TRANSFER_EVENT {
-                     xhci.handle_transfer_event(&trb);
-                 } else {
-                     // Log other events?
-                     // debug!("USB: IRQ Event Type {}", trb_type);
+                let trb_type = (trb.control >> 10) & 0x3F;
+                if trb_type == TRB_TYPE_TRANSFER_EVENT {
+                    xhci.handle_transfer_event(&trb);
+                } else {
+                    // Log other events?
+                    // debug!("USB: IRQ Event Type {}", trb_type);
                 }
             }
         }

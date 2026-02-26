@@ -30,65 +30,68 @@ pub mod arch;
 pub const TIMER_TICK_HZ: u64 = 100;
 
 // Re-export common types and functions from arch
-pub use arch::{
-    InterruptInitInfo,
-    init,
-    init_bsp,
-    init_ap,
-    initialized,
-};
+pub use arch::{init, init_ap, init_bsp, initialized, InterruptInitInfo};
 
 // Re-export arch modules
-pub use arch::{gdt, idt, handlers, apic, tsc};
+pub use arch::{apic, gdt, handlers, idt, tsc};
 
 // Re-export specific items for compatibility/convenience
 pub use gdt::{
-    KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR,
-    USER_CODE_SELECTOR, USER_DATA_SELECTOR, TSS_SELECTOR,
-    init_gdt, set_interrupt_stack,
+    init_gdt, set_interrupt_stack, KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR, TSS_SELECTOR,
+    USER_CODE_SELECTOR, USER_DATA_SELECTOR,
 };
 
 pub use idt::{
-    IdtEntry, GateType, InterruptFrame,
-    enable_interrupts, disable_interrupts, interrupts_enabled,
-    without_interrupts, halt, halt_with_interrupts,
-    DIVIDE_ERROR, DEBUG, NMI, BREAKPOINT, OVERFLOW, BOUND_RANGE,
-    INVALID_OPCODE, DEVICE_NOT_AVAILABLE, DOUBLE_FAULT,
-    INVALID_TSS, SEGMENT_NOT_PRESENT, STACK_FAULT,
-    GENERAL_PROTECTION, PAGE_FAULT, X87_FPU_ERROR,
-    ALIGNMENT_CHECK, MACHINE_CHECK, SIMD_EXCEPTION,
-    VIRTUALIZATION, CONTROL_PROTECTION,
-    IRQ_BASE, IRQ_TIMER, IRQ_KEYBOARD, IRQ_MOUSE, IRQ_COM1, IRQ_SPURIOUS,
-    IPI_TLB_SHOOTDOWN,
+    disable_interrupts, enable_interrupts, halt, halt_with_interrupts, interrupts_enabled,
+    without_interrupts, GateType, IdtEntry, InterruptFrame, ALIGNMENT_CHECK, BOUND_RANGE,
+    BREAKPOINT, CONTROL_PROTECTION, DEBUG, DEVICE_NOT_AVAILABLE, DIVIDE_ERROR, DOUBLE_FAULT,
+    GENERAL_PROTECTION, INVALID_OPCODE, INVALID_TSS, IPI_TLB_SHOOTDOWN, IRQ_BASE, IRQ_COM1,
+    IRQ_KEYBOARD, IRQ_MOUSE, IRQ_SPURIOUS, IRQ_TIMER, IRQ_XHCI, MACHINE_CHECK, NMI, OVERFLOW,
+    PAGE_FAULT, SEGMENT_NOT_PRESENT, SIMD_EXCEPTION, STACK_FAULT, VIRTUALIZATION, X87_FPU_ERROR,
 };
 
 pub use apic::{
-    init_local_apic, init_ioapic, init_apic_timer,
-    local_apic_eoi, local_apic_id, apic_initialized,
-    stop_apic_timer,
-    ioapic_set_irq, ioapic_mask_irq, ioapic_unmask_irq,
-    calibrate_timer, apic_timer_frequency,
+    apic_initialized,
+    apic_timer_frequency,
+    calibrate_timer,
+    init_apic_timer,
+    init_ioapic,
+    init_local_apic,
+    ioapic_mask_irq,
+    ioapic_set_irq,
+    ioapic_unmask_irq,
+    local_apic_eoi,
+    local_apic_id,
+    send_init_ipi,
     // IPI functions
-    send_ipi, send_init_ipi, send_sipi, wait_for_ipi_delivery,
-    ICR_DELIVERY_FIXED, ICR_DELIVERY_LOWEST, ICR_DELIVERY_SMI, ICR_DELIVERY_NMI,
-    ICR_DELIVERY_INIT, ICR_DELIVERY_STARTUP,
-    ICR_DEST_PHYSICAL, ICR_DEST_LOGICAL,
-    ICR_LEVEL_DEASSERT, ICR_LEVEL_ASSERT,
-    ICR_TRIGGER_EDGE, ICR_TRIGGER_LEVEL,
-    ICR_SHORTHAND_NONE, ICR_SHORTHAND_SELF, ICR_SHORTHAND_ALL, ICR_SHORTHAND_ALL_BUT_SELF,
+    send_ipi,
+    send_sipi,
+    stop_apic_timer,
+    wait_for_ipi_delivery,
+    ICR_DELIVERY_FIXED,
+    ICR_DELIVERY_INIT,
+    ICR_DELIVERY_LOWEST,
+    ICR_DELIVERY_NMI,
+    ICR_DELIVERY_SMI,
+    ICR_DELIVERY_STARTUP,
+    ICR_DEST_LOGICAL,
+    ICR_DEST_PHYSICAL,
+    ICR_LEVEL_ASSERT,
+    ICR_LEVEL_DEASSERT,
+    ICR_SHORTHAND_ALL,
+    ICR_SHORTHAND_ALL_BUT_SELF,
+    ICR_SHORTHAND_NONE,
+    ICR_SHORTHAND_SELF,
+    ICR_TRIGGER_EDGE,
+    ICR_TRIGGER_LEVEL,
 };
 
-pub use tsc::{
-    rdtsc, rdtscp, tsc_frequency, calibrate_tsc,
-};
+pub use tsc::{calibrate_tsc, rdtsc, rdtscp, tsc_frequency};
 
-pub use handlers::{
-    timer_ticks, set_timer_debug,
-};
+pub use handlers::{set_timer_debug, timer_ticks};
 
 // 从 drivers::input 重新导出键盘接口
 pub use crate::drivers::input::{
-    read_char, has_char, buffer_len,
-    last_scancode, last_char,
-    is_shift_pressed, is_ctrl_pressed, is_alt_pressed,
+    buffer_len, has_char, is_alt_pressed, is_ctrl_pressed, is_shift_pressed, last_char,
+    last_scancode, read_char,
 };

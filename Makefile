@@ -97,7 +97,7 @@ build-tools: $(CFG)
 
 build-boot: $(CFG)
 	@echo "==> Building bootloader ($(BOOT_TARGET))..."
-	@cargo build --release --target $(BOOT_TARGET) -p january_os-boot-$(ARCH)
+	@CARGO_TARGET_DIR=$(BUILD_DIR) cargo build --release --target $(BOOT_TARGET) -p january_os-boot-$(ARCH)
 
 build-kernel: $(CFG)
 	@echo "==> Generating config..."
@@ -169,10 +169,46 @@ install-deps: $(CFG)
 	rustup component add rust-src llvm-tools-preview
 	cargo install cargo-binutils
 	@echo ""
-	@echo "==> Install QEMU, OVMF and tools:"
-	@echo "  Ubuntu/Debian: sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv ovmf mtools xorriso nasm"
-	@echo "  Fedora:        sudo dnf install qemu-system-x86 qemu-system-arm qemu-system-riscv edk2-ovmf mtools xorriso nasm"
-	@echo "  Arch:          sudo pacman -S qemu-full edk2-ovmf mtools xorriso nasm"
+	@echo "==> Detecting Linux distribution and installing system packages..."
+	@if [ ! -f /etc/os-release ]; then \
+		echo "  ERROR: /etc/os-release not found, cannot detect distribution."; \
+		echo "  Please install the following packages manually:"; \
+		echo "    QEMU (x86/arm/riscv), OVMF/EDK2, mtools, xorriso, nasm"; \
+		exit 1; \
+	fi; \
+	. /etc/os-release; \
+	DISTRO_INFO="$$ID_LIKE $$ID"; \
+	echo "  Distribution: $$PRETTY_NAME (ID=$$ID, ID_LIKE=$$ID_LIKE)"; \
+	case "$$DISTRO_INFO" in \
+		*ubuntu* | *debian*) \
+			echo "  Package manager: apt"; \
+			sudo apt-get update -q; \
+			sudo apt-get install -y --no-install-recommends \
+				qemu-system-x86 qemu-system-arm qemu-system-riscv \
+				ovmf mtools xorriso nasm ;; \
+		*fedora* | *rhel* | *centos*) \
+			echo "  Package manager: dnf"; \
+			sudo dnf install -y \
+				qemu-system-x86 qemu-system-arm qemu-system-riscv \
+				edk2-ovmf mtools xorriso nasm ;; \
+		*arch*) \
+			echo "  Package manager: pacman"; \
+			sudo pacman -S --needed --noconfirm \
+				qemu-full edk2-ovmf mtools xorriso nasm ;; \
+		*suse*) \
+			echo "  Package manager: zypper"; \
+			sudo zypper install -y \
+				qemu-x86 qemu-arm qemu-extra ovmf mtools xorriso nasm ;; \
+		*) \
+			echo "  WARNING: Unsupported distribution '$$PRETTY_NAME', skipping automatic install."; \
+			echo "  Please install the following packages manually:"; \
+			echo "    Ubuntu/Debian: sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv ovmf mtools xorriso nasm"; \
+			echo "    Fedora:        sudo dnf install qemu-system-x86 qemu-system-arm qemu-system-riscv edk2-ovmf mtools xorriso nasm"; \
+			echo "    Arch:          sudo pacman -S qemu-full edk2-ovmf mtools xorriso nasm"; \
+			echo "    openSUSE:      sudo zypper install qemu-x86 qemu-arm qemu-extra ovmf mtools xorriso nasm" ;; \
+	esac
+	@echo ""
+	@echo "==> install-deps complete."
 
 # ==============================================================================
 # 配置显示

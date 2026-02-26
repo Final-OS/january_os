@@ -2,7 +2,6 @@
 //!
 //! 支持 16550 兼容 UART，提供 COM1-COM4
 
-use core::arch::asm;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
@@ -98,33 +97,33 @@ impl Serial {
     pub const fn new(port: u16) -> Self {
         Self { port }
     }
-    
+
     /// 初始化串口
     pub fn init(&self, baud_rate: u32) {
         let divisor = 115200 / baud_rate;
-        
+
         unsafe {
             // 禁用中断
             outb(self.port + REG_IER, 0x00);
-            
+
             // 设置 DLAB
             outb(self.port + REG_LCR, 0x80);
-            
+
             // 设置波特率除数
             outb(self.port + REG_DLL, (divisor & 0xFF) as u8);
             outb(self.port + REG_DLH, ((divisor >> 8) & 0xFF) as u8);
-            
+
             // 8 位数据，1 停止位，无校验
             outb(self.port + REG_LCR, 0x03);
-            
+
             // 启用 FIFO，清除，14 字节阈值
             outb(self.port + REG_FCR, 0xC7);
-            
+
             // 启用 DTR, RTS, OUT2
             outb(self.port + REG_MCR, 0x0B);
         }
     }
-    
+
     /// 发送单个字节
     pub fn write_byte(&self, byte: u8) {
         unsafe {
@@ -135,7 +134,7 @@ impl Serial {
             outb(self.port + REG_DATA, byte);
         }
     }
-    
+
     /// 读取单个字节 (阻塞)
     pub fn read_byte(&self) -> u8 {
         unsafe {
@@ -145,7 +144,7 @@ impl Serial {
             inb(self.port + REG_DATA)
         }
     }
-    
+
     /// 尝试读取字节 (非阻塞)
     pub fn try_read_byte(&self) -> Option<u8> {
         unsafe {
@@ -156,19 +155,19 @@ impl Serial {
             }
         }
     }
-    
+
     /// 检查是否有数据可读
     pub fn has_data(&self) -> bool {
         unsafe { (inb(self.port + REG_LSR) & LSR_DATA_READY) != 0 }
     }
-    
+
     /// 启用接收中断
     pub fn enable_rx_interrupt(&self) {
         unsafe {
             outb(self.port + REG_IER, IER_RDA);
         }
     }
-    
+
     /// 禁用所有中断
     pub fn disable_interrupts(&self) {
         unsafe {
@@ -240,7 +239,7 @@ pub fn serial_interrupt_handler() {
 fn push_input(c: u8) {
     let head = INPUT_HEAD.load(Ordering::Relaxed);
     let next_head = (head + 1) % INPUT_BUFFER_SIZE;
-    
+
     if next_head != INPUT_TAIL.load(Ordering::Relaxed) {
         INPUT_BUFFER[head].store(c, Ordering::Relaxed);
         INPUT_HEAD.store(next_head, Ordering::Relaxed);
@@ -251,11 +250,11 @@ fn push_input(c: u8) {
 pub fn serial_read_char() -> Option<u8> {
     let tail = INPUT_TAIL.load(Ordering::Relaxed);
     let head = INPUT_HEAD.load(Ordering::Relaxed);
-    
+
     if tail == head {
         return None;
     }
-    
+
     let c = INPUT_BUFFER[tail].load(Ordering::Relaxed);
     INPUT_TAIL.store((tail + 1) % INPUT_BUFFER_SIZE, Ordering::Relaxed);
     Some(c)
@@ -302,12 +301,10 @@ impl Write for SerialWriter {
 
 #[inline]
 unsafe fn outb(port: u16, value: u8) {
-    asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack));
+    unsafe { crate::arch::outb(port, value) };
 }
 
 #[inline]
 unsafe fn inb(port: u16) -> u8 {
-    let value: u8;
-    asm!("in al, dx", out("al") value, in("dx") port, options(nomem, nostack));
-    value
+    unsafe { crate::arch::inb(port) }
 }

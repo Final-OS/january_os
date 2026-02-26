@@ -114,7 +114,7 @@ unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) {
 
     // 1. Setup Mailbox
     core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.apic_id), apic_id);
-    core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.wakeup_vector), acpi_wakeup_entry as u64);
+    core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.wakeup_vector), acpi_wakeup_entry as *const () as u64);
     // 内存屏障确保 apic_id 和 wakeup_vector 在 command 之前可见
     core::sync::atomic::fence(Ordering::Release);
     core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.command), MultiprocessorWakeupMailbox::COMMAND_WAKEUP);
@@ -149,7 +149,7 @@ unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) {
     *(data_base.sub(trampoline::OFFSET_ARG as usize) as *mut u64) = direct_map_base;
     *(data_base.sub(trampoline::OFFSET_CR3 as usize) as *mut u64) = pml4_phys;
     *(data_base.sub(trampoline::OFFSET_RSP as usize) as *mut u64) = stack_top;
-    *(data_base.sub(trampoline::OFFSET_ENTRY as usize) as *mut u64) = ap_entry as u64;
+    *(data_base.sub(trampoline::OFFSET_ENTRY as usize) as *mut u64) = ap_entry as *const () as u64;
     // Copy GDTR and IDTR (10 bytes each)
     core::ptr::copy_nonoverlapping(gdtr.as_ptr(), data_base.sub(trampoline::OFFSET_GDTR as usize), 10);
     core::ptr::copy_nonoverlapping(idtr.as_ptr(), data_base.sub(trampoline::OFFSET_IDTR as usize), 10);

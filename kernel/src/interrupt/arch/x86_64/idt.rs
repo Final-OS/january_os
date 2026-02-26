@@ -308,88 +308,88 @@ pub unsafe fn init() -> Result<(), &'static str> {
 
     // 设置异常处理程序
     idt.set_handler(DIVIDE_ERROR, IdtEntry::trap(
-        handlers::divide_error_handler as u64
+        handlers::divide_error_handler as *const () as u64
     ));
     idt.set_handler(DEBUG, IdtEntry::trap(
-        handlers::debug_handler as u64
+        handlers::debug_handler as *const () as u64
     ));
     idt.set_handler(NMI, IdtEntry::interrupt(
-        handlers::nmi_handler as u64
+        handlers::nmi_handler as *const () as u64
     ));
     idt.set_handler(BREAKPOINT, IdtEntry::trap(
-        handlers::breakpoint_handler as u64
+        handlers::breakpoint_handler as *const () as u64
     ));
     idt.set_handler(OVERFLOW, IdtEntry::trap(
-        handlers::overflow_handler as u64
+        handlers::overflow_handler as *const () as u64
     ));
     idt.set_handler(BOUND_RANGE, IdtEntry::trap(
-        handlers::bound_range_handler as u64
+        handlers::bound_range_handler as *const () as u64
     ));
     idt.set_handler(INVALID_OPCODE, IdtEntry::trap(
-        handlers::invalid_opcode_handler as u64
+        handlers::invalid_opcode_handler as *const () as u64
     ));
     idt.set_handler(DEVICE_NOT_AVAILABLE, IdtEntry::trap(
-        handlers::device_not_available_handler as u64
+        handlers::device_not_available_handler as *const () as u64
     ));
     // Double Fault 使用 IST 1 确保有可用栈
     idt.set_handler(DOUBLE_FAULT, IdtEntry::interrupt_ist(
-        handlers::double_fault_handler as u64, 1
+        handlers::double_fault_handler as *const () as u64, 1
     ));
     idt.set_handler(INVALID_TSS, IdtEntry::trap(
-        handlers::invalid_tss_handler as u64
+        handlers::invalid_tss_handler as *const () as u64
     ));
     idt.set_handler(SEGMENT_NOT_PRESENT, IdtEntry::trap(
-        handlers::segment_not_present_handler as u64
+        handlers::segment_not_present_handler as *const () as u64
     ));
     idt.set_handler(STACK_FAULT, IdtEntry::trap(
-        handlers::stack_fault_handler as u64
+        handlers::stack_fault_handler as *const () as u64
     ));
     idt.set_handler(GENERAL_PROTECTION, IdtEntry::trap(
-        handlers::general_protection_handler as u64
+        handlers::general_protection_handler as *const () as u64
     ));
     idt.set_handler(PAGE_FAULT, IdtEntry::trap(
-        handlers::page_fault_handler as u64
+        handlers::page_fault_handler as *const () as u64
     ));
     idt.set_handler(X87_FPU_ERROR, IdtEntry::trap(
-        handlers::x87_fpu_error_handler as u64
+        handlers::x87_fpu_error_handler as *const () as u64
     ));
     idt.set_handler(ALIGNMENT_CHECK, IdtEntry::trap(
-        handlers::alignment_check_handler as u64
+        handlers::alignment_check_handler as *const () as u64
     ));
     idt.set_handler(MACHINE_CHECK, IdtEntry::interrupt(
-        handlers::machine_check_handler as u64
+        handlers::machine_check_handler as *const () as u64
     ));
     idt.set_handler(SIMD_EXCEPTION, IdtEntry::trap(
-        handlers::simd_exception_handler as u64
+        handlers::simd_exception_handler as *const () as u64
     ));
     idt.set_handler(VIRTUALIZATION, IdtEntry::trap(
-        handlers::virtualization_handler as u64
+        handlers::virtualization_handler as *const () as u64
     ));
     idt.set_handler(CONTROL_PROTECTION, IdtEntry::trap(
-        handlers::control_protection_handler as u64
+        handlers::control_protection_handler as *const () as u64
     ));
 
     // 设置硬件中断处理程序
     idt.set_handler(IRQ_TIMER, IdtEntry::interrupt(
-        handlers::timer_handler as u64
+        handlers::timer_handler as *const () as u64
     ));
     idt.set_handler(IRQ_KEYBOARD, IdtEntry::interrupt(
-        handlers::keyboard_handler as u64
+        handlers::keyboard_handler as *const () as u64
     ));
     idt.set_handler(IRQ_MOUSE, IdtEntry::interrupt(
-        handlers::mouse_handler as u64
+        handlers::mouse_handler as *const () as u64
     ));
     idt.set_handler(IRQ_COM1, IdtEntry::interrupt(
-        handlers::serial_handler as u64
+        handlers::serial_handler as *const () as u64
     ));
     idt.set_handler(IRQ_XHCI, IdtEntry::interrupt(
-        handlers::xhci_handler as u64
+        handlers::xhci_handler as *const () as u64
     ));
     idt.set_handler(IPI_TLB_SHOOTDOWN, IdtEntry::interrupt(
-        handlers::tlb_shootdown_handler as u64
+        handlers::tlb_shootdown_handler as *const () as u64
     ));
     idt.set_handler(IRQ_SPURIOUS, IdtEntry::interrupt(
-        handlers::spurious_handler as u64
+        handlers::spurious_handler as *const () as u64
     ));
 
     // 加载 IDT

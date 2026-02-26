@@ -2,16 +2,15 @@
 //!
 //! 提供基本的命令行交互功能。
 
-use crate::{kprintln, kprint, info};
+use crate::arch::{reboot, shutdown};
+use crate::config;
 use crate::drivers;
+use crate::drivers::input::hid::keyboard;
+use crate::drivers::tty::serial_read_char;
 use crate::interrupt;
 use crate::mm;
-use crate::config;
-use crate::drivers::tty::{serial_read_char};
 use crate::task;
-use crate::drivers::input::hid::keyboard;
-use crate::arch::{shutdown, reboot};
-use core::arch::asm;
+use crate::{info, kprint, kprintln};
 
 /// 进入 Shell 主循环
 pub fn run() -> ! {
@@ -35,7 +34,7 @@ pub fn run() -> ! {
             handle_input(c, &mut cmd_buf, &mut cmd_len);
             activity = true;
         }
-        
+
         // 检查串口输入 (COM1)
         while let Some(c) = serial_read_char() {
             handle_input(c, &mut cmd_buf, &mut cmd_len);
@@ -53,7 +52,7 @@ pub fn run() -> ! {
             handle_hotkey_event(event);
             activity = true;
         }
-        
+
         // 如果没有活动，挂起 CPU 直到下一个中断 (HLT)
         // 这样可以降低 CPU 占用率和功耗
         // 任何中断（如时钟、键盘、USB）都会唤醒 CPU
@@ -208,7 +207,8 @@ fn execute_runuser_command() {
 /// 处理输入字符
 fn handle_input(c: u8, cmd_buf: &mut [u8; 256], cmd_len: &mut usize) {
     match c {
-        8 | 127 => { // Backspace 或 DEL
+        8 | 127 => {
+            // Backspace 或 DEL
             if *cmd_len > 0 {
                 *cmd_len -= 1;
                 kprint!("\x08 \x08");
@@ -220,7 +220,8 @@ fn handle_input(c: u8, cmd_buf: &mut [u8; 256], cmd_len: &mut usize) {
             *cmd_len = 0;
             kprint!("> ");
         }
-        3 => { // Ctrl+C
+        3 => {
+            // Ctrl+C
             kprintln!("^C");
             *cmd_len = 0;
             kprint!("> ");
@@ -240,7 +241,7 @@ fn handle_input(c: u8, cmd_buf: &mut [u8; 256], cmd_len: &mut usize) {
 fn execute_command(cmd: &[u8]) {
     let cmd_str = core::str::from_utf8(cmd).unwrap_or("");
     let cmd_str = cmd_str.trim();
-    
+
     let mut parts = cmd_str.split_whitespace();
     let command = parts.next().unwrap_or("");
     let args = parts;
@@ -256,9 +257,11 @@ fn execute_command(cmd: &[u8]) {
             reboot();
         }
         "status" => {
-            kprintln!("Uptime: {} ticks ({} seconds)", 
+            kprintln!(
+                "Uptime: {} ticks ({} seconds)",
                 interrupt::timer_ticks(),
-                interrupt::timer_ticks() / 100);
+                interrupt::timer_ticks() / 100
+            );
         }
         "mm" => {
             execute_mm_command(args);
@@ -297,14 +300,17 @@ fn execute_command(cmd: &[u8]) {
             kprintln!("Type 'drivers help' or 'mm help' for more info.");
         }
         _ => {
-            kprintln!("Unknown command: '{}'. Type 'help' for available commands.", command);
+            kprintln!(
+                "Unknown command: '{}'. Type 'help' for available commands.",
+                command
+            );
         }
     }
 }
 
 fn execute_mm_command(mut args: core::str::SplitWhitespace) {
     let subcommand = args.next().unwrap_or("help");
-    
+
     match subcommand {
         "status" => {
             let total_free: u64 = mm::ZoneType::iter()
@@ -315,14 +321,27 @@ fn execute_mm_command(mut args: core::str::SplitWhitespace) {
             let fault_stats = mm::get_fault_stats();
             kprintln!("Memory Status:");
             kprintln!("  Free pages:  {}", total_free);
-            kprintln!("  Heap size:   {} MB", config::KERNEL_HEAP_INIT_SIZE / 1024 / 1024);
+            kprintln!(
+                "  Heap size:   {} MB",
+                config::KERNEL_HEAP_INIT_SIZE / 1024 / 1024
+            );
             kprintln!(
                 "  Faults:      total={} minor={} major={} cow={} stack_grow={}",
-                fault_stats.total_faults.load(core::sync::atomic::Ordering::Relaxed),
-                fault_stats.minor_faults.load(core::sync::atomic::Ordering::Relaxed),
-                fault_stats.major_faults.load(core::sync::atomic::Ordering::Relaxed),
-                fault_stats.cow_faults.load(core::sync::atomic::Ordering::Relaxed),
-                fault_stats.stack_grows.load(core::sync::atomic::Ordering::Relaxed),
+                fault_stats
+                    .total_faults
+                    .load(core::sync::atomic::Ordering::Relaxed),
+                fault_stats
+                    .minor_faults
+                    .load(core::sync::atomic::Ordering::Relaxed),
+                fault_stats
+                    .major_faults
+                    .load(core::sync::atomic::Ordering::Relaxed),
+                fault_stats
+                    .cow_faults
+                    .load(core::sync::atomic::Ordering::Relaxed),
+                fault_stats
+                    .stack_grows
+                    .load(core::sync::atomic::Ordering::Relaxed),
             );
         }
         "faults" => {
@@ -330,23 +349,33 @@ fn execute_mm_command(mut args: core::str::SplitWhitespace) {
             kprintln!("Page Fault Stats:");
             kprintln!(
                 "  total_faults: {}",
-                fault_stats.total_faults.load(core::sync::atomic::Ordering::Relaxed)
+                fault_stats
+                    .total_faults
+                    .load(core::sync::atomic::Ordering::Relaxed)
             );
             kprintln!(
                 "  minor_faults: {}",
-                fault_stats.minor_faults.load(core::sync::atomic::Ordering::Relaxed)
+                fault_stats
+                    .minor_faults
+                    .load(core::sync::atomic::Ordering::Relaxed)
             );
             kprintln!(
                 "  major_faults: {}",
-                fault_stats.major_faults.load(core::sync::atomic::Ordering::Relaxed)
+                fault_stats
+                    .major_faults
+                    .load(core::sync::atomic::Ordering::Relaxed)
             );
             kprintln!(
                 "  cow_faults:   {}",
-                fault_stats.cow_faults.load(core::sync::atomic::Ordering::Relaxed)
+                fault_stats
+                    .cow_faults
+                    .load(core::sync::atomic::Ordering::Relaxed)
             );
             kprintln!(
                 "  stack_grows:  {}",
-                fault_stats.stack_grows.load(core::sync::atomic::Ordering::Relaxed)
+                fault_stats
+                    .stack_grows
+                    .load(core::sync::atomic::Ordering::Relaxed)
             );
         }
         "memblock" => {
@@ -354,20 +383,30 @@ fn execute_mm_command(mut args: core::str::SplitWhitespace) {
             kprintln!("  Phys Mem Size: {} bytes", mm::memblock_phys_mem_size());
             kprintln!("  Reserved Size: {} bytes", mm::memblock_reserved_size());
             kprintln!("  Free Size:     {} bytes", mm::memblock_free_size());
-            
+
             kprintln!("Memory Regions:");
             for i in 0..mm::memblock_memory_region_count() {
                 if let Some(region) = mm::memblock_memory_region(i) {
-                     kprintln!("  [{}] {:#x} - {:#x} ({} bytes)", 
-                        i, region.base, region.end(), region.size);
+                    kprintln!(
+                        "  [{}] {:#x} - {:#x} ({} bytes)",
+                        i,
+                        region.base,
+                        region.end(),
+                        region.size
+                    );
                 }
             }
-            
+
             kprintln!("Reserved Regions:");
             for i in 0..mm::memblock_reserved_region_count() {
                 if let Some(region) = mm::memblock_reserved_region(i) {
-                     kprintln!("  [{}] {:#x} - {:#x} ({} bytes)", 
-                        i, region.base, region.end(), region.size);
+                    kprintln!(
+                        "  [{}] {:#x} - {:#x} ({} bytes)",
+                        i,
+                        region.base,
+                        region.end(),
+                        region.size
+                    );
                 }
             }
         }
@@ -393,7 +432,7 @@ fn execute_mm_command(mut args: core::str::SplitWhitespace) {
 
 fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
     let subcommand = args.next().unwrap_or("help");
-    
+
     match subcommand {
         "acpi" => {
             kprintln!("ACPI Tables:");
@@ -404,12 +443,17 @@ fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
                 kprintln!("CPU Information (from MADT):");
                 kprintln!("  Local APIC Address: {:#x}", madt.local_apic_addr());
                 kprintln!("  Has 8259 PIC: {}", madt.has_8259_pic());
-                
+
                 let mut cpu_count = 0;
                 for entry in madt.entries() {
                     if let drivers::acpi::MadtEntry::LocalApic(lapic) = entry {
-                        kprintln!("  CPU #{}: APIC ID={}, Enabled={}, OnlineCapable={}", 
-                            cpu_count, lapic.apic_id, lapic.is_enabled(), lapic.is_online_capable());
+                        kprintln!(
+                            "  CPU #{}: APIC ID={}, Enabled={}, OnlineCapable={}",
+                            cpu_count,
+                            lapic.apic_id,
+                            lapic.is_enabled(),
+                            lapic.is_online_capable()
+                        );
                         cpu_count += 1;
                     }
                 }
@@ -423,8 +467,17 @@ fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
             kprintln!("Video Status:");
             kprintln!("  Resolution:  {}x{}", w, h);
             kprintln!("  Stride:      {} pixels", s);
-            kprintln!("  Format:      {:?} ({})", 
-                if f == 0 { "RGB" } else if f == 1 { "BGR" } else { "Other" }, f);
+            kprintln!(
+                "  Format:      {:?} ({})",
+                if f == 0 {
+                    "RGB"
+                } else if f == 1 {
+                    "BGR"
+                } else {
+                    "Other"
+                },
+                f
+            );
         }
         "input" => {
             kprintln!("Input Devices Status:");
@@ -432,16 +485,37 @@ fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
             kprintln!("  PS/2 Keyboard: Initialized");
 
             // HID Status
-            kprintln!("  HID Keyboard:  {}", if drivers::input::hid::keyboard::is_present() { "Present" } else { "Not Present" });
+            kprintln!(
+                "  HID Keyboard:  {}",
+                if drivers::input::hid::keyboard::is_present() {
+                    "Present"
+                } else {
+                    "Not Present"
+                }
+            );
             let (k_head, k_tail) = drivers::input::hid::keyboard::buffer_status();
             kprintln!("    Buffer: {}/{} (Head/Tail)", k_head, k_tail);
 
-            kprintln!("  HID Mouse:     {}", if drivers::input::hid::mouse::is_present() { "Present" } else { "Not Present" });
+            kprintln!(
+                "  HID Mouse:     {}",
+                if drivers::input::hid::mouse::is_present() {
+                    "Present"
+                } else {
+                    "Not Present"
+                }
+            );
             let (m_head, m_tail) = drivers::input::hid::mouse::buffer_status();
             kprintln!("    Buffer: {}/{} (Head/Tail)", m_head, m_tail);
 
             let (h_head, h_tail) = drivers::input::hotkey_buffer_status();
-            kprintln!("  ACPI Hotkey:   {}", if drivers::input::has_hotkey_event() { "Pending" } else { "Empty" });
+            kprintln!(
+                "  ACPI Hotkey:   {}",
+                if drivers::input::has_hotkey_event() {
+                    "Pending"
+                } else {
+                    "Empty"
+                }
+            );
             kprintln!("    Buffer: {}/{} (Head/Tail)", h_head, h_tail);
             if let Some(src) = drivers::input::hotkey_source_info() {
                 kprintln!(
@@ -455,31 +529,47 @@ fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
             }
         }
         "mouse" => {
-            kprintln!("Mouse Test Mode (ID: {:#x}) (Press any key to exit)", drivers::input::mouse_device_id());
+            kprintln!(
+                "Mouse Test Mode (ID: {:#x}) (Press any key to exit)",
+                drivers::input::mouse_device_id()
+            );
             let mut last_count = drivers::input::mouse_event_count();
             while interrupt::read_char().is_none() {
                 let current_count = drivers::input::mouse_event_count();
                 if current_count > last_count {
-                     last_count = current_count;
-                     let dx = drivers::input::delta_x();
-                     let dy = drivers::input::delta_y();
-                     let l = drivers::input::left_button();
-                     let r = drivers::input::right_button();
-                     let m = drivers::input::middle_button();
-                     kprintln!("[{}] Mouse: X={:<4} Y={:<4} L={} M={} R={}", current_count, dx, dy, l, m, r);
+                    last_count = current_count;
+                    let dx = drivers::input::delta_x();
+                    let dy = drivers::input::delta_y();
+                    let l = drivers::input::left_button();
+                    let r = drivers::input::right_button();
+                    let m = drivers::input::middle_button();
+                    kprintln!(
+                        "[{}] Mouse: X={:<4} Y={:<4} L={} M={} R={}",
+                        current_count,
+                        dx,
+                        dy,
+                        l,
+                        m,
+                        r
+                    );
                 }
                 // 简单的防抖/延时
-                for _ in 0..1000 { core::hint::spin_loop(); }
+                for _ in 0..1000 {
+                    core::hint::spin_loop();
+                }
             }
             kprintln!("Exited mouse test mode.");
         }
         "interrupt" => {
             let int_enabled = interrupt::interrupts_enabled();
             kprintln!("Interrupt Status:");
-            kprintln!("  CPU Interrupts: {}", if int_enabled { "Enabled" } else { "Disabled" });
+            kprintln!(
+                "  CPU Interrupts: {}",
+                if int_enabled { "Enabled" } else { "Disabled" }
+            );
             kprintln!("  Local APIC ID:  {}", interrupt::local_apic_id());
             kprintln!("  Timer Ticks:    {}", interrupt::timer_ticks());
-            
+
             kprintln!("IDT Vectors:");
             kprintln!("  Timer:    {}", interrupt::IRQ_TIMER);
             kprintln!("  Keyboard: {}", interrupt::IRQ_KEYBOARD);
@@ -585,10 +675,17 @@ fn handle_hotkey_event(event: drivers::input::HotkeyEvent) {
 fn execute_pci_command() {
     kprintln!("PCI Devices:");
     drivers::pci::scan_bus(&mut |addr, header| {
-         kprintln!("  {:02x}:{:02x}.{} {:04x}:{:04x} Class {:02x} Sub {:02x} ProgIF {:02x}",
-             addr.bus, addr.device, addr.function,
-             header.vendor_id, header.device_id,
-             header.class_code, header.subclass, header.prog_if);
+        kprintln!(
+            "  {:02x}:{:02x}.{} {:04x}:{:04x} Class {:02x} Sub {:02x} ProgIF {:02x}",
+            addr.bus,
+            addr.device,
+            addr.function,
+            header.vendor_id,
+            header.device_id,
+            header.class_code,
+            header.subclass,
+            header.prog_if
+        );
     });
 }
 
@@ -606,7 +703,10 @@ fn execute_test_command(mut args: core::str::SplitWhitespace) {
             while interrupt::timer_ticks() < start + 300 {
                 interrupt::halt_with_interrupts();
             }
-            crate::ok!("Timer test passed: {} ticks", interrupt::timer_ticks() - start);
+            crate::ok!(
+                "Timer test passed: {} ticks",
+                interrupt::timer_ticks() - start
+            );
         }
         other => crate::tests::run(other),
     }

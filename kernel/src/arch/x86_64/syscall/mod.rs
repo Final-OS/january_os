@@ -134,7 +134,7 @@ pub unsafe fn init_syscall() {
 
     let star = (kernel_cs << 32) | (user_sysret_base << 48);
     wrmsr(IA32_STAR, star);
-    wrmsr(IA32_LSTAR, syscall_entry as usize as u64);
+    wrmsr(IA32_LSTAR, syscall_entry as *const () as usize as u64);
     wrmsr(IA32_FMASK, FMASK_CLEAR_FLAGS);
 
     let mut efer = rdmsr(IA32_EFER);
@@ -144,7 +144,7 @@ pub unsafe fn init_syscall() {
     crate::kprintln!(
         "[diag][syscall] init STAR={:#x} LSTAR={:#x} FMASK={:#x}",
         star,
-        syscall_entry as usize,
+        syscall_entry as *const () as usize,
         FMASK_CLEAR_FLAGS,
     );
 }

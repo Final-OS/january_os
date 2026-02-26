@@ -55,11 +55,15 @@ impl<T> Mutex<T> {
 
         // 递归死锁检测
         if self.locked.load(Ordering::Relaxed) && self.owner.load(Ordering::Relaxed) == me {
-            panic!("Mutex::lock: Deadlock detected! Recursive locking by CPU {} on '{}'", me, self.name);
+            panic!(
+                "Mutex::lock: Deadlock detected! Recursive locking by CPU {} on '{}'",
+                me, self.name
+            );
         }
 
         // 快速路径：尝试直接获取
-        if self.locked
+        if self
+            .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
@@ -79,15 +83,16 @@ impl<T> Mutex<T> {
             while self.locked.load(Ordering::Relaxed) {
                 count += 1;
                 if count > 10_000_000 {
-                     let owner = self.owner.load(Ordering::Relaxed);
-                     panic!("Mutex::lock: Deadlock detected! Timeout waiting for '{}' (held by CPU {}) on CPU {}", 
+                    let owner = self.owner.load(Ordering::Relaxed);
+                    panic!("Mutex::lock: Deadlock detected! Timeout waiting for '{}' (held by CPU {}) on CPU {}",
                         self.name, owner, me);
                 }
                 core::hint::spin_loop();
             }
 
             // 尝试获取
-            if self.locked
+            if self
+                .locked
                 .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
@@ -109,7 +114,8 @@ impl<T> Mutex<T> {
             return None;
         }
 
-        if self.locked
+        if self
+            .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
@@ -227,7 +233,7 @@ impl<T> IrqMutex<T> {
         }
 
         let guard = self.inner.lock();
-        
+
         IrqMutexGuard {
             guard,
             irq_was_enabled: irq_enabled,
@@ -281,7 +287,7 @@ impl<T> Drop for IrqMutexGuard<'_, T> {
     fn drop(&mut self) {
         // 先释放锁（通过 drop guard）
         // guard 会在这里自动 drop
-        
+
         // 然后恢复中断
         if self.irq_was_enabled {
             enable_interrupts();
@@ -295,23 +301,15 @@ impl<T> Drop for IrqMutexGuard<'_, T> {
 
 #[inline]
 fn interrupts_enabled() -> bool {
-    let rflags: u64;
-    unsafe {
-        core::arch::asm!("pushfq; pop {}", out(reg) rflags);
-    }
-    (rflags & (1 << 9)) != 0  // IF 标志位
+    crate::interrupt::interrupts_enabled()
 }
 
 #[inline]
 fn disable_interrupts() {
-    unsafe {
-        core::arch::asm!("cli", options(nomem, nostack));
-    }
+    crate::interrupt::disable_interrupts();
 }
 
 #[inline]
 fn enable_interrupts() {
-    unsafe {
-        core::arch::asm!("sti", options(nomem, nostack));
-    }
+    crate::interrupt::enable_interrupts();
 }

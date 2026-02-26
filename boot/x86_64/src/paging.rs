@@ -2,7 +2,7 @@
 
 use uefi::boot::MemoryType;
 
-use crate::bootinfo::{MemoryRegion, MemoryRegionType, KERNEL_PHYS_ADDR, MAX_MEMORY_REGIONS};
+use crate::bootinfo::{KERNEL_PHYS_ADDR, MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionType};
 
 /// 页大小 4KB
 pub const PAGE_SIZE: u64 = 4096;
@@ -29,7 +29,7 @@ impl PageTableAllocator {
     unsafe fn alloc_page(&mut self) -> u64 {
         let page = self.next_page;
         self.next_page += PAGE_SIZE;
-        core::ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize);
+        unsafe { core::ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize) };
         page
     }
 }
@@ -48,72 +48,73 @@ pub unsafe fn setup_page_tables(
     page_table_start: u64,
 ) -> u64 {
     let mut allocator = PageTableAllocator::new(page_table_start);
+    unsafe {
+        let pml4 = allocator.alloc_page();
+        let pml4_table = pml4 as *mut u64;
 
-    let pml4 = allocator.alloc_page();
-    let pml4_table = pml4 as *mut u64;
+        // 1. 恒等映射前 4GB
+        let pdpt_identity = allocator.alloc_page();
+        *pml4_table.add(0) = pdpt_identity | PTE_PRESENT | PTE_WRITABLE;
 
-    // 1. 恒等映射前 4GB
-    let pdpt_identity = allocator.alloc_page();
-    *pml4_table.add(0) = pdpt_identity | PTE_PRESENT | PTE_WRITABLE;
-
-    let pdpt_identity_table = pdpt_identity as *mut u64;
-    for i in 0..4u64 {
-        *pdpt_identity_table.add(i as usize) =
-            (i * 0x4000_0000) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE;
-    }
-
-    // 2. 内核高半部分映射
-    let pml4_index_kernel = 256usize;
-
-    let pdpt_kernel = allocator.alloc_page();
-    *pml4_table.add(pml4_index_kernel) = pdpt_kernel | PTE_PRESENT | PTE_WRITABLE;
-
-    let pdpt_kernel_table = pdpt_kernel as *mut u64;
-
-    let pd_kernel = allocator.alloc_page();
-    *pdpt_kernel_table.add(0) = pd_kernel | PTE_PRESENT | PTE_WRITABLE;
-
-    let pd_kernel_table = pd_kernel as *mut u64;
-
-    let pt_kernel = allocator.alloc_page();
-    *pd_kernel_table.add(0) = pt_kernel | PTE_PRESENT | PTE_WRITABLE;
-
-    let pt_kernel_table = pt_kernel as *mut u64;
-
-    let kernel_pages = (kernel_size + PAGE_SIZE - 1) / PAGE_SIZE;
-    let kernel_start_pt_index = (KERNEL_PHYS_ADDR / PAGE_SIZE) as usize;
-
-    for i in 0..kernel_pages as usize {
-        let phys_addr = KERNEL_PHYS_ADDR + (i as u64) * PAGE_SIZE;
-        *pt_kernel_table.add(kernel_start_pt_index + i) =
-            phys_addr | PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
-    }
-
-    for i in 0..512usize {
-        if *pt_kernel_table.add(i) == 0 {
-            let phys_addr = (i as u64) * PAGE_SIZE;
-            *pt_kernel_table.add(i) = phys_addr | PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
+        let pdpt_identity_table = pdpt_identity as *mut u64;
+        for i in 0..4u64 {
+            *pdpt_identity_table.add(i as usize) =
+                (i * 0x4000_0000) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE;
         }
+
+        // 2. 内核高半部分映射
+        let pml4_index_kernel = 256usize;
+
+        let pdpt_kernel = allocator.alloc_page();
+        *pml4_table.add(pml4_index_kernel) = pdpt_kernel | PTE_PRESENT | PTE_WRITABLE;
+
+        let pdpt_kernel_table = pdpt_kernel as *mut u64;
+
+        let pd_kernel = allocator.alloc_page();
+        *pdpt_kernel_table.add(0) = pd_kernel | PTE_PRESENT | PTE_WRITABLE;
+
+        let pd_kernel_table = pd_kernel as *mut u64;
+
+        let pt_kernel = allocator.alloc_page();
+        *pd_kernel_table.add(0) = pt_kernel | PTE_PRESENT | PTE_WRITABLE;
+
+        let pt_kernel_table = pt_kernel as *mut u64;
+
+        let kernel_pages = (kernel_size + PAGE_SIZE - 1) / PAGE_SIZE;
+        let kernel_start_pt_index = (KERNEL_PHYS_ADDR / PAGE_SIZE) as usize;
+
+        for i in 0..kernel_pages as usize {
+            let phys_addr = KERNEL_PHYS_ADDR + (i as u64) * PAGE_SIZE;
+            *pt_kernel_table.add(kernel_start_pt_index + i) =
+                phys_addr | PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
+        }
+
+        for i in 0..512usize {
+            if *pt_kernel_table.add(i) == 0 {
+                let phys_addr = (i as u64) * PAGE_SIZE;
+                *pt_kernel_table.add(i) = phys_addr | PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
+            }
+        }
+
+        // 3. 直接映射区
+        let pml4_index_direct = 272usize;
+
+        let pdpt_direct = allocator.alloc_page();
+        *pml4_table.add(pml4_index_direct) = pdpt_direct | PTE_PRESENT | PTE_WRITABLE;
+
+        let pdpt_direct_table = pdpt_direct as *mut u64;
+
+        let max_to_map = max_phys_addr.max(4 * 1024 * 1024 * 1024);
+        let gb_pages_needed = (max_to_map + 0x4000_0000 - 1) / 0x4000_0000;
+        let gb_pages = gb_pages_needed.min(512);
+
+        for i in 0..gb_pages {
+            *pdpt_direct_table.add(i as usize) =
+                (i * 0x4000_0000) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | PTE_GLOBAL;
+        }
+
+        pml4
     }
-
-    // 3. 直接映射区
-    let pml4_index_direct = 272usize;
-
-    let pdpt_direct = allocator.alloc_page();
-    *pml4_table.add(pml4_index_direct) = pdpt_direct | PTE_PRESENT | PTE_WRITABLE;
-
-    let pdpt_direct_table = pdpt_direct as *mut u64;
-
-    let max_to_map = max_phys_addr.max(4 * 1024 * 1024 * 1024);
-    let gb_pages_needed = (max_to_map + 0x4000_0000 - 1) / 0x4000_0000;
-    let gb_pages = gb_pages_needed.min(512);
-
-    for i in 0..gb_pages {
-        *pdpt_direct_table.add(i as usize) =
-            (i * 0x4000_0000) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | PTE_GLOBAL;
-    }
-
-    pml4
 }
 
 pub unsafe fn copy_memory_map<'a>(
@@ -169,7 +170,7 @@ pub unsafe fn copy_memory_map<'a>(
             attributes: entry.att.bits() as u32,
         };
 
-        core::ptr::write_volatile(dest.add(count as usize), region);
+        unsafe { core::ptr::write_volatile(dest.add(count as usize), region) };
         count += 1;
     }
 

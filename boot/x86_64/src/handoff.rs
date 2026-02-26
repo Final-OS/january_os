@@ -5,11 +5,11 @@ use core::arch::asm;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
 
 use crate::bootinfo::{
-    BootInfo, MemoryRegion, BOOTINFO_MAGIC, BOOTINFO_VERSION, DIRECT_MAP_OFFSET, KERNEL_PHYS_ADDR,
-    KERNEL_STACK_PAGES, KERNEL_VIRT_ADDR,
+    BOOTINFO_MAGIC, BOOTINFO_VERSION, BootInfo, DIRECT_MAP_OFFSET, KERNEL_PHYS_ADDR,
+    KERNEL_STACK_PAGES, KERNEL_VIRT_ADDR, MemoryRegion,
 };
 use crate::buffers::BootBufferLayout;
-use crate::paging::{copy_memory_map, setup_page_tables, PAGE_SIZE};
+use crate::paging::{PAGE_SIZE, copy_memory_map, setup_page_tables};
 use crate::stages::StageState;
 
 pub unsafe fn handoff_to_kernel(
@@ -18,9 +18,10 @@ pub unsafe fn handoff_to_kernel(
     stage: &StageState,
 ) -> ! {
     let (mem_entries, total_mem, usable_mem, max_phys_addr) =
-        copy_memory_map(mmap.entries(), buffers.memmap_phys);
+        unsafe { copy_memory_map(mmap.entries(), buffers.memmap_phys) };
 
-    let pml4_addr = setup_page_tables(stage.kernel_size, max_phys_addr, buffers.page_table_phys);
+    let pml4_addr =
+        unsafe { setup_page_tables(stage.kernel_size, max_phys_addr, buffers.page_table_phys) };
 
     let boot_info_ptr = buffers.bootinfo_phys as *mut BootInfo;
     let boot_info = BootInfo {
@@ -62,21 +63,23 @@ pub unsafe fn handoff_to_kernel(
         _cmdline_reserved: 0,
     };
 
-    core::ptr::write_volatile(boot_info_ptr, boot_info);
+    unsafe { core::ptr::write_volatile(boot_info_ptr, boot_info) };
 
     let kernel_stack_top =
         DIRECT_MAP_OFFSET + buffers.kernel_stack_phys + (KERNEL_STACK_PAGES as u64 * PAGE_SIZE) - 8;
 
-    asm!(
-        "cli",
-        "mov cr3, {pml4}",
-        "mov rsp, {stack}",
-        "mov rdi, {boot_info}",
-        "jmp {entry}",
-        pml4 = in(reg) pml4_addr,
-        stack = in(reg) kernel_stack_top,
-        boot_info = in(reg) (DIRECT_MAP_OFFSET + buffers.bootinfo_phys),
-        entry = in(reg) KERNEL_PHYS_ADDR,
-        options(noreturn)
-    );
+    unsafe {
+        asm!(
+            "cli",
+            "mov cr3, {pml4}",
+            "mov rsp, {stack}",
+            "mov rdi, {boot_info}",
+            "jmp {entry}",
+            pml4 = in(reg) pml4_addr,
+            stack = in(reg) kernel_stack_top,
+            boot_info = in(reg) (DIRECT_MAP_OFFSET + buffers.bootinfo_phys),
+            entry = in(reg) KERNEL_PHYS_ADDR,
+            options(noreturn)
+        );
+    }
 }

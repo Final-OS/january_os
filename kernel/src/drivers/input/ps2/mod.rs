@@ -17,37 +17,25 @@ pub const STATUS_INPUT_FULL: u8 = 0x02;
 /// 读取 PS/2 数据端口
 #[inline]
 pub fn read_data() -> u8 {
-    unsafe {
-        let value: u8;
-        core::arch::asm!("in al, dx", out("al") value, in("dx") DATA_PORT);
-        value
-    }
+    unsafe { crate::arch::inb(DATA_PORT) }
 }
 
 /// 写入 PS/2 数据端口
 #[inline]
 pub fn write_data(value: u8) {
-    unsafe {
-        core::arch::asm!("out dx, al", in("dx") DATA_PORT, in("al") value);
-    }
+    unsafe { crate::arch::outb(DATA_PORT, value) }
 }
 
 /// 读取 PS/2 状态寄存器
 #[inline]
 pub fn read_status() -> u8 {
-    unsafe {
-        let value: u8;
-        core::arch::asm!("in al, dx", out("al") value, in("dx") STATUS_PORT);
-        value
-    }
+    unsafe { crate::arch::inb(STATUS_PORT) }
 }
 
 /// 发送命令到 PS/2 控制器
 #[inline]
 pub fn send_command(cmd: u8) {
-    unsafe {
-        core::arch::asm!("out dx, al", in("dx") COMMAND_PORT, in("al") cmd);
-    }
+    unsafe { crate::arch::outb(COMMAND_PORT, cmd) }
 }
 
 /// 等待输入缓冲区为空

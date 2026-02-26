@@ -1,0 +1,4 @@
+interface:
+    display_name: "January OS Project Intel"
+    short_description: "Collect deep repo context and architecture state."
+    default_prompt: "Use $january-os-project-intel to build a complete, current project briefing before coding."

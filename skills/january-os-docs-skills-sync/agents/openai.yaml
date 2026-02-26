@@ -1,0 +1,4 @@
+interface:
+    display_name: "January OS Docs+Skills Sync"
+    short_description: "Keep docs and skills synchronized after every change."
+    default_prompt: "Use $january-os-docs-skills-sync to update docs and skills after code changes with full traceability."

@@ -7,7 +7,6 @@
 //! - 用户态入口帧参数构建所需数据
 
 use alloc::vec::Vec;
-use core::arch::asm;
 use core::cmp;
 use core::mem::size_of;
 
@@ -18,7 +17,6 @@ const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELF_CLASS_64: u8 = 2;
 const ELF_DATA_LSB: u8 = 1;
 const ELF_VERSION_CURRENT: u8 = 1;
-const ELF_MACHINE_X86_64: u16 = 62;
 
 const PT_LOAD: u32 = 1;
 
@@ -143,16 +141,7 @@ fn ranges_overlap(start_a: u64, end_a: u64, start_b: u64, end_b: u64) -> bool {
 
 #[inline]
 fn read_cr3_phys() -> u64 {
-    let cr3: u64;
-    unsafe {
-        asm!(
-            "mov {}, cr3",
-            out(reg) cr3,
-            options(nostack, preserves_flags)
-        );
-    }
-
-    cr3 & mm::PTE_ADDR_MASK
+    mm::arch::read_cr3() & mm::PTE_ADDR_MASK
 }
 
 #[inline]
@@ -255,7 +244,9 @@ fn map_zero_page(
     );
 
     let page = mm::alloc_page(user_zero_gfp()).ok_or(ENOMEM)?;
-    let phys = mm::page_to_pfn(page).checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
+    let phys = mm::page_to_pfn(page)
+        .checked_mul(mm::PAGE_SIZE)
+        .ok_or(E2BIG)?;
 
     crate::kprintln!(
         "[diag][execve] map_zero_page alloc done kind={:?} virt={:#x} phys={:#x}",
@@ -311,10 +302,7 @@ fn copy_segment_page_data(
     virt_page_start: u64,
     phys_page_start: u64,
 ) -> Result<(), i32> {
-    let segment_file_end = segment
-        .vaddr
-        .checked_add(segment.file_size)
-        .ok_or(E2BIG)?;
+    let segment_file_end = segment.vaddr.checked_add(segment.file_size).ok_or(E2BIG)?;
 
     if segment.file_size == 0 {
         return Ok(());
@@ -383,7 +371,7 @@ pub fn build_elf_load_plan(image: &[u8]) -> Result<ExecLoadPlan, i32> {
     if header.e_version != ELF_VERSION_CURRENT as u32 {
         return Err(EINVAL);
     }
-    if header.e_machine != ELF_MACHINE_X86_64 {
+    if header.e_machine != crate::task::arch::supported_elf_machine() {
         return Err(EINVAL);
     }
     if header.e_phentsize as usize != size_of::<Elf64ProgramHeader>() {
@@ -496,7 +484,10 @@ pub fn build_elf_load_plan(image: &[u8]) -> Result<ExecLoadPlan, i32> {
         return Err(EINVAL);
     }
 
-    if !segments.iter().any(|segment| segment_contains_entry(segment, entry)) {
+    if !segments
+        .iter()
+        .any(|segment| segment_contains_entry(segment, entry))
+    {
         return Err(EINVAL);
     }
 
@@ -552,7 +543,12 @@ pub fn stage_pt_load_mappings(
         }
 
         for segment in plan.segments.iter() {
-            if ranges_overlap(segment.page_start, segment.page_end, stack_bottom, plan.stack_top) {
+            if ranges_overlap(
+                segment.page_start,
+                segment.page_end,
+                stack_bottom,
+                plan.stack_top,
+            ) {
                 return Err(EINVAL);
             }
         }
@@ -589,8 +585,7 @@ pub fn stage_pt_load_mappings(
             for page_idx in 0..segment.page_count {
                 let page_offset = page_idx.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
                 let virt = segment.page_start.checked_add(page_offset).ok_or(E2BIG)?;
-                let edge_page =
-                    page_idx == 0 || page_idx == segment.page_count.saturating_sub(1);
+                let edge_page = page_idx == 0 || page_idx == segment.page_count.saturating_sub(1);
 
                 if edge_page {
                     crate::kprintln!(

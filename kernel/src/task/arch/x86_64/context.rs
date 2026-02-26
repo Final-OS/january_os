@@ -45,7 +45,7 @@ impl TaskContext {
         // Push return address for when entry() returns
         sp -= core::mem::size_of::<u64>();
         unsafe {
-            *(sp as *mut u64) = task_exit_trampoline as u64;
+            *(sp as *mut u64) = task_exit_trampoline as *const () as u64;
         }
 
         // Reserve space for TaskContext

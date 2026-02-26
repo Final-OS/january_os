@@ -7,6 +7,7 @@
 | 文档 | 说明 |
 |------|------|
 | [配置说明](./configuration.md) | os_cfg.toml 配置项详解 |
+| [Skills 与信息流](./skills-info-flow.md) | 变更后 docs/skills 同步维护流程 |
 | [API 参考](../api/overview.md) | 完整的 API 文档 |
 | [实现详解](../implementation/overview.md) | 内部实现细节 |
 | [开发进度](../progress/overview.md) | 当前开发状态 |

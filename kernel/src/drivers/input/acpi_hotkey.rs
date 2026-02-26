@@ -3,10 +3,9 @@
 //! 提供 ACPI 热键事件缓冲区与轮询入口。
 //! 具体硬件事件采集后续可接入 ACPI EC/GPE/AML 通知路径。
 
-use core::arch::asm;
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use crate::drivers::acpi;
 use crate::sync::{Once, OnceCell};
+use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 /// ACPI 热键事件
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +56,10 @@ pub struct HotkeySourceInfo {
 pub fn init() {
     ACPI_HOTKEY_INIT.call_once(|| {
         // 清理一次历史状态位，避免旧事件在驱动初始化后被误报。
-        if let Some(source) = PM1_EVENT_SOURCE.get_or_init(probe_pm1_event_source).as_ref() {
+        if let Some(source) = PM1_EVENT_SOURCE
+            .get_or_init(probe_pm1_event_source)
+            .as_ref()
+        {
             let _ = read_and_clear_pm1_status(source.pm1a_evt_port, source.pm1_sts_len);
             if source.pm1b_evt_port != 0 {
                 let _ = read_and_clear_pm1_status(source.pm1b_evt_port, source.pm1_sts_len);
@@ -77,7 +79,11 @@ pub fn poll() {
     LAST_PM1_POLL_TICK.store(now, Ordering::Relaxed);
 
     let source = PM1_EVENT_SOURCE.get_or_init(probe_pm1_event_source);
-    let source = if let Some(s) = source.as_ref() { s } else { return };
+    let source = if let Some(s) = source.as_ref() {
+        s
+    } else {
+        return;
+    };
 
     let mut pending = read_and_clear_pm1_status(source.pm1a_evt_port, source.pm1_sts_len);
     if source.pm1b_evt_port != 0 {
@@ -204,24 +210,20 @@ fn read_and_clear_pm1_status(port: u16, sts_len: u8) -> u16 {
 
 #[inline]
 unsafe fn inw(port: u16) -> u16 {
-    let value: u16;
-    asm!("in ax, dx", out("ax") value, in("dx") port, options(nomem, nostack));
-    value
+    unsafe { crate::arch::inw(port) }
 }
 
 #[inline]
 unsafe fn inl(port: u16) -> u32 {
-    let value: u32;
-    asm!("in eax, dx", out("eax") value, in("dx") port, options(nomem, nostack));
-    value
+    unsafe { crate::arch::inl(port) }
 }
 
 #[inline]
 unsafe fn outw(port: u16, value: u16) {
-    asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack));
+    unsafe { crate::arch::outw(port, value) };
 }
 
 #[inline]
 unsafe fn outl(port: u16, value: u32) {
-    asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack));
+    unsafe { crate::arch::outl(port, value) };
 }
