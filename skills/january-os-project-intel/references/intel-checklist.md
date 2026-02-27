@@ -48,3 +48,6 @@ cd docs && pnpm build
 - Explicitly check whether architecture-specific code is located under `boot/<arch>/` or `kernel/src/**/arch/<arch>/`.
 - Explicitly check whether runtime kernel code contains test/demo-only logic, assets, or naming.
 - Explicitly check whether `kernel/src/tests/**` is organized by subsystem directories (avoid flat growth).
+- Explicitly check whether tests/demo scenarios are functionally complete (main path, key branches, fail/recovery paths) with explicit assertions.
+- Explicitly check whether tests/demo logs are step-level and include action/input/expected/actual plus failure location.
+- Explicitly check whether tests/demo include invalid input, unexpected input, and boundary-condition cases.

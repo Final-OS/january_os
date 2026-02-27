@@ -15,6 +15,30 @@ use crate::virt;
 use crate::{error, info, kprint, kprintln, ok, warn};
 use core::fmt::Write;
 
+unsafe extern "C" {
+    static __kernel_file_size: u8;
+    static __kernel_mem_size: u8;
+}
+
+fn resolve_kernel_reserved_end_phys(info: &BootInfo) -> u64 {
+    let boot_file_end = info.kernel_phys_addr.saturating_add(info.kernel_size);
+    let linked_file_size = core::ptr::addr_of!(__kernel_file_size) as u64;
+    let linked_mem_size = core::ptr::addr_of!(__kernel_mem_size) as u64;
+    let linked_mem_end = info.kernel_phys_addr.saturating_add(linked_mem_size);
+    let reserved_end = mm::page_align_up(boot_file_end.max(linked_mem_end));
+
+    kprintln!(
+        "[diag][boot] kernel reserve range=[{:#x}, {:#x}) boot_file_size={:#x} linked_file_size={:#x} linked_mem_size={:#x}",
+        info.kernel_phys_addr,
+        reserved_end,
+        info.kernel_size,
+        linked_file_size,
+        linked_mem_size,
+    );
+
+    reserved_end
+}
+
 fn resolve_direct_map_offset(boot_direct_map: u64) -> u64 {
     const KERNEL_ADDR_MIN: u64 = 0xFFFF_0000_0000_0000;
 
@@ -245,7 +269,7 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
 
     let mem_regions = info.memory_map_addr as *const MemoryRegion;
     let entries_count = info.memory_map_entries as usize;
-    let kernel_end_phys = info.kernel_phys_addr + info.kernel_size;
+    let kernel_end_phys = resolve_kernel_reserved_end_phys(info);
     // 统计内存
     let mut max_phys_addr: u64 = 0;
     for i in 0..entries_count {

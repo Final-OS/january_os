@@ -29,6 +29,14 @@
 - `kernel/src/tests/**` 必须按子系统分类建目录，禁止长期平铺：
   - 例如：`kernel/src/tests/mm/`、`kernel/src/tests/task/`、`kernel/src/tests/libs/`
   - 测试资源随子系统放置（如 `kernel/src/tests/task/assets/`），不得混放在运行时代码目录。
+- tests/demo 测试必须功能完备：
+  - 至少覆盖主流程、关键分支、失败路径与恢复路径。
+  - 每个测试场景必须声明预期结果，并对实际结果进行断言。
+- tests/demo 测试日志必须详细：
+  - 记录步骤级动作、输入参数、关键状态、预期结果与实际结果。
+  - 失败日志必须能直接定位失败步骤与原因。
+- tests/demo 测试必须覆盖全面：
+  - 必须包含非法输入测试、意外输入测试与边界条件测试，不得只覆盖“正常输入”。
 - 禁止手改生成文件：`kernel/src/generated/**`（应通过 `make build-kernel` 或 `cfg generate` 生成）。
 - 若最终判断不需要更新 docs/skills，必须在交付说明中给出明确理由。
 
@@ -55,6 +63,8 @@
   - 相关 `docs/api/task/`, `docs/api/syscall/`, `docs/api/sync/`
 - `kernel/src/tests/**`
   - 保持 tests 目录按子系统分层，新增测试时先归类目录再落文件
+  - 覆盖主流程、关键分支、失败/恢复路径，补齐非法输入、意外输入、边界条件场景
+  - 日志输出需包含步骤动作、输入、预期/实际结果与失败定位信息
   - 如测试变更影响对外行为/命令，补充对应 `docs/api/**` 或 `docs/progress/**`
 - `tools/cfg/**`, `os_cfg.toml`
   - `docs/implementation/cfg-tool.md`

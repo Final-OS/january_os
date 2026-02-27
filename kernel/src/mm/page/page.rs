@@ -377,6 +377,15 @@ pub unsafe fn init_vmemmap(base: *mut Page, max_pfn: u64) {
     unsafe {
         VMEMMAP_BASE = base;
         MAX_PFN = max_pfn;
+        let vmemmap_base = VMEMMAP_BASE as usize;
+        let max_pfn_snapshot = MAX_PFN;
+        crate::kprintln!(
+            "[diag][mm] init_vmemmap base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
+            vmemmap_base,
+            max_pfn_snapshot,
+            core::ptr::addr_of!(VMEMMAP_BASE) as usize,
+            core::ptr::addr_of!(MAX_PFN) as usize,
+        );
     }
 }
 
@@ -397,9 +406,27 @@ pub unsafe fn pfn_to_page(pfn: u64) -> &'static mut Page {
 #[inline]
 pub fn page_to_pfn(page: &Page) -> u64 {
     unsafe {
-        let offset = (page as *const Page).offset_from(VMEMMAP_BASE);
-        debug_assert!(offset >= 0, "Invalid page pointer");
-        offset as u64
+        let base = VMEMMAP_BASE as usize;
+        let ptr = page as *const Page as usize;
+        let max_pfn = MAX_PFN as usize;
+        let page_size = core::mem::size_of::<Page>();
+
+        if base == 0 || max_pfn == 0 || ptr < base {
+            return u64::MAX;
+        }
+
+        let span_bytes = max_pfn.saturating_mul(page_size);
+        let end = base.saturating_add(span_bytes);
+        if ptr >= end {
+            return u64::MAX;
+        }
+
+        let delta = ptr - base;
+        if delta % page_size != 0 {
+            return u64::MAX;
+        }
+
+        (delta / page_size) as u64
     }
 }
 

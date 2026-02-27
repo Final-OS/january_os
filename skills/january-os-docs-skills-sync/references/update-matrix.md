@@ -11,6 +11,9 @@ If a file in the left column changes, evaluate and update every target in the ri
 - Architecture-specific code should be placed under `boot/<arch>/` or `kernel/src/**/arch/<arch>/`; if not, add refactor item and document temporary rationale.
 - Runtime kernel code (`kernel/src/**` except `kernel/src/tests/**`) should not carry test/demo-only code, assets, or naming.
 - Kernel tests should reside under `kernel/src/tests/**` and be grouped by subsystem directories.
+- Tests/demo should be functionally complete and include main path, key branches, failure paths, and recovery paths.
+- Tests/demo should provide detailed step-level logs with action/input/expected/actual and failure location.
+- Tests/demo should cover invalid inputs, unexpected inputs, and boundary conditions.
 
 ## Path -> Required Updates
 
@@ -44,6 +47,9 @@ If a file in the left column changes, evaluate and update every target in the ri
 - `kernel/src/tests/**`
   - keep tests organized by subsystem folders (`tests/mm/`, `tests/task/`, `tests/libs/`, etc.)
   - keep test assets under matching test subtree (for example `tests/task/assets/`)
+  - ensure scenarios cover main flow, key branches, fail/recovery paths, and contain explicit assertions
+  - ensure logs are step-level and include action, input, expected result, actual result, and failure step
+  - ensure invalid, unexpected, and boundary-condition inputs are covered
   - if test-only path is promoted to runtime path, require explicit rationale and follow-up refactor item
 
 - `tools/cfg/**`, `os_cfg.toml`

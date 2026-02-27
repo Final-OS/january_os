@@ -232,41 +232,54 @@ fn map_zero_page(
     kind: ExecMappedPageKind,
     mapped_pages: &mut Vec<ExecMappedPage>,
 ) -> Result<u64, i32> {
-    crate::kprintln!(
-        "[diag][execve] map_zero_page alloc begin kind={:?} virt={:#x} flags={:#x}",
-        kind,
-        virt,
-        flags,
-    );
-
     let page = mm::alloc_page(user_zero_gfp()).ok_or(ENOMEM)?;
-    let phys = mm::page_to_pfn(page)
-        .checked_mul(mm::PAGE_SIZE)
-        .ok_or(E2BIG)?;
+    let page_ptr = page as *mut mm::Page as usize;
+    let pfn = mm::page_to_pfn(page);
+    let max_pfn = unsafe { mm::MAX_PFN };
 
-    crate::kprintln!(
-        "[diag][execve] map_zero_page alloc done kind={:?} virt={:#x} phys={:#x}",
-        kind,
-        virt,
-        phys,
-    );
+    if pfn >= max_pfn {
+        let vmemmap_base = unsafe { mm::VMEMMAP_BASE } as usize;
+        let raw_offset = if vmemmap_base == 0 {
+            0isize
+        } else {
+            unsafe { (page as *const mm::Page).offset_from(mm::VMEMMAP_BASE) }
+        };
+        crate::kprintln!(
+            "[diag][execve] map_zero_page invalid page metadata kind={:?} virt={:#x} page_ptr={:#x} pfn={} max_pfn={} vmemmap_base={:#x} raw_offset={}",
+            kind,
+            virt,
+            page_ptr,
+            pfn,
+            max_pfn,
+            vmemmap_base,
+            raw_offset,
+        );
+        return Err(E2BIG);
+    }
 
-    crate::kprintln!(
-        "[diag][execve] map_zero_page call map_page kind={:?} virt={:#x} phys={:#x}",
-        kind,
-        virt,
-        phys,
-    );
+    let phys = match pfn.checked_mul(mm::PAGE_SIZE) {
+        Some(v) => v,
+        None => {
+            crate::kprintln!(
+                "[diag][execve] map_zero_page pfn overflow kind={:?} virt={:#x} page_ptr={:#x} pfn={} page_size={:#x}",
+                kind,
+                virt,
+                page_ptr,
+                pfn,
+                mm::PAGE_SIZE,
+            );
+            return Err(E2BIG);
+        }
+    };
 
     let mapped_ok = unsafe { pt_mgr.map_page(virt, phys, flags) };
-    crate::kprintln!(
-        "[diag][execve] map_zero_page map_page result kind={:?} virt={:#x} ok={}",
-        kind,
-        virt,
-        mapped_ok,
-    );
-
     if !mapped_ok {
+        crate::kprintln!(
+            "[diag][execve] map_zero_page map_page failed kind={:?} virt={:#x} phys={:#x}",
+            kind,
+            virt,
+            phys,
+        );
         unsafe {
             mm::free_page(page);
         }
@@ -281,13 +294,6 @@ fn map_zero_page(
         flags,
         kind,
     });
-
-    crate::kprintln!(
-        "[diag][execve] map_zero_page done kind={:?} virt={:#x} mapped_total={}",
-        kind,
-        virt,
-        mapped_pages.len(),
-    );
 
     Ok(phys)
 }
@@ -546,47 +552,12 @@ pub fn stage_pt_load_mappings(
         }
 
         let pt_mgr = current_page_table_manager();
-        crate::kprintln!(
-            "[diag][execve] stage map begin entry={:#x} segs={} stack=[{:#x}, {:#x}) cr3={:#x}",
-            plan.entry,
-            plan.segments.len(),
-            stack_bottom,
-            plan.stack_top,
-            pt_mgr.pml4_phys(),
-        );
-        crate::kprintln!(
-            "[diag][execve] validate unmapped begin seg_pages={} stack_pages={}",
-            plan.segment_pages,
-            plan.stack_pages,
-        );
         validate_target_unmapped(&pt_mgr, plan, stack_bottom)?;
-        crate::kprintln!("[diag][execve] validate unmapped done");
 
-        for (segment_idx, segment) in plan.segments.iter().enumerate() {
-            crate::kprintln!(
-                "[diag][execve] map segment idx={} range=[{:#x}, {:#x}) file_off={:#x} file_size={:#x} flags={:#x} pages={}",
-                segment_idx,
-                segment.page_start,
-                segment.page_end,
-                segment.file_offset,
-                segment.file_size,
-                segment.map_flags,
-                segment.page_count,
-            );
-
+        for segment in plan.segments.iter() {
             for page_idx in 0..segment.page_count {
                 let page_offset = page_idx.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
                 let virt = segment.page_start.checked_add(page_offset).ok_or(E2BIG)?;
-                let edge_page = page_idx == 0 || page_idx == segment.page_count.saturating_sub(1);
-
-                if edge_page {
-                    crate::kprintln!(
-                        "[diag][execve] map seg page begin seg={} page_idx={} virt={:#x}",
-                        segment_idx,
-                        page_idx,
-                        virt,
-                    );
-                }
 
                 let phys = map_zero_page(
                     &pt_mgr,
@@ -596,25 +567,7 @@ pub fn stage_pt_load_mappings(
                     &mut mapped_pages,
                 )?;
 
-                if edge_page {
-                    crate::kprintln!(
-                        "[diag][execve] copy seg page begin seg={} page_idx={} virt={:#x}",
-                        segment_idx,
-                        page_idx,
-                        virt,
-                    );
-                }
-
                 copy_segment_page_data(image, segment, virt, phys)?;
-
-                if edge_page {
-                    crate::kprintln!(
-                        "[diag][execve] map seg page done seg={} page_idx={} virt={:#x}",
-                        segment_idx,
-                        page_idx,
-                        virt,
-                    );
-                }
             }
         }
 
@@ -622,15 +575,6 @@ pub fn stage_pt_load_mappings(
         for page_idx in 0..plan.stack_pages {
             let page_offset = page_idx.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
             let virt = stack_bottom.checked_add(page_offset).ok_or(E2BIG)?;
-            let edge_page = page_idx == 0 || page_idx == plan.stack_pages.saturating_sub(1);
-
-            if edge_page {
-                crate::kprintln!(
-                    "[diag][execve] map stack page begin page_idx={} virt={:#x}",
-                    page_idx,
-                    virt,
-                );
-            }
 
             map_zero_page(
                 &pt_mgr,
@@ -639,20 +583,7 @@ pub fn stage_pt_load_mappings(
                 ExecMappedPageKind::Stack,
                 &mut mapped_pages,
             )?;
-
-            if edge_page {
-                crate::kprintln!(
-                    "[diag][execve] map stack page done page_idx={} virt={:#x}",
-                    page_idx,
-                    virt,
-                );
-            }
         }
-
-        crate::kprintln!(
-            "[diag][execve] stage map done mapped_pages={}",
-            mapped_pages.len()
-        );
 
         Ok(())
     })();

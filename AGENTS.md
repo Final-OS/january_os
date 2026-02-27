@@ -30,6 +30,9 @@
   - `make run` (or `make run-gui`)
 - Put kernel test code and test assets under `kernel/src/tests/**` only.
 - Organize `kernel/src/tests/**` by subsystem directories (for example `tests/mm/`, `tests/task/`, `tests/libs/`) instead of long-term flat layout.
+- tests/demo scenarios must be functionally complete: cover main path, key branches, failure paths, and recovery paths.
+- tests/demo logs must be step-level and actionable: include step action, input, expected result, actual result, and failure location.
+- tests/demo coverage must include invalid input, unexpected input, and boundary-condition cases; do not only test happy-path behavior.
 - For config-related changes, run `make config` and verify regenerated files under `kernel/src/generated/`.
 - For docs-only changes, run `cd docs && pnpm build` before opening a PR.
 

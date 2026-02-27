@@ -281,6 +281,21 @@ fn current_cpu() -> usize {
     }
 }
 
+#[inline]
+fn is_page_ptr_in_vmemmap(page: *const Page) -> bool {
+    unsafe {
+        let base = super::page::VMEMMAP_BASE as usize;
+        let max_pfn = super::page::MAX_PFN as usize;
+        if base == 0 || max_pfn == 0 {
+            return false;
+        }
+        let span_bytes = max_pfn.saturating_mul(core::mem::size_of::<Page>());
+        let end = base.saturating_add(span_bytes);
+        let ptr = page as usize;
+        ptr >= base && ptr < end && ((ptr - base) % core::mem::size_of::<Page>() == 0)
+    }
+}
+
 // ============================================================================
 // PCP 分配/释放接口
 // ============================================================================
@@ -303,6 +318,26 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
 
             // 尝试从 PCP 分配
             if let Some(page) = pcp.alloc() {
+                if !is_page_ptr_in_vmemmap(page as *const Page) {
+                    crate::kprintln!(
+                        "[diag][pcp] invalid page pointer from pcp.alloc: cpu={} zone_idx={} page_ptr={:#x}",
+                        cpu,
+                        zone_idx,
+                        page as *mut Page as usize,
+                    );
+                    continue;
+                }
+                let page_zone = page.zone_id() as usize;
+                if page_zone != zone_idx {
+                    crate::kprintln!(
+                        "[diag][pcp] zone mismatch from pcp.alloc: cpu={} list_zone={} page_zone={} page_ptr={:#x} -> quarantine",
+                        cpu,
+                        zone_idx,
+                        page_zone,
+                        page as *mut Page as usize,
+                    );
+                    continue;
+                }
                 return Some(page);
             }
 
@@ -312,6 +347,26 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
                 let batch = pcp.batch;
                 pcp.refill_from_buddy(zone, batch);
                 if let Some(page) = pcp.alloc() {
+                    if !is_page_ptr_in_vmemmap(page as *const Page) {
+                        crate::kprintln!(
+                            "[diag][pcp] invalid page pointer after refill: cpu={} zone_idx={} page_ptr={:#x}",
+                            cpu,
+                            zone_idx,
+                            page as *mut Page as usize,
+                        );
+                        continue;
+                    }
+                    let page_zone = page.zone_id() as usize;
+                    if page_zone != zone_idx {
+                        crate::kprintln!(
+                            "[diag][pcp] zone mismatch after refill: cpu={} list_zone={} page_zone={} page_ptr={:#x} -> quarantine",
+                            cpu,
+                            zone_idx,
+                            page_zone,
+                            page as *mut Page as usize,
+                        );
+                        continue;
+                    }
                     return Some(page);
                 }
             }
@@ -327,6 +382,14 @@ pub fn pcp_free_page(page: &mut Page) {
         return;
     }
 
+    if !is_page_ptr_in_vmemmap(page as *const Page) {
+        crate::kprintln!(
+            "[diag][pcp] reject invalid free page pointer: page_ptr={:#x}",
+            page as *mut Page as usize,
+        );
+        return;
+    }
+
     let cpu = current_cpu();
     let zone_idx = page.zone_id() as usize;
 
@@ -335,6 +398,19 @@ pub fn pcp_free_page(page: &mut Page) {
     }
 
     unsafe {
+        // 已在链表中的节点再次入链会破坏 PCP 链表，直接回退到 Buddy 避免污染扩散。
+        if !page.lru.next.is_null() || !page.lru.prev.is_null() {
+            crate::kprintln!(
+                "[diag][pcp] suspicious lru links on free: cpu={} zone_idx={} page_ptr={:#x} lru_next={:#x} lru_prev={:#x} -> quarantine",
+                cpu,
+                zone_idx,
+                page as *mut Page as usize,
+                page.lru.next as usize,
+                page.lru.prev as usize,
+            );
+            return;
+        }
+
         let pageset = &CPU_PAGESETS[cpu];
         let pcp = &pageset.pcp[zone_idx];
 

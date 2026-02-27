@@ -23,6 +23,9 @@ This skill enforces post-change information hygiene. It maps changed code/config
 - Any architecture-specific behavior change must update related pages in `docs/api/arch/**` and `docs/implementation/**` in the same change.
 - Keep runtime kernel code (`kernel/src/**` except `kernel/src/tests/**`) free of test/demo-only logic, assets, and naming.
 - Keep kernel tests under `kernel/src/tests/**` and organize by subsystem folders instead of flat file growth.
+- Keep tests/demo functionally complete: cover main paths, key branches, failure paths, and recovery paths with explicit assertions.
+- Keep tests/demo logs detailed and step-level: include action, input, expected result, actual result, and failure location.
+- Keep tests/demo coverage comprehensive: include invalid input, unexpected input, and boundary-condition cases.
 - If no docs/skills update is needed, explain exactly why in final report.
 - Do not leave `docs/.vitepress/config.ts` stale when adding/renaming docs pages.
 - Keep skill metadata (`SKILL.md` frontmatter and `agents/openai.yaml`) consistent.

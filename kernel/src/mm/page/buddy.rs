@@ -9,6 +9,7 @@ use super::zone::{Zone, GfpFlags, MAX_ORDER, get_zone, gfp_to_zone_list};
 use super::zone::{pages_per_order, get_buddy_pfn};
 use super::pcp::{pcp_alloc_page, pcp_free_page, pcp_initialized};
 use crate::mm::vm::layout::{PAGE_SIZE, DIRECT_MAP_OFFSET};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 // ============================================================================
 // container_of 宏
@@ -21,6 +22,44 @@ macro_rules! container_of {
         let offset = core::mem::offset_of!($type, $field);
         unsafe { (ptr.sub(offset)) as *mut $type }
     }};
+}
+
+static INVALID_MM_STATE_LOGGED: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+fn mm_state_ready() -> bool {
+    unsafe {
+        let base = super::page::VMEMMAP_BASE as usize;
+        let max_pfn = super::page::MAX_PFN;
+        if base != 0 && max_pfn != 0 {
+            return true;
+        }
+        if !INVALID_MM_STATE_LOGGED.swap(true, Ordering::SeqCst) {
+            crate::kprintln!(
+                "[diag][buddy] mm state invalid: vmemmap_base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
+                base,
+                max_pfn,
+                core::ptr::addr_of!(super::page::VMEMMAP_BASE) as usize,
+                core::ptr::addr_of!(super::page::MAX_PFN) as usize,
+            );
+        }
+        false
+    }
+}
+
+#[inline]
+fn is_page_ptr_in_vmemmap(page: *const Page) -> bool {
+    unsafe {
+        let base = super::page::VMEMMAP_BASE as usize;
+        let max_pfn = super::page::MAX_PFN as usize;
+        if base == 0 || max_pfn == 0 {
+            return false;
+        }
+        let span_bytes = max_pfn.saturating_mul(core::mem::size_of::<Page>());
+        let end = base.saturating_add(span_bytes);
+        let ptr = page as usize;
+        ptr >= base && ptr < end && ((ptr - base) % core::mem::size_of::<Page>() == 0)
+    }
 }
 
 // ============================================================================
@@ -36,6 +75,9 @@ macro_rules! container_of {
 /// # Returns
 /// 成功返回第一个 Page 的引用，失败返回 None
 pub fn alloc_pages(order: usize, gfp: GfpFlags) -> Option<&'static mut Page> {
+    if !mm_state_ready() {
+        return None;
+    }
     if order >= MAX_ORDER {
         return None;
     }
@@ -50,6 +92,15 @@ pub fn alloc_pages(order: usize, gfp: GfpFlags) -> Option<&'static mut Page> {
         }
         
         if let Some(page) = zone_alloc_pages(zone, order, gfp) {
+            if !is_page_ptr_in_vmemmap(page as *const Page) {
+                crate::kprintln!(
+                    "[diag][buddy] invalid page pointer from zone_alloc_pages: zone={:?} order={} page_ptr={:#x}",
+                    zone_type,
+                    order,
+                    page as *mut Page as usize,
+                );
+                continue;
+            }
             return Some(page);
         }
     }
@@ -222,8 +273,19 @@ pub unsafe fn free_pages(page: &mut Page, order: usize) {
 /// 分配单个页帧
 #[inline]
 pub fn alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
+    if !mm_state_ready() {
+        return None;
+    }
     if pcp_initialized() {
         if let Some(page) = pcp_alloc_page(gfp) {
+            if !is_page_ptr_in_vmemmap(page as *const Page) {
+                crate::kprintln!(
+                    "[diag][buddy] invalid page pointer from pcp_alloc_page: page_ptr={:#x}",
+                    page as *mut Page as usize,
+                );
+                return alloc_pages(0, gfp);
+            }
+
             page.set_count_one();
 
             // PCP 快路径同样需要满足 GFP 语义。

@@ -1,0 +1,162 @@
+use super::{task_step, usermode};
+use crate::mm;
+use crate::{error, kprintln, ok};
+
+unsafe extern "C" {
+    static __kernel_start: u8;
+    static __kernel_end: u8;
+    static __kernel_file_size: u8;
+    static __kernel_mem_size: u8;
+}
+
+#[inline]
+fn region_end(base: u64, size: u64) -> u64 {
+    base.saturating_add(size)
+}
+
+#[inline]
+fn range_contains(base: u64, end: u64, addr: u64) -> bool {
+    addr >= base && addr < end
+}
+
+fn find_reserved_region_covering(addr: u64) -> Option<(u64, u64)> {
+    for idx in 0..mm::memblock_reserved_region_count() {
+        let Some(region) = mm::memblock_reserved_region(idx) else {
+            continue;
+        };
+        if region.size == 0 {
+            continue;
+        }
+        let end = region_end(region.base, region.size);
+        if range_contains(region.base, end, addr) {
+            return Some((region.base, end));
+        }
+    }
+
+    None
+}
+
+pub(super) fn run() {
+    task_step("regression: verify kernel reserve covers bss symbols");
+
+    let kernel_start = core::ptr::addr_of!(__kernel_start) as u64;
+    let kernel_end = core::ptr::addr_of!(__kernel_end) as u64;
+    let linked_file_size = core::ptr::addr_of!(__kernel_file_size) as u64;
+    let linked_mem_size = core::ptr::addr_of!(__kernel_mem_size) as u64;
+
+    let kernel_file_end = kernel_start.saturating_add(linked_file_size);
+    let kernel_mem_end = kernel_start.saturating_add(linked_mem_size);
+    let vmemmap_sym = core::ptr::addr_of!(mm::VMEMMAP_BASE) as u64;
+    let max_pfn_sym = core::ptr::addr_of!(mm::MAX_PFN) as u64;
+
+    kprintln!(
+        "[test/task][regression][layout] kernel=[{:#x}, {:#x}) file_end={:#x} mem_end={:#x} vmemmap_sym={:#x} max_pfn_sym={:#x}",
+        kernel_start,
+        kernel_end,
+        kernel_file_end,
+        kernel_mem_end,
+        vmemmap_sym,
+        max_pfn_sym,
+    );
+
+    if linked_mem_size < linked_file_size {
+        error!(
+            "task: regression FAIL (linked_mem_size < linked_file_size: {:#x} < {:#x})",
+            linked_mem_size,
+            linked_file_size
+        );
+        return;
+    }
+
+    if kernel_end < kernel_mem_end {
+        error!(
+            "task: regression FAIL (kernel_end < kernel_mem_end: end={:#x} mem_end={:#x})",
+            kernel_end,
+            kernel_mem_end
+        );
+        return;
+    }
+
+    if !(vmemmap_sym >= kernel_file_end && vmemmap_sym < kernel_mem_end) {
+        error!(
+            "task: regression FAIL (VMEMMAP_BASE symbol not in expected bss range: sym={:#x} file_end={:#x} mem_end={:#x})",
+            vmemmap_sym,
+            kernel_file_end,
+            kernel_mem_end,
+        );
+        return;
+    }
+
+    if !(max_pfn_sym >= kernel_file_end && max_pfn_sym < kernel_mem_end) {
+        error!(
+            "task: regression FAIL (MAX_PFN symbol not in expected bss range: sym={:#x} file_end={:#x} mem_end={:#x})",
+            max_pfn_sym,
+            kernel_file_end,
+            kernel_mem_end,
+        );
+        return;
+    }
+
+    let mut kernel_range_reserved = false;
+    for idx in 0..mm::memblock_reserved_region_count() {
+        let Some(region) = mm::memblock_reserved_region(idx) else {
+            continue;
+        };
+        if region.size == 0 {
+            continue;
+        }
+        let end = region_end(region.base, region.size);
+        if region.base <= kernel_start && end >= kernel_mem_end {
+            kernel_range_reserved = true;
+            kprintln!(
+                "[test/task][regression][reserve] kernel covered by reserved region idx={} [{:#x}, {:#x})",
+                idx,
+                region.base,
+                end,
+            );
+            break;
+        }
+    }
+
+    if !kernel_range_reserved {
+        error!(
+            "task: regression FAIL (memblock reserved range does not cover full kernel mem image [{:#x}, {:#x}))",
+            kernel_start,
+            kernel_mem_end
+        );
+        return;
+    }
+
+    let Some((vmemmap_resv_base, vmemmap_resv_end)) = find_reserved_region_covering(vmemmap_sym)
+    else {
+        error!(
+            "task: regression FAIL (VMEMMAP_BASE symbol not covered by reserved memblock region: sym={:#x})",
+            vmemmap_sym
+        );
+        return;
+    };
+    let Some((max_pfn_resv_base, max_pfn_resv_end)) = find_reserved_region_covering(max_pfn_sym)
+    else {
+        error!(
+            "task: regression FAIL (MAX_PFN symbol not covered by reserved memblock region: sym={:#x})",
+            max_pfn_sym
+        );
+        return;
+    };
+
+    kprintln!(
+        "[test/task][regression][reserve] VMEMMAP_BASE covered by [{:#x}, {:#x}), MAX_PFN covered by [{:#x}, {:#x})",
+        vmemmap_resv_base,
+        vmemmap_resv_end,
+        max_pfn_resv_base,
+        max_pfn_resv_end,
+    );
+
+    task_step("regression: run usermode exec after reserve verification");
+    if !usermode::run_with_label("usermode regression") {
+        error!("task: regression FAIL (usermode regression subcase failed)");
+        return;
+    }
+
+    ok!("task: kernel reserve/usermode regression OK");
+}

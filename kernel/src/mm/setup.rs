@@ -35,6 +35,7 @@
 use crate::mm::page::memblock::{
     memblock_init, memblock_initialized, memblock_add, memblock_reserve,
     memblock_alloc, memblock_for_each_free_region, memblock_phys_mem_size,
+    memblock_reserved_region_count, memblock_reserved_region,
 };
 use crate::mm::page::page::{Page, init_vmemmap, PAGE_STRUCT_SIZE};
 use crate::mm::page::zone::{Zone, ZoneType, ZONES, mark_zones_initialized};
@@ -202,10 +203,13 @@ pub unsafe fn init_buddy_system(
             let start_pfn = base / PAGE_SIZE;
             let end_pfn = (base + size) / PAGE_SIZE;
             
-            // 初始化该区域的 Page 结构
+            // 初始化该区域的 Page 结构（再次按 reserved 过滤，避免保留页误入 buddy）
             for pfn in start_pfn..end_pfn {
                 if pfn >= max_pfn {
                     break;
+                }
+                if pfn_overlaps_reserved(pfn) {
+                    continue;
                 }
                 
                 let page = &mut *page_array.add(pfn as usize);
@@ -220,7 +224,7 @@ pub unsafe fn init_buddy_system(
                 let zone_end = end_pfn.min(dma_end_pfn);
                 if zone_end > zone_start {
                     let zone = &mut ZONES[ZoneType::Dma as usize];
-                    init_zone_buddy(zone, zone_start, zone_end);
+                    init_zone_buddy_filtered(zone, zone_start, zone_end, max_pfn);
                 }
             }
             
@@ -230,7 +234,7 @@ pub unsafe fn init_buddy_system(
                 let zone_end = end_pfn.min(dma32_end_pfn);
                 if zone_end > zone_start {
                     let zone = &mut ZONES[ZoneType::Dma32 as usize];
-                    init_zone_buddy(zone, zone_start, zone_end);
+                    init_zone_buddy_filtered(zone, zone_start, zone_end, max_pfn);
                 }
             }
             
@@ -240,7 +244,7 @@ pub unsafe fn init_buddy_system(
                 let zone_end = end_pfn.min(max_pfn);
                 if zone_end > zone_start {
                     let zone = &mut ZONES[ZoneType::Normal as usize];
-                    init_zone_buddy(zone, zone_start, zone_end);
+                    init_zone_buddy_filtered(zone, zone_start, zone_end, max_pfn);
                 }
             }
             
@@ -298,6 +302,62 @@ pub fn memblock_used_memory() -> u64 {
 #[inline]
 fn phys_to_virt(phys: u64) -> u64 {
     phys + crate::config::DIRECT_MAP_OFFSET
+}
+
+#[inline]
+fn pfn_overlaps_reserved(pfn: u64) -> bool {
+    let base = pfn.saturating_mul(PAGE_SIZE);
+    let end = base.saturating_add(PAGE_SIZE);
+
+    for idx in 0..memblock_reserved_region_count() {
+        let Some(region) = memblock_reserved_region(idx) else {
+            continue;
+        };
+        if region.size == 0 {
+            continue;
+        }
+        let region_end = region.base.saturating_add(region.size);
+        if base < region_end && end > region.base {
+            return true;
+        }
+    }
+
+    false
+}
+
+unsafe fn init_zone_buddy_filtered(
+    zone: &mut Zone,
+    start_pfn: u64,
+    end_pfn: u64,
+    max_pfn: u64,
+) {
+    let end_pfn = end_pfn.min(max_pfn);
+    if start_pfn >= end_pfn {
+        return;
+    }
+
+    let mut run_start: Option<u64> = None;
+    let mut pfn = start_pfn;
+
+    while pfn < end_pfn {
+        let reserved = pfn_overlaps_reserved(pfn);
+        if reserved {
+            if let Some(start) = run_start.take() {
+                if pfn > start {
+                    init_zone_buddy(zone, start, pfn);
+                }
+            }
+        } else if run_start.is_none() {
+            run_start = Some(pfn);
+        }
+        pfn += 1;
+    }
+
+    if let Some(start) = run_start {
+        if end_pfn > start {
+            init_zone_buddy(zone, start, end_pfn);
+        }
+    }
 }
 
 /// 打印初始化状态
