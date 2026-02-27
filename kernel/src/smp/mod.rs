@@ -5,12 +5,22 @@ use crate::interrupt;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use crate::{info, ok, warn, kprint, kprintln};
 
+const APIC_ID_MAP_SLOTS: usize = if crate::config::MAX_APIC_IDS > 0 {
+    crate::config::MAX_APIC_IDS
+} else {
+    1
+};
+const CPU_ID_UNMAPPED: usize = usize::MAX;
+
 /// CPU ID 分配器（BSP 固定为 0，AP 从 1 开始）
 static NEXT_CPU_ID: AtomicUsize = AtomicUsize::new(1);
 /// 检测到的 CPU 总数（来自 ACPI/平台枚举，含 BSP）
 static DETECTED_CPU_COUNT: AtomicUsize = AtomicUsize::new(1);
 /// 真正在线并完成初始化的 CPU 数（初始仅 BSP）
 static ONLINE_CPU_COUNT: AtomicUsize = AtomicUsize::new(1);
+/// APIC ID -> 逻辑 CPU ID 映射表（255 以内 APIC ID 直接索引）
+static APIC_ID_TO_CPU_ID: [AtomicUsize; APIC_ID_MAP_SLOTS] =
+    [const { AtomicUsize::new(CPU_ID_UNMAPPED) }; APIC_ID_MAP_SLOTS];
 /// AP 启动阶段诊断（单次串行启动 AP，故全局单槽足够）
 static AP_BOOT_PROBE_CPU_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static AP_BOOT_PROBE_STAGE: AtomicU32 = AtomicU32::new(0);
@@ -21,6 +31,41 @@ pub(crate) fn alloc_cpu_id() -> usize {
 
 pub(crate) fn mark_cpu_online() -> usize {
     ONLINE_CPU_COUNT.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+#[inline]
+pub fn register_cpu_id_for_apic(apic_id: u32, cpu_id: usize) {
+    let idx = apic_id as usize;
+    if idx < APIC_ID_MAP_SLOTS {
+        APIC_ID_TO_CPU_ID[idx].store(cpu_id, Ordering::Release);
+    }
+}
+
+#[inline]
+pub fn register_current_cpu(cpu_id: usize) {
+    if interrupt::apic_initialized() {
+        register_cpu_id_for_apic(interrupt::local_apic_id(), cpu_id);
+    } else {
+        register_cpu_id_for_apic(0, cpu_id);
+    }
+}
+
+/// 当前 CPU 的逻辑 ID（BSP=0，AP 从 1 开始）
+pub fn current_cpu_id() -> usize {
+    if !interrupt::apic_initialized() {
+        return 0;
+    }
+
+    let apic_id = interrupt::local_apic_id() as usize;
+    if apic_id >= APIC_ID_MAP_SLOTS {
+        return 0;
+    }
+    let cpu_id = APIC_ID_TO_CPU_ID[apic_id].load(Ordering::Acquire);
+    if cpu_id == CPU_ID_UNMAPPED {
+        0
+    } else {
+        cpu_id
+    }
 }
 
 pub(crate) fn ap_boot_probe_reset() {
@@ -55,17 +100,28 @@ pub fn detected_cpu_count() -> usize {
 
 /// 自动检测并启动其他 CPU 核心
 pub fn init(direct_map_base: u64, expected_cpus: usize) {
-    DETECTED_CPU_COUNT.store(expected_cpus.max(1), Ordering::SeqCst);
+    let capped_expected = expected_cpus
+        .clamp(1, crate::config::MAX_CPUS.max(1));
+    DETECTED_CPU_COUNT.store(capped_expected, Ordering::SeqCst);
+    register_current_cpu(0);
 
-    if expected_cpus <= 1 {
-        kprintln!("[diag][smp] skip smp init: expected_cpus={}", expected_cpus);
+    if expected_cpus > capped_expected {
+        warn!(
+            "SMP: capped expected CPUs from {} to {} by config MAX_CPUS",
+            expected_cpus,
+            capped_expected
+        );
+    }
+
+    if capped_expected <= 1 {
+        kprintln!("[diag][smp] skip smp init: expected_cpus={}", capped_expected);
         return;
     }
 
     use crate::drivers::acpi;
     if let Some(madt) = acpi::find_table::<acpi::Madt>() {
-        info!("SMP: Booting {} APs...", expected_cpus - 1);
-        boot_aps(madt, direct_map_base, expected_cpus);
+        info!("SMP: Booting {} APs...", capped_expected - 1);
+        boot_aps(madt, direct_map_base, capped_expected);
     }
 }
 

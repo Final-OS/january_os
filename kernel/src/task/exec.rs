@@ -24,7 +24,11 @@ const PT_LOAD: u32 = 1;
 const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 
-const DEFAULT_USER_STACK_PAGES: u64 = 8;
+const DEFAULT_USER_STACK_PAGES: u64 = if crate::config::USER_STACK_INIT_PAGES > 0 {
+    crate::config::USER_STACK_INIT_PAGES
+} else {
+    1
+};
 
 pub type ExecImageProvider = fn(path: &str) -> Option<&'static [u8]>;
 

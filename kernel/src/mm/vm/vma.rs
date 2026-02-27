@@ -5,7 +5,14 @@
 // 使用 MapleTree 进行 O(log n) 的区间查找和间隙搜索
 // ============================================================================
 
-use super::layout::{PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
+use super::layout::{
+    PAGE_SIZE,
+    USER_MMAP_BASE,
+    USER_SPACE_END,
+    USER_SPACE_START,
+    USER_STACK_SIZE,
+    USER_STACK_TOP,
+};
 use crate::libs::mptree::MapleTree;
 use crate::sync::IrqSpinLock;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -342,7 +349,7 @@ impl Mm {
 
         // 设置默认地址布局 (用户空间: 0 - 0x7FFFFFFFFFFF)
         // mmap 区域从高地址向下增长
-        self.mmap_base = 0x7FFF_F000_0000;
+        self.mmap_base = USER_MMAP_BASE;
         self.mmap_legacy_base = self.mmap_base;
     }
 
@@ -395,10 +402,11 @@ impl Mm {
     fn find_free_area_nolock(&self, hint: u64, size: u64) -> Option<u64> {
         let size = page_align_up(size) as usize;
         let mut hint = page_align_up(hint) as usize;
-        let limit = 0x7FFF_FFFF_F000usize; // 用户空间上限
+        let user_start = USER_SPACE_START as usize;
+        let limit = USER_SPACE_END.saturating_sub(PAGE_SIZE) as usize; // 用户空间上限（最后一页起始）
 
-        if hint == 0 {
-            hint = PAGE_SIZE as usize; // 避免 NULL 指针区域
+        if hint == 0 || hint < user_start {
+            hint = user_start;
         }
 
         self.vma_tree

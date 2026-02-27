@@ -65,16 +65,19 @@ pub const STACK_GUARD_SIZE: u64 = PAGE_SIZE;
 // =============================================================================
 
 /// 用户空间最大地址 (规范地址边界)
-pub const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
+pub const USER_SPACE_END: u64 = config::USER_SPACE_END;
 
 /// 用户空间起始地址 (NULL 指针保护区之后)
-pub const USER_SPACE_START: u64 = 0x0000_0000_0040_0000; // 4 MB
+pub const USER_SPACE_START: u64 = config::USER_SPACE_START;
 
 /// 用户栈顶地址
-pub const USER_STACK_TOP: u64 = 0x0000_7FFF_FFFF_F000;
+pub const USER_STACK_TOP: u64 = config::USER_STACK_TOP;
 
-/// 用户栈默认大小 (8 MB)
-pub const USER_STACK_SIZE: u64 = 8 * 1024 * 1024;
+/// 用户栈最大可扩展大小
+pub const USER_STACK_SIZE: u64 = config::USER_STACK_SIZE;
+
+/// mmap 默认起始基址
+pub const USER_MMAP_BASE: u64 = config::USER_MMAP_BASE;
 
 // =============================================================================
 // 地址转换辅助函数

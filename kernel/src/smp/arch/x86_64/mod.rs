@@ -282,6 +282,8 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
         interrupt::init_ap(cpu_id, kernel_stack_top, local_apic_base, direct_map_base).unwrap();
     }
     crate::smp::ap_boot_probe_set_stage(4);
+    crate::smp::register_current_cpu(cpu_id);
+    crate::smp::ap_boot_probe_set_stage(41);
     interrupt::enable_interrupts();
     crate::smp::ap_boot_probe_set_stage(5);
     crate::mm::paging::register_tlb_shootdown_cpu();

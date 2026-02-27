@@ -311,15 +311,21 @@ static TLB_SHOOTDOWN_ACKED: AtomicU32 = AtomicU32::new(0);
 static TLB_SHOOTDOWN_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// 参与 TLB shootdown 的 CPU（按 APIC ID 跟踪）
+const TLB_TARGET_CAPACITY: usize = if crate::config::MAX_APIC_IDS > 0 {
+    crate::config::MAX_APIC_IDS
+} else {
+    1
+};
+
 struct TlbShootdownTargets {
-    apic_ids: [u32; 256],
+    apic_ids: [u32; TLB_TARGET_CAPACITY],
     count: usize,
 }
 
 impl TlbShootdownTargets {
     const fn new() -> Self {
         Self {
-            apic_ids: [0; 256],
+            apic_ids: [0; TLB_TARGET_CAPACITY],
             count: 0,
         }
     }
@@ -409,7 +415,7 @@ pub fn register_tlb_shootdown_cpu() {
     }
 }
 
-fn collect_tlb_shootdown_targets(exclude_apic_id: u32, out: &mut [u32; 256]) -> usize {
+fn collect_tlb_shootdown_targets(exclude_apic_id: u32, out: &mut [u32; TLB_TARGET_CAPACITY]) -> usize {
     let targets = TLB_SHOOTDOWN_TARGETS.lock();
     let mut count = 0usize;
     for idx in 0..targets.count {
@@ -466,7 +472,7 @@ fn shootdown_other_cpus() {
     }
 
     let self_apic_id = interrupt::local_apic_id();
-    let mut target_apic_ids = [0u32; 256];
+    let mut target_apic_ids = [0u32; TLB_TARGET_CAPACITY];
     let target_count = collect_tlb_shootdown_targets(self_apic_id, &mut target_apic_ids);
     if target_count == 0 {
         return;
@@ -556,7 +562,7 @@ pub fn run_tlb_probe_on_other_cpus(addr: u64, expected: u64) -> (u32, u32, u32) 
     }
 
     let self_apic_id = interrupt::local_apic_id();
-    let mut target_apic_ids = [0u32; 256];
+    let mut target_apic_ids = [0u32; TLB_TARGET_CAPACITY];
     let target_count_usize = collect_tlb_shootdown_targets(self_apic_id, &mut target_apic_ids);
     if target_count_usize == 0 {
         return (0, 0, 0);

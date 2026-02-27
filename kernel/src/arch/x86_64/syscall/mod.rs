@@ -25,7 +25,11 @@ struct RawSyscallFrame {
 }
 
 /// 每 CPU 的 syscall 内核栈槽位（按 APIC ID 索引）。
-const SYSCALL_RSP_SLOT_COUNT: usize = 256;
+const SYSCALL_RSP_SLOT_COUNT: usize = if crate::config::MAX_APIC_IDS > 0 {
+    crate::config::MAX_APIC_IDS
+} else {
+    1
+};
 
 #[unsafe(no_mangle)]
 static SYSCALL_KERNEL_RSP_SLOTS: [AtomicU64; SYSCALL_RSP_SLOT_COUNT] =

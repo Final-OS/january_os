@@ -15,6 +15,7 @@ struct Config {
     qemu: QemuConfig,
     memory: MemoryConfig,
     kernel: KernelConfig,
+    user: UserConfig,
     limits: LimitsConfig,
     memory_model: MemoryModelConfig,
     iommu: IommuConfig,
@@ -72,8 +73,24 @@ struct KernelConfig {
 }
 
 #[derive(Debug, Deserialize)]
+struct UserConfig {
+    space_start: String,
+    space_end: String,
+    stack_top: String,
+    stack_size: u64,
+    stack_init_pages: u64,
+    mmap_base: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct LimitsConfig {
     max_cpus: u32,
+    #[serde(default = "default_max_apic_ids")]
+    max_apic_ids: u32,
+}
+
+fn default_max_apic_ids() -> u32 {
+    256
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,9 +208,18 @@ impl Config {
             "kernel.direct_map_offset" => Some(self.kernel.direct_map_offset.clone()),
             "kernel.heap_init_size" => Some(self.kernel.heap_init_size.to_string()),
             "kernel.stack_size" => Some(self.kernel.stack_size.to_string()),
+
+            // user
+            "user.space_start" => Some(self.user.space_start.clone()),
+            "user.space_end" => Some(self.user.space_end.clone()),
+            "user.stack_top" => Some(self.user.stack_top.clone()),
+            "user.stack_size" => Some(self.user.stack_size.to_string()),
+            "user.stack_init_pages" => Some(self.user.stack_init_pages.to_string()),
+            "user.mmap_base" => Some(self.user.mmap_base.clone()),
             
             // limits
             "limits.max_cpus" => Some(self.limits.max_cpus.to_string()),
+            "limits.max_apic_ids" => Some(self.limits.max_apic_ids.to_string()),
             
             // memory_model
             "memory_model.type" => Some(self.memory_model.model_type.clone()),
@@ -227,6 +253,9 @@ impl Config {
         let iommu_enabled = self.iommu.mode != "off";
         let iommu_auto = self.iommu.mode == "auto";
         let iommu_passthrough = self.iommu.translation == "passthrough";
+        let max_cpus = self.limits.max_cpus.max(1);
+        let max_apic_ids = self.limits.max_apic_ids.max(1);
+        let user_stack_init_pages = self.user.stack_init_pages.max(1);
 
         format!(
 r#"//! Auto-generated from os_cfg.toml - DO NOT EDIT
@@ -251,8 +280,17 @@ pub const DIRECT_MAP_OFFSET: u64 = {};
 pub const KERNEL_HEAP_INIT_SIZE: u64 = {};
 pub const KERNEL_STACK_SIZE: u64 = {};
 
+// [user]
+pub const USER_SPACE_START: u64 = {};
+pub const USER_SPACE_END: u64 = {};
+pub const USER_STACK_TOP: u64 = {};
+pub const USER_STACK_SIZE: u64 = {};
+pub const USER_STACK_INIT_PAGES: u64 = {};
+pub const USER_MMAP_BASE: u64 = {};
+
 // [limits]
 pub const MAX_CPUS: usize = {};
+pub const MAX_APIC_IDS: usize = {};
 
 // [memory_model]
 pub const MEMORY_MODEL_UMA: bool = {};
@@ -283,7 +321,14 @@ pub const DEBUG_PAGE_ALLOC_TRACE: bool = {};
             self.kernel.direct_map_offset,
             self.kernel.heap_init_size,
             self.kernel.stack_size,
-            self.limits.max_cpus,
+            self.user.space_start,
+            self.user.space_end,
+            self.user.stack_top,
+            self.user.stack_size,
+            user_stack_init_pages,
+            self.user.mmap_base,
+            max_cpus,
+            max_apic_ids,
             is_uma,
             !is_uma,
             numa_nodes,
@@ -322,9 +367,18 @@ pub const DEBUG_PAGE_ALLOC_TRACE: bool = {};
         println!("  direct_map_offset = {}", self.kernel.direct_map_offset);
         println!("  heap_init_size = {}", self.kernel.heap_init_size);
         println!("  stack_size = {}", self.kernel.stack_size);
+
+        println!("[user]");
+        println!("  space_start = {}", self.user.space_start);
+        println!("  space_end = {}", self.user.space_end);
+        println!("  stack_top = {}", self.user.stack_top);
+        println!("  stack_size = {}", self.user.stack_size);
+        println!("  stack_init_pages = {}", self.user.stack_init_pages);
+        println!("  mmap_base = {}", self.user.mmap_base);
         
         println!("[limits]");
         println!("  max_cpus = {}", self.limits.max_cpus);
+        println!("  max_apic_ids = {}", self.limits.max_apic_ids);
         
         println!("[memory_model]");
         println!("  type = {}", self.memory_model.model_type);

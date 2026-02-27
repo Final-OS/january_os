@@ -6,6 +6,12 @@ january_os 当前开发状态与功能完成情况。
 
 ## 最近更新 🆕
 
+**2026-02-27 - Batch 6 推进（SMP 调度安全与基础负载均衡）**
+- ✅ 将 `task::Processor` 从全局单例改为 per-CPU 槽位，消除多核 `current` 覆盖风险
+- ✅ 将 `IDLE_CONTEXT_SP` 改为 per-CPU 槽位，消除多核共享 idle 栈指针风险
+- ✅ 调度器升级为 per-CPU runqueue，并接入基础 work-stealing 路径
+- ⚠️ 调度策略仍为基础版本，后续继续推进可观测性、窃取策略与拓扑感知优化
+
 **2026-02-27 - Batch 5 继续推进（mmap/munmap 最小匿名映射）**
 - ✅ 新增 `mmap(9)/munmap(11)` syscall 最小实现并接入分发
 - ✅ 支持匿名映射 VMA 建立、`munmap` 区间拆分/回收、与缺页分配链路联动
@@ -183,9 +189,9 @@ january_os 当前开发状态与功能完成情况。
 
 ### 调度器
 - **Round-Robin 调度器** - 基础时间片轮转
-- **就绪队列** - VecDeque 实现
+- **Per-CPU 就绪队列** - 本地队列 + 基础 work-stealing
 - **调度框架** - schedule() 函数
-- **空闲上下文** - 支持从非任务上下文调度
+- **空闲上下文** - per-CPU idle context 切换
 
 ### 系统调用
 - **syscall/sysret 机制** - x86_64 Long Mode 系统调用
@@ -213,7 +219,9 @@ january_os 当前开发状态与功能完成情况。
 ### 调度器增强
 - [ ] EEVDF 算法实现
 - [ ] 实时调度策略
-- [ ] 负载均衡
+- [ ] 负载均衡（当前已具备基础 work-stealing，待策略优化）
+- [ ] 调度可观测性（每 CPU 队列长度、窃取成功率、迁移统计）
+- [ ] CPU 亲和性与拓扑感知（NUMA/缓存局部性）
 
 ### 系统调用扩展
 - [x] fork/clone - 进程创建（最小语义）

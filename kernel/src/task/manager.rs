@@ -295,7 +295,7 @@ fn reap_orphan_zombie_process(pid: ProcessId) {
     };
     fs::drop_process_fds(pid.0);
 
-    let removed_ready = SCHEDULER.lock().remove_tasks_by_pid(pid);
+    let removed_ready = SCHEDULER.remove_tasks_by_pid(pid);
     crate::kprintln!(
         "[diag][task] auto reap orphan process: pid={} removed_tasks={} removed_ready={}",
         pid.0,
@@ -469,7 +469,7 @@ pub fn reap_observed_child(child_pid: ProcessId) -> Option<(ProcessId, i32)> {
     }
     fs::drop_process_fds(child_pid.0);
 
-    let removed_ready = SCHEDULER.lock().remove_tasks_by_pid(child_pid);
+    let removed_ready = SCHEDULER.remove_tasks_by_pid(child_pid);
 
     let released_mappings = exec_mappings.len();
     if released_mappings > 0 {
@@ -585,7 +585,7 @@ pub fn spawn_kernel_thread(name: &str, entry: extern "C" fn()) -> Arc<Mutex<Task
     );
 
     // 添加到就绪队列
-    SCHEDULER.lock().add_task(task_ref.clone());
+    SCHEDULER.add_task(task_ref.clone());
 
     task_ref
 }
@@ -686,7 +686,7 @@ pub fn exit_current_process(exit_code: i32) {
     }
 
     // 清理同进程残留的就绪队列项，避免退出任务再次被调度。
-    let removed_ready = SCHEDULER.lock().remove_tasks_by_pid(pid);
+    let removed_ready = SCHEDULER.remove_tasks_by_pid(pid);
     crate::kprintln!(
         "[diag][task] exit_group: pid={} code={} tasks={} removed_ready={} exec_pages={}",
         pid.0,

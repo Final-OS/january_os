@@ -759,7 +759,7 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
                 process.mark_zombie();
             }
 
-            let removed_ready = task::scheduler::SCHEDULER.lock().remove_tasks_by_pid(pid);
+            let removed_ready = task::scheduler::SCHEDULER.remove_tasks_by_pid(pid);
             crate::kprintln!(
                 "[diag][signal] terminate pid={} sig={} removed_ready={}",
                 pid.0,
@@ -785,7 +785,7 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
                 }
             }
 
-            let removed_ready = task::scheduler::SCHEDULER.lock().remove_tasks_by_pid(pid);
+            let removed_ready = task::scheduler::SCHEDULER.remove_tasks_by_pid(pid);
             crate::kprintln!(
                 "[diag][signal] stop pid={} blocked_tasks={} removed_ready={}",
                 pid.0,
@@ -814,7 +814,7 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
                 }
 
                 if should_queue {
-                    task::scheduler::SCHEDULER.lock().add_task(task_ref);
+                    task::scheduler::SCHEDULER.add_task(task_ref);
                     resumed_tasks = resumed_tasks.saturating_add(1);
                 }
             }
