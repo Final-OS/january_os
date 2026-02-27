@@ -68,7 +68,7 @@ batch_size = 16
 [kernel]
 # 内核加载物理地址:
 # 与链接脚本保持一致；通常为 1MB 以避开低端保留区域。
-phys_base = "0x100000"
+phys_base = "0x0100000"
 # 直接映射区偏移:
 # 线性映射 = phys + direct_map_offset，用于快速物理内存访问。
 direct_map_offset = "0xFFFF880000000000"
