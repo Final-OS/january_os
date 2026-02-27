@@ -10,6 +10,8 @@ use crate::drivers::tty::serial_read_char;
 use crate::interrupt;
 use crate::mm;
 use crate::{info, kprint, kprintln};
+use alloc::string::String;
+use alloc::vec::Vec;
 
 const CMD_BUF_SIZE: usize = 256;
 const HISTORY_SIZE: usize = 16;
@@ -422,9 +424,9 @@ fn execute_command(cmd: &[u8]) {
     let cmd_str = core::str::from_utf8(cmd).unwrap_or("");
     let cmd_str = cmd_str.trim();
 
-    let mut parts = cmd_str.split_whitespace();
-    let command = parts.next().unwrap_or("");
-    let args = parts;
+    let parts: Vec<&str> = cmd_str.split_whitespace().collect();
+    let command = parts.first().copied().unwrap_or("");
+    let args = if parts.len() > 1 { &parts[1..] } else { &[] };
 
     match command {
         "" => {}
@@ -485,8 +487,8 @@ fn execute_command(cmd: &[u8]) {
     }
 }
 
-fn execute_mm_command(mut args: core::str::SplitWhitespace) {
-    let subcommand = args.next().unwrap_or("help");
+fn execute_mm_command(args: &[&str]) {
+    let subcommand = args.first().copied().unwrap_or("help");
 
     match subcommand {
         "status" => {
@@ -607,8 +609,8 @@ fn execute_mm_command(mut args: core::str::SplitWhitespace) {
     }
 }
 
-fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
-    let subcommand = args.next().unwrap_or("help");
+fn execute_drivers_command(args: &[&str]) {
+    let subcommand = args.first().copied().unwrap_or("help");
 
     match subcommand {
         "acpi" => {
@@ -766,8 +768,8 @@ fn execute_drivers_command(mut args: core::str::SplitWhitespace) {
     }
 }
 
-fn execute_hotkey_command(mut args: core::str::SplitWhitespace) {
-    let subcommand = args.next().unwrap_or("help");
+fn execute_hotkey_command(args: &[&str]) {
+    let subcommand = args.first().copied().unwrap_or("help");
 
     match subcommand {
         "status" => {
@@ -795,7 +797,7 @@ fn execute_hotkey_command(mut args: core::str::SplitWhitespace) {
             }
         }
         "inject" => {
-            let name = args.next().unwrap_or("");
+            let name = args.get(1).copied().unwrap_or("");
             match parse_hotkey_name(name) {
                 Some(event) => {
                     drivers::input::inject_hotkey_event(event);
@@ -870,8 +872,8 @@ fn execute_usb_command() {
     drivers::usb::xhci::dump_devices();
 }
 
-fn execute_test_command(mut args: core::str::SplitWhitespace) {
-    let subcommand = args.next().unwrap_or("help");
+fn execute_test_command(args: &[&str]) {
+    let subcommand = args.first().copied().unwrap_or("help");
 
     match subcommand {
         "timer" => {
@@ -885,6 +887,9 @@ fn execute_test_command(mut args: core::str::SplitWhitespace) {
                 interrupt::timer_ticks() - start
             );
         }
-        other => crate::tests::run(other),
+        _ => {
+            let routed = args.join(" ");
+            crate::tests::run(routed.as_str());
+        }
     }
 }

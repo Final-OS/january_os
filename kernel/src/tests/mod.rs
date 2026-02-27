@@ -15,7 +15,10 @@ pub fn run(name: &str) {
     let parts: Vec<&str> = name.split_whitespace().collect();
 
     match parts.get(0).copied() {
-        Some("task") => task::run(),
+        Some("task") => {
+            let filter = parts.get(1).copied();
+            task::run_with_filter(filter);
+        }
         Some("libs") => {
             let filter = parts.get(1).copied();
             libs::run_with_filter(filter);
@@ -32,7 +35,8 @@ pub fn run(name: &str) {
         Some("help") | _ => {
             kprintln!("Usage: test <subcommand>");
             kprintln!("Subcommands:");
-            kprintln!("  task           - Kernel thread context switch");
+            kprintln!("  task [name]    - Task subsystem tests");
+            kprintln!("                   Available: switch, wait, usermode, all");
             kprintln!("  libs [name]    - Data structure tests");
             kprintln!("                   Available: rbtree, lru, rdtree, btree, mptree, rcu");
             kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator");
