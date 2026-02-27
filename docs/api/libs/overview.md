@@ -56,7 +56,7 @@ for (key, value) in tree.iter() {
 
 ### 详细文档
 
-参见 [RbTree API](libs/rbtree.md)
+参见 [RbTree API](./rbtree.md)
 
 ---
 
@@ -115,7 +115,7 @@ for (key, value) in cache.iter() {
 
 ### 详细文档
 
-参见 [LRU Cache API](libs/lru.md)
+参见 [LRU Cache API](./lru.md)
 
 ---
 
@@ -164,7 +164,7 @@ rcu.call_rcu(|| {
 
 ### 详细文档
 
-参见 [RCU API](libs/rcu.md)
+参见 [RCU API](./rcu.md)
 
 ---
 
@@ -211,7 +211,7 @@ for (index, value) in tree.iter() {
 
 ### 详细文档
 
-参见 [Radix Tree API](libs/rdtree.md)
+参见 [Radix Tree API](./rdtree.md)
 
 ---
 
@@ -284,7 +284,7 @@ tree.clear();
 
 ### 详细文档
 
-参见 [B-Tree API](libs/btree.md)
+参见 [B-Tree API](./btree.md)
 
 ---
 
@@ -336,7 +336,7 @@ for (range, value) in tree.iter() {
 
 ### 详细文档
 
-参见 [Maple Tree API](libs/mptree.md)
+参见 [Maple Tree API](./mptree.md)
 
 ---
 
@@ -456,12 +456,12 @@ make run
 
 ## 相关文档
 
-- [RbTree API](libs/rbtree.md)
-- [LRU Cache API](libs/lru.md)
-- [RCU API](libs/rcu.md)
-- [Radix Tree API](libs/rdtree.md)
-- [B-Tree API](libs/btree.md)
-- [Maple Tree API](libs/mptree.md)
+- [RbTree API](./rbtree.md)
+- [LRU Cache API](./lru.md)
+- [RCU API](./rcu.md)
+- [Radix Tree API](./rdtree.md)
+- [B-Tree API](./btree.md)
+- [Maple Tree API](./mptree.md)
 
 ---
 

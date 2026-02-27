@@ -9,6 +9,7 @@
 UEFI Firmware → Bootloader → Kernel Entry
 ```
 - [引导流程](./boot.md) - UEFI 启动、内核加载、进入高半地址空间
+- [系统设计与规划](./architecture-plan.md) - 当前架构分层、设计图与阶段计划
 
 ### 2. 核心基础设施
 ```

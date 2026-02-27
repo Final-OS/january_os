@@ -8,6 +8,8 @@
   - 用途：快速拉齐当前项目全貌（架构、构建入口、变更影响、文档覆盖）。
 - `skills/january-os-docs-skills-sync`
   - 用途：每次改动后，强制执行 docs/skills 同步更新流程。
+- `skills/january-os-architecture-planner`
+  - 用途：输出“当前架构 + 设计图 + 阶段计划 + 子系统细分”的统一规划文档。
 
 ## 变更后的必做动作
 

@@ -93,6 +93,10 @@ export default defineConfig({
                     text: "实现详解",
                     items: [
                         { text: "概述", link: "/implementation/overview" },
+                        {
+                            text: "系统设计与规划",
+                            link: "/implementation/architecture-plan",
+                        },
                         { text: "引导流程", link: "/implementation/boot" },
                         {
                             text: "内存初始化",

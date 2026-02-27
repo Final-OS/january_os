@@ -1,0 +1,4 @@
+interface:
+    display_name: "January OS Architecture Planner"
+    short_description: "Generate architecture diagrams and phased system plans."
+    default_prompt: "Use $january-os-architecture-planner to map the current january_os architecture and produce an executable roadmap."
