@@ -10,7 +10,7 @@ use crate::mm::page::page::{PageFlags, pfn_to_page, page_to_pfn};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::page::buddy::{alloc_page, free_page};
 use super::paging::PageTableManager;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================================
 // 页错误类型
@@ -330,16 +330,9 @@ fn handle_file_fault(ctx: &FaultContext) -> FaultResult {
         return FaultResult::Retry;
     }
 
-    // 兜底：尚未接入统一页缓存时，文件缺页仍退化为零页映射，避免直接崩溃。
-    if FILE_FAULT_FALLBACK_WARNED
-        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-        .is_ok()
-    {
-        crate::warn!(
-            "vm fault: file-backed page fallback to zero page (page cache/VFS path not ready)"
-        );
-    }
-    map_zero_page(ctx, false)
+    // 尚未接入统一 VFS/page cache 时，不允许静默降级为零页。
+    // 文件后备缺页必须显式失败，避免语义错误被掩盖。
+    FaultResult::Sigbus
 }
 
 /// 处理写保护错误 (Copy-on-Write)
@@ -518,7 +511,6 @@ static FAULT_STATS: FaultStats = FaultStats {
     cow_faults: AtomicU64::new(0),
     stack_grows: AtomicU64::new(0),
 };
-static FILE_FAULT_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// 获取页错误统计
 pub fn get_fault_stats() -> &'static FaultStats {

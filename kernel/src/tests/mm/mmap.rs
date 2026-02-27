@@ -1,5 +1,6 @@
 use super::{fail, mm_step, pass};
 use crate::kprintln;
+use crate::mm;
 use crate::syscall;
 use crate::syscall::handlers::{sys_mmap, sys_munmap};
 
@@ -217,6 +218,51 @@ pub(super) fn run() {
     .is_err()
     {
         return fail("mmap", "munmap with unaligned address must fail");
+    }
+
+    mm_step("mmap: case=file_fault_without_backend_returns_sigbus");
+    let mut local_mm = mm::Mm::uninit();
+    let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
+    local_mm.init(cr3);
+
+    // 在用户高地址挑一个页，要求当前页表里未映射，避免误判。
+    let mut probe = local_mm.mmap_base.saturating_sub(mm::PAGE_SIZE);
+    let pt_mgr = unsafe { mm::PageTableManager::new(cr3, mm::DIRECT_MAP_OFFSET) };
+    let mut found = None;
+    for _ in 0..2048 {
+        if probe < mm::USER_SPACE_START {
+            break;
+        }
+        if pt_mgr.translate_addr(probe).is_none() {
+            found = Some(probe);
+            break;
+        }
+        probe = probe.saturating_sub(mm::PAGE_SIZE);
+    }
+    let Some(fault_addr) = found else {
+        return fail("mmap", "unable to find unmapped user page for file-fault regression");
+    };
+
+    let vma_start = fault_addr;
+    let vma_end = fault_addr.saturating_add(mm::PAGE_SIZE);
+    let mut file_like_flags = mm::VmFlags::empty();
+    file_like_flags.set(mm::VmFlags::READ);
+    let info = mm::VmaInfo::new(file_like_flags);
+    if !local_mm.insert_vma(vma_start, vma_end, info) {
+        return fail("mmap", "failed to insert synthetic file-backed VMA");
+    }
+
+    let mm_ptr: *mut mm::Mm = &mut local_mm;
+    let mut fault_ctx = mm::FaultContext::new(fault_addr, 0, mm_ptr, mm::DIRECT_MAP_OFFSET);
+    let result = mm::handle_page_fault(&mut fault_ctx);
+    kprintln!(
+        "[test/mm][mmap][file-fault] addr={:#x} result={:?} expected={:?}",
+        fault_addr,
+        result,
+        mm::FaultResult::Sigbus
+    );
+    if result != mm::FaultResult::Sigbus {
+        return fail("mmap", "file-backed fault fallback must return Sigbus without backend");
     }
 
     pass("mmap");
