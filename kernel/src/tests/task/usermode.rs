@@ -1,4 +1,5 @@
 use super::task_step;
+use crate::fs;
 use crate::task;
 use crate::{error, kprintln, ok, warn};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -6,6 +7,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 static USERMODE_REAPED_PID: AtomicUsize = AtomicUsize::new(0);
 static USERMODE_REAPED_CODE: AtomicUsize = AtomicUsize::new(usize::MAX);
 const USERMODE_WAIT_TIMEOUT: usize = usize::MAX - 1;
+const TEST_EXEC_PATH: &str = "/tests/task/test_user.elf";
 
 #[cfg(target_arch = "x86_64")]
 static USERMODE_TEST_ELF: &[u8] = include_bytes!("assets/test_user.elf");
@@ -17,6 +19,11 @@ pub(super) fn run() {
 
 #[cfg(target_arch = "x86_64")]
 pub(super) fn run_with_label(result_label: &str) -> bool {
+    if let Err(errno) = fs::register_static_file(TEST_EXEC_PATH, USERMODE_TEST_ELF) {
+        error!("task: usermode FAIL (register_static_file errno={})", errno);
+        return false;
+    }
+
     #[inline(never)]
     fn fail_and_exit_current_task(code: i32) -> ! {
         task::exit_current_task(code);
@@ -27,7 +34,6 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
     }
 
     extern "C" fn usermode_entry_thread() {
-        const TEST_EXEC_PATH: &str = "/tests/task/test_user.elf";
         kprintln!("[test/task] usermode_entry: begin path={}", TEST_EXEC_PATH);
 
         let load_plan = match task::build_elf_load_plan(USERMODE_TEST_ELF) {

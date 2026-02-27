@@ -6,10 +6,17 @@ january_os 当前开发状态与功能完成情况。
 
 ## 最近更新 🆕
 
+**2026-02-27 - Batch 3/5 最小闭环推进（exec 后端 + 文件 I/O 子集）**
+- ✅ 新增最小内核文件后端（静态只读文件注册 + 按进程 fd 表）
+- ✅ 接入 `open/read/close` syscall 最小实现（`O_RDONLY` 路径）
+- ✅ `execve` 镜像加载改为可注册 provider，并默认接入文件后端读取
+- ✅ 进程回收时自动释放 fd 表，避免僵尸/孤儿路径遗留句柄状态
+- ✅ 新增 task regression 子用例，覆盖文件后端 `open/read/close/EBADF` 关键路径
+
 **2026-02-27 - 执行链路清理（移除内核内置 demo/硬编码路径）**
 - ✅ 移除 shell `runuser` 命令及其演示链路代码
 - ✅ 移除 `execve` 内核内置镜像硬编码（`/init`、`/bin/demo_user`）
-- ✅ `sys_execve` 调整为通过通用镜像加载后端入口获取镜像；当前后端未接入时返回 `-ENOENT`
+- ✅ `sys_execve` 调整为通过通用镜像加载后端入口获取镜像
 - ✅ 同步更新 syscall 与阶段计划文档，避免行为描述失真
 
 **2026-02-13 - Batch 3 第四阶段补强（runuser 全链路稳定性）**
@@ -179,8 +186,10 @@ january_os 当前开发状态与功能完成情况。
 - **系统调用表** - Linux ABI 兼容（300+ 系统调用定义）
 - **参数传递** - SyscallArgs 结构体
 - **已实现的系统调用**:
+  - read/open/close - 最小只读文件 I/O（静态后端）
   - getpid/getppid/gettid - 进程/线程 ID 查询
   - exit/exit_group - 进程退出
+  - execve - ELF 加载、PT_LOAD 映射、ring3 切换（最小镜像后端）
   - wait4 - 等待子进程（支持 PID/PGRP 过滤、WNOHANG/WUNTRACED/WCONTINUED、__WNOTHREAD/__WCLONE/__WALL、rusage 运行时统计）
   - write - 输出到控制台（桩实现）
 
@@ -200,9 +209,9 @@ january_os 当前开发状态与功能完成情况。
 - [ ] 负载均衡
 
 ### 系统调用扩展
-- [ ] fork/clone - 进程创建
-- [ ] execve - 程序执行
-- [ ] 文件 I/O 系统调用
+- [x] fork/clone - 进程创建（最小语义）
+- [x] execve - 程序执行（最小闭环）
+- [ ] 文件 I/O 系统调用（已完成 `open/read/close` 子集）
 - [ ] 内存管理系统调用（mmap/munmap）
 - [ ] 网络系统调用（socket/bind/listen）
 

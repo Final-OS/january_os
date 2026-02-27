@@ -8,6 +8,7 @@ use crate::config;
 use crate::drivers::tty::fbcon;
 use crate::drivers::tty::{serial, serial_enable_rx_interrupt, SerialWriter};
 use crate::drivers::{self, acpi};
+use crate::fs;
 use crate::interrupt;
 use crate::mm::{self, MemoryRegion};
 use crate::smp;
@@ -153,6 +154,11 @@ pub fn init_kernel(info: &BootInfo) {
         "[diag][boot] step11: interrupts_enabled={}",
         if_after_step11
     );
+
+    // 11a. 初始化最小文件后端
+    kprintln!("[diag][boot] step11a: fs::init begin");
+    fs::init();
+    kprintln!("[diag][boot] step11a: fs::init done");
 
     // 12. 初始化任务子系统
     kprintln!("[diag][boot] step12: task::init begin");

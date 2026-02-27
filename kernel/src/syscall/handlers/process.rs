@@ -391,7 +391,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         Some(image) => image,
         None => {
             crate::kprintln!(
-                "[diag][execve] executable image backend unavailable path={}",
+                "[diag][execve] executable image not found path={}",
                 path
             );
             return err(ENOENT);

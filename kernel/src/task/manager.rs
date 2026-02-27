@@ -7,6 +7,7 @@ use super::id::{ProcessId, TaskId};
 use super::process::{Process, ProcessStatus};
 use super::scheduler::SCHEDULER;
 use super::task::{Task, TaskStatus};
+use crate::fs;
 use crate::libs::rdtree::RadixTree;
 use crate::sync::Mutex;
 use alloc::string::String;
@@ -292,6 +293,7 @@ fn reap_orphan_zombie_process(pid: ProcessId) {
         }
         manager.remove_tasks_by_process(pid)
     };
+    fs::drop_process_fds(pid.0);
 
     let removed_ready = SCHEDULER.lock().remove_tasks_by_pid(pid);
     crate::kprintln!(
@@ -465,6 +467,7 @@ pub fn reap_observed_child(child_pid: ProcessId) -> Option<(ProcessId, i32)> {
         let _ = manager.remove_process_by_pid(child_pid)?;
         let _ = manager.remove_tasks_by_process(child_pid);
     }
+    fs::drop_process_fds(child_pid.0);
 
     let removed_ready = SCHEDULER.lock().remove_tasks_by_pid(child_pid);
 

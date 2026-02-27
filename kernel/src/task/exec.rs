@@ -11,6 +11,7 @@ use core::cmp;
 use core::mem::size_of;
 
 use crate::mm;
+use crate::sync::Mutex;
 use crate::syscall::{E2BIG, EBUSY, EINVAL, ENOENT, ENOMEM};
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
@@ -24,6 +25,10 @@ const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 
 const DEFAULT_USER_STACK_PAGES: u64 = 8;
+
+pub type ExecImageProvider = fn(path: &str) -> Option<&'static [u8]>;
+
+static EXEC_IMAGE_PROVIDER: Mutex<Option<ExecImageProvider>> = Mutex::new(None);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -494,9 +499,30 @@ pub fn build_elf_load_plan(image: &[u8]) -> Result<ExecLoadPlan, i32> {
 
 /// 加载可执行镜像。
 ///
-/// 当前内核尚未接入文件系统镜像加载后端，默认返回 `None`。
-pub fn load_exec_image(_path: &str) -> Option<&'static [u8]> {
-    None
+/// 当前通过可注册的提供者获取镜像，后续可平滑替换为 VFS 后端。
+pub fn load_exec_image(path: &str) -> Option<&'static [u8]> {
+    let provider = *EXEC_IMAGE_PROVIDER.lock();
+    provider.and_then(|resolve| resolve(path))
+}
+
+/// 注册可执行镜像提供者。
+///
+/// 返回值为先前提供者（若存在）。
+pub fn register_exec_image_provider(provider: ExecImageProvider) -> Option<ExecImageProvider> {
+    let mut slot = EXEC_IMAGE_PROVIDER.lock();
+    let previous = *slot;
+    *slot = Some(provider);
+    previous
+}
+
+/// 清除当前可执行镜像提供者。
+///
+/// 返回值为先前提供者（若存在）。
+pub fn clear_exec_image_provider() -> Option<ExecImageProvider> {
+    let mut slot = EXEC_IMAGE_PROVIDER.lock();
+    let previous = *slot;
+    *slot = None;
+    previous
 }
 
 pub fn preview_pt_load_mapping(plan: &ExecLoadPlan) -> ExecMapPreview {

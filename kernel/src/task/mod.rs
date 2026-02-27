@@ -13,10 +13,13 @@ pub use id::{ProcessId, TaskId};
 pub use manager::find_process_by_pid;
 pub use exec::{
     build_elf_load_plan,
+    clear_exec_image_provider,
     load_exec_image,
     preview_pt_load_mapping,
+    register_exec_image_provider,
     rollback_exec_mappings,
     stage_pt_load_mappings,
+    ExecImageProvider,
     ExecLoadPlan,
     ExecMapPreview,
     ExecMappedPage,
@@ -40,6 +43,7 @@ pub use task::{Task, TaskStatus};
 /// 初始化任务子系统
 pub fn init() {
     crate::info!("Initializing Task subsystem...");
+    register_exec_image_provider(crate::fs::read_static_file);
     manager::init();
     crate::ok!("Task subsystem initialized.");
 }

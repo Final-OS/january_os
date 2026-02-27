@@ -1,9 +1,11 @@
 //! 系统调用通用实现
 
 mod common;
+mod file;
 mod process;
 
 pub(crate) use common::sys_ni;
+pub(crate) use file::{sys_close, sys_open, sys_read};
 pub(crate) use process::{
     sys_clone,
     sys_execve,

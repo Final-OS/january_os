@@ -1,5 +1,7 @@
 use super::{task_step, usermode};
+use crate::fs;
 use crate::mm;
+use crate::syscall::EBADF;
 use crate::{error, kprintln, ok};
 
 unsafe extern "C" {
@@ -151,6 +153,77 @@ pub(super) fn run() {
         max_pfn_resv_base,
         max_pfn_resv_end,
     );
+
+    task_step("regression: verify fs static backend open/read/close");
+    const REGRESSION_FS_PATH: &str = "/tests/task/fs_regression.txt";
+    const REGRESSION_FS_DATA: &[u8] = b"fs-regression-ok";
+    const REGRESSION_FS_PID: usize = 0xfeed;
+
+    if let Err(errno) = fs::register_static_file(REGRESSION_FS_PATH, REGRESSION_FS_DATA) {
+        error!("task: regression FAIL (register_static_file errno={})", errno);
+        return;
+    }
+
+    let fd = match fs::open_for_pid(REGRESSION_FS_PID, REGRESSION_FS_PATH, 0, 0) {
+        Ok(fd) => fd,
+        Err(errno) => {
+            error!("task: regression FAIL (open_for_pid errno={})", errno);
+            return;
+        }
+    };
+
+    let mut buf = [0u8; 32];
+    let first = match fs::read_for_pid(REGRESSION_FS_PID, fd, &mut buf[..6]) {
+        Ok(n) => n,
+        Err(errno) => {
+            error!("task: regression FAIL (read_for_pid first errno={})", errno);
+            return;
+        }
+    };
+    let second = match fs::read_for_pid(REGRESSION_FS_PID, fd, &mut buf[6..]) {
+        Ok(n) => n,
+        Err(errno) => {
+            error!("task: regression FAIL (read_for_pid second errno={})", errno);
+            return;
+        }
+    };
+    let total = first.saturating_add(second);
+    kprintln!(
+        "[test/task][regression][fs] path={} fd={} first_read={} second_read={} total={}",
+        REGRESSION_FS_PATH,
+        fd,
+        first,
+        second,
+        total,
+    );
+
+    if &buf[..total] != REGRESSION_FS_DATA {
+        error!("task: regression FAIL (fs read content mismatch)");
+        return;
+    }
+
+    if let Err(errno) = fs::close_for_pid(REGRESSION_FS_PID, fd) {
+        error!("task: regression FAIL (close_for_pid errno={})", errno);
+        return;
+    }
+
+    match fs::read_for_pid(REGRESSION_FS_PID, fd, &mut buf[..1]) {
+        Ok(_) => {
+            error!("task: regression FAIL (read should fail after close)");
+            return;
+        }
+        Err(errno) if errno == EBADF => {}
+        Err(errno) => {
+            error!(
+                "task: regression FAIL (unexpected errno after close, got={}, want={})",
+                errno,
+                EBADF
+            );
+            return;
+        }
+    }
+
+    fs::drop_process_fds(REGRESSION_FS_PID);
 
     task_step("regression: run usermode exec after reserve verification");
     if !usermode::run_with_label("usermode regression") {

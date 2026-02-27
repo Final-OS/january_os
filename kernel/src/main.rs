@@ -29,6 +29,7 @@ pub mod config {
 mod arch;
 mod drivers;
 mod error;
+mod fs;
 mod interrupt;
 mod libs;
 mod log;
