@@ -26,7 +26,7 @@ struct RawSyscallFrame {
 
 /// 进入用户态前写入：`syscall` 指令进入 ring0 后使用的内核栈指针。
 ///
-/// 说明：当前实现先服务于 runuser/ring3 演示链路，后续会收敛到 per-cpu/per-task
+/// 说明：当前实现使用单槽位内核栈指针，后续会收敛到 per-cpu/per-task
 /// 的正式上下文管理。
 #[unsafe(no_mangle)]
 static mut SYSCALL_KERNEL_RSP_SLOT: u64 = 0;

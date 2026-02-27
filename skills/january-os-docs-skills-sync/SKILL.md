@@ -21,6 +21,8 @@ This skill enforces post-change information hygiene. It maps changed code/config
 - Every meaningful code/config change must include a docs/skills impact decision.
 - Any API or externally observable behavior change must update related pages in `docs/api/**` in the same change.
 - Any architecture-specific behavior change must update related pages in `docs/api/arch/**` and `docs/implementation/**` in the same change.
+- Keep runtime kernel code (`kernel/src/**` except `kernel/src/tests/**`) free of test/demo-only logic, assets, and naming.
+- Keep kernel tests under `kernel/src/tests/**` and organize by subsystem folders instead of flat file growth.
 - If no docs/skills update is needed, explain exactly why in final report.
 - Do not leave `docs/.vitepress/config.ts` stale when adding/renaming docs pages.
 - Keep skill metadata (`SKILL.md` frontmatter and `agents/openai.yaml`) consistent.

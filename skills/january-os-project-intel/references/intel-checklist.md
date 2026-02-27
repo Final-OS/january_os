@@ -46,3 +46,5 @@ cd docs && pnpm build
 - Explicitly list unknowns and next command/file needed to close each unknown.
 - Explicitly check whether API/behavior changes are synchronized to `docs/api/**`.
 - Explicitly check whether architecture-specific code is located under `boot/<arch>/` or `kernel/src/**/arch/<arch>/`.
+- Explicitly check whether runtime kernel code contains test/demo-only logic, assets, or naming.
+- Explicitly check whether `kernel/src/tests/**` is organized by subsystem directories (avoid flat growth).

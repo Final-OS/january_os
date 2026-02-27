@@ -13,8 +13,7 @@ pub use id::{ProcessId, TaskId};
 pub use manager::find_process_by_pid;
 pub use exec::{
     build_elf_load_plan,
-    builtin_exec_paths,
-    lookup_builtin_exec_image,
+    load_exec_image,
     preview_pt_load_mapping,
     rollback_exec_mappings,
     stage_pt_load_mappings,

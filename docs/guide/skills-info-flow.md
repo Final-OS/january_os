@@ -16,6 +16,7 @@
 1. 收集变更范围（`git status --short`）。
 2. 根据路径映射补齐 docs 更新（实现/API/指南/进度）。
 3. 若工作流或结构发生变化，同步更新 `skills/` 下相关 `SKILL.md` 与 `references/`。
+3.1 测试与运行时代码隔离：测试/演示代码与资源仅放在 `kernel/src/tests/**`，并按子系统分目录管理，避免平铺。
 4. 进行最小验证：
    - 代码相关：`make build`
    - 文档相关：`cd docs && pnpm build`

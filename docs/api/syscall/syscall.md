@@ -207,12 +207,8 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet
 - 已接入 `PT_LOAD + user stack` 真实映射（按段 PTE 权限），并在失败路径执行回滚。
 - 映射目标页若已存在映射，返回 `-EBUSY`（避免覆盖现有地址空间）。
 - 已接入用户态 `iretq` 入口帧构建骨架（`rip/rsp/cs/ss/rflags`）。
-- 当前内置可解析镜像路径：`/init`、`/bin/demo_user`。
-- 会记录本次 exec 请求到进程可观测状态（path/argc/envc/seq）。
-- 当前仍返回 `-ENOSYS`：ring3 实际切换尚未并入 `sys_execve` 主路径，映射在本阶段会回滚。
-- 可通过 shell `runuser` 命令验证 ring3 + syscall 最小链路（演示路径）。
-- `runuser` 演示链路已可稳定完成 `ring3 -> sys_exit(60) -> 任务回收 -> 返回 shell`。
-- 映射阶段已补充页级诊断日志（含冲突检测、映射/回滚、syscall 入口与返回日志）。
+- 当前未接入可执行镜像加载后端：`sys_execve` 在加载入口返回 `-ENOENT`。
+- ELF 解析、映射规划与用户态切换代码已保留，待文件系统镜像加载后端接入后启用。
 
 #### sys_getpgid (121) / sys_getpgrp (111)
 

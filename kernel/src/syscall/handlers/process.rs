@@ -387,13 +387,12 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         }
     };
 
-    let image = match task::lookup_builtin_exec_image(path.as_str()) {
+    let image = match task::load_exec_image(path.as_str()) {
         Some(image) => image,
         None => {
             crate::kprintln!(
-                "[diag][execve] image not found path={} supported={:?}",
-                path,
-                task::builtin_exec_paths()
+                "[diag][execve] executable image backend unavailable path={}",
+                path
             );
             return err(ENOENT);
         }

@@ -22,6 +22,13 @@
 - 架构专用代码必须放在架构目录：
   - `boot/<arch>/`
   - `kernel/src/**/arch/<arch>/`
+- 内核生产路径（`kernel/src/**`，不含 `kernel/src/tests/**`）禁止引入测试/演示代码与资源：
+  - 禁止内置测试镜像、`include_bytes!` 测试资产、测试专用分支。
+  - 禁止引入 `demo`/`test` 等测试语义命名到内核运行时命令、路径、日志、常量（测试模块除外）。
+- 测试代码必须放在 `kernel/src/tests/**`，内核运行时模块不得承载测试逻辑。
+- `kernel/src/tests/**` 必须按子系统分类建目录，禁止长期平铺：
+  - 例如：`kernel/src/tests/mm/`、`kernel/src/tests/task/`、`kernel/src/tests/libs/`
+  - 测试资源随子系统放置（如 `kernel/src/tests/task/assets/`），不得混放在运行时代码目录。
 - 禁止手改生成文件：`kernel/src/generated/**`（应通过 `make build-kernel` 或 `cfg generate` 生成）。
 - 若最终判断不需要更新 docs/skills，必须在交付说明中给出明确理由。
 
@@ -46,6 +53,9 @@
   - 相关 `docs/implementation/*.md`
 - `kernel/src/task/**`, `kernel/src/syscall/**`, `kernel/src/sync/**`
   - 相关 `docs/api/task/`, `docs/api/syscall/`, `docs/api/sync/`
+- `kernel/src/tests/**`
+  - 保持 tests 目录按子系统分层，新增测试时先归类目录再落文件
+  - 如测试变更影响对外行为/命令，补充对应 `docs/api/**` 或 `docs/progress/**`
 - `tools/cfg/**`, `os_cfg.toml`
   - `docs/implementation/cfg-tool.md`
   - `docs/guide/configuration.md`

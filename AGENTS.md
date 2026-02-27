@@ -20,12 +20,16 @@
 - Follow idiomatic Rust style with `rustfmt` defaults (4-space indentation, trailing commas where useful).
 - Use `snake_case` for modules/functions, `CamelCase` for types/traits, and `SCREAMING_SNAKE_CASE` for constants.
 - Keep architecture-specific code under `kernel/src/arch/x86_64/`; avoid mixing generic and arch code.
+- Keep test/demo-only logic out of runtime kernel paths (`kernel/src/**` except `kernel/src/tests/**`).
+- Avoid `demo` / `test` wording in runtime kernel command names, paths, constants, and logs.
 - Keep changes minimal and localized; prefer extending existing modules over creating parallel patterns.
 
 ## Testing Guidelines
 - There is no dedicated automated kernel test suite yet; validate changes with:
   - `make build`
   - `make run` (or `make run-gui`)
+- Put kernel test code and test assets under `kernel/src/tests/**` only.
+- Organize `kernel/src/tests/**` by subsystem directories (for example `tests/mm/`, `tests/task/`, `tests/libs/`) instead of long-term flat layout.
 - For config-related changes, run `make config` and verify regenerated files under `kernel/src/generated/`.
 - For docs-only changes, run `cd docs && pnpm build` before opening a PR.
 

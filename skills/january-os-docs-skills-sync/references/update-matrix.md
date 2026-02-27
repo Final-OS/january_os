@@ -9,6 +9,8 @@ If a file in the left column changes, evaluate and update every target in the ri
 - API or externally visible behavior changes require same-change updates to `docs/api/**`.
 - Architecture-specific code changes require same-change updates to `docs/api/arch/**` and relevant `docs/implementation/**`.
 - Architecture-specific code should be placed under `boot/<arch>/` or `kernel/src/**/arch/<arch>/`; if not, add refactor item and document temporary rationale.
+- Runtime kernel code (`kernel/src/**` except `kernel/src/tests/**`) should not carry test/demo-only code, assets, or naming.
+- Kernel tests should reside under `kernel/src/tests/**` and be grouped by subsystem directories.
 
 ## Path -> Required Updates
 
@@ -38,6 +40,11 @@ If a file in the left column changes, evaluate and update every target in the ri
 
 - `kernel/src/task/**`, `kernel/src/syscall/**`, `kernel/src/sync/**`
   - impacted pages under `docs/api/task/`, `docs/api/syscall/`, `docs/api/sync/`
+
+- `kernel/src/tests/**`
+  - keep tests organized by subsystem folders (`tests/mm/`, `tests/task/`, `tests/libs/`, etc.)
+  - keep test assets under matching test subtree (for example `tests/task/assets/`)
+  - if test-only path is promoted to runtime path, require explicit rationale and follow-up refactor item
 
 - `tools/cfg/**`, `os_cfg.toml`
   - `docs/implementation/cfg-tool.md`

@@ -2,9 +2,9 @@
 //!
 //! 通过 shell `test <name>` 命令触发。
 
-mod task_test;
-mod libs_test;
-mod mm_test;
+mod task;
+mod libs;
+mod mm;
 
 use crate::{kprintln, ok, error};
 use alloc::vec::Vec;
@@ -15,19 +15,19 @@ pub fn run(name: &str) {
     let parts: Vec<&str> = name.split_whitespace().collect();
 
     match parts.get(0).copied() {
-        Some("task") => task_test::run(),
+        Some("task") => task::run(),
         Some("libs") => {
             let filter = parts.get(1).copied();
-            libs_test::run_with_filter(filter);
+            libs::run_with_filter(filter);
         }
         Some("mm") => {
             let filter = parts.get(1).copied();
-            mm_test::run_with_filter(filter);
+            mm::run_with_filter(filter);
         }
         Some("all") => {
-            task_test::run();
-            libs_test::run();
-            mm_test::run();
+            task::run();
+            libs::run();
+            mm::run();
         }
         Some("help") | _ => {
             kprintln!("Usage: test <subcommand>");

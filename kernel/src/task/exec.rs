@@ -25,10 +25,6 @@ const PF_W: u32 = 2;
 
 const DEFAULT_USER_STACK_PAGES: u64 = 8;
 
-const BUILTIN_DEMO_EXEC_PATH: &str = "/bin/demo_user";
-const BUILTIN_INIT_EXEC_PATH: &str = "/init";
-static BUILTIN_DEMO_ELF: &[u8] = include_bytes!("assets/demo_user.elf");
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct Elf64Header {
@@ -342,17 +338,6 @@ fn copy_segment_page_data(
     Ok(())
 }
 
-pub fn builtin_exec_paths() -> &'static [&'static str] {
-    &[BUILTIN_DEMO_EXEC_PATH, BUILTIN_INIT_EXEC_PATH]
-}
-
-pub fn lookup_builtin_exec_image(path: &str) -> Option<&'static [u8]> {
-    match path {
-        BUILTIN_DEMO_EXEC_PATH | BUILTIN_INIT_EXEC_PATH => Some(BUILTIN_DEMO_ELF),
-        _ => None,
-    }
-}
-
 pub fn build_elf_load_plan(image: &[u8]) -> Result<ExecLoadPlan, i32> {
     let header = read_struct_unaligned::<Elf64Header>(image, 0).ok_or(EINVAL)?;
 
@@ -499,6 +484,13 @@ pub fn build_elf_load_plan(image: &[u8]) -> Result<ExecLoadPlan, i32> {
         stack_top: mm::USER_STACK_TOP,
         stack_pages: DEFAULT_USER_STACK_PAGES,
     })
+}
+
+/// 加载可执行镜像。
+///
+/// 当前内核尚未接入文件系统镜像加载后端，默认返回 `None`。
+pub fn load_exec_image(_path: &str) -> Option<&'static [u8]> {
+    None
 }
 
 pub fn preview_pt_load_mapping(plan: &ExecLoadPlan) -> ExecMapPreview {
