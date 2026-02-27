@@ -1,0 +1,11 @@
+[package]
+name = "january_os-boot-riscv64"
+version = { workspace = true }
+edition = { workspace = true }
+
+[[bin]]
+name = "january_os-boot-riscv64"
+path = "src/main.rs"
+
+[dependencies]
+uefi = { workspace = true }

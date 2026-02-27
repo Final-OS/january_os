@@ -13,7 +13,7 @@
 #![allow(mismatched_lifetime_syntaxes)]
 #![allow(clippy::all)]
 #![feature(alloc_error_handler)]
-#![feature(abi_x86_interrupt)]
+#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 extern crate alloc;
 
@@ -38,6 +38,7 @@ mod sync;
 mod syscall;
 mod task;
 mod tests;
+mod virt;
 
 // 新增模块
 mod boot;

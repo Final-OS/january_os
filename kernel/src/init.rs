@@ -11,6 +11,7 @@ use crate::drivers::{self, acpi};
 use crate::interrupt;
 use crate::mm::{self, MemoryRegion};
 use crate::smp;
+use crate::virt;
 use crate::{error, info, kprint, kprintln, ok, warn};
 use core::fmt::Write;
 
@@ -109,6 +110,11 @@ pub fn init_kernel(info: &BootInfo) {
     kprintln!("[diag][boot] step9: init_iommu begin");
     init_iommu();
     kprintln!("[diag][boot] step9: init_iommu done");
+
+    // 9a. 虚拟化环境探测（为后续虚拟化组件留接口）
+    kprintln!("[diag][boot] step9a: detect_virtualization begin");
+    detect_virtualization();
+    kprintln!("[diag][boot] step9a: detect_virtualization done");
 
     // 10. 设备驱动初始化
     kprintln!("[diag][boot] step10: init_drivers begin");
@@ -390,6 +396,31 @@ fn init_iommu() {
         mm::TranslationMode::Translate => "Translate",
     };
     ok!("IOMMU: {} | Mode: {}", iommu_type, trans_mode);
+}
+
+fn detect_virtualization() {
+    let virt = virt::detect();
+    if !virt.is_virtualized {
+        info!("Virtualization: Bare metal");
+        return;
+    }
+
+    let hv = match virt.hypervisor {
+        virt::HypervisorType::None => "None",
+        virt::HypervisorType::Kvm => "KVM",
+        virt::HypervisorType::Xen => "Xen",
+        virt::HypervisorType::HyperV => "Hyper-V",
+        virt::HypervisorType::Vmware => "VMware",
+        virt::HypervisorType::Qemu => "QEMU/TCG",
+        virt::HypervisorType::Unknown => "Unknown",
+    };
+
+    ok!(
+        "Virtualization: {} | vendor='{}' | nested={}",
+        hv,
+        virt.vendor_str(),
+        virt.nested_supported
+    );
 }
 
 fn init_drivers() {

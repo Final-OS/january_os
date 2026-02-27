@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "boot/x86_64",
+    "boot/aarch64",
+    "boot/riscv64",
 ]
 exclude = [
     "kernel",

@@ -65,7 +65,10 @@ impl WaitQueue {
 
     #[inline]
     pub fn sleeping_count(&self) -> usize {
-        self.queue.iter().filter(|entry| entry.is_sleeping()).count()
+        self.queue
+            .iter()
+            .filter(|entry| entry.is_sleeping())
+            .count()
     }
 
     #[inline]
@@ -85,10 +88,7 @@ impl WaitQueue {
     }
 
     pub fn dequeue(&mut self, token: usize) -> Option<WaitEntry> {
-        let index = self
-            .queue
-            .iter()
-            .position(|entry| entry.token == token)?;
+        let index = self.queue.iter().position(|entry| entry.token == token)?;
         self.queue.remove(index)
     }
 
@@ -135,16 +135,15 @@ impl WaitQueue {
             }
         }
 
-        self.queue
-            .retain(|entry| entry.state == WaitState::Sleeping);
+        // Keep interrupted entries so callers can observe and dequeue them explicitly.
+        self.queue.retain(|entry| entry.state != WaitState::Woken);
 
         woke
     }
 
     pub fn drain_woken(&mut self) -> usize {
         let before = self.queue.len();
-        self.queue
-            .retain(|entry| entry.state == WaitState::Sleeping);
+        self.queue.retain(|entry| entry.state != WaitState::Woken);
         before - self.queue.len()
     }
 

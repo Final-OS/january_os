@@ -2,74 +2,108 @@
 
 本文给出 january_os 的“内核架构级”规划，重点覆盖：
 
-1. 内核形态路线（宏内核 / 微内核 / 混合内核）
-2. 子系统职责、接口与实现顺序
-3. 内核全貌图与阶段里程碑
+1. 内核形态路线（模块化宏内核）
+2. 三架构目标（x86_64 / aarch64 / riscv64）
+3. 虚拟化能力目标（guest 优先，host 能力预留）
+4. 子系统职责、接口与实现顺序
+5. 内核全貌图与阶段里程碑
 
 ---
 
-## 1. 内核形态路线选择
+## 1. 内核形态路线（已冻结）
 
-### 1.1 三种形态对比
+架构决策：
+- **采用模块化宏内核（Modular Monolithic Kernel）**
+- **采用组件化操作系统组织方式（Componentized OS）**
+- **目标架构：x86_64、aarch64、riscv64（三线同构）**
+- **虚拟化：先完善 guest 兼容，再分阶段补齐 host 能力**
 
-| 方案 | 优点 | 缺点 | 适配本项目结论 |
-|------|------|------|----------------|
-| 宏内核（Monolithic） | 性能高、调用路径短、调试链路简单 | 可靠性隔离弱，模块崩溃影响全局 | **当前最合适**（仓库已是该形态） |
-| 微内核（Microkernel） | 隔离强、容错性好、服务可重启 | IPC 成本高、早期实现复杂度高 | 作为远期研究方向 |
-| 混合内核（Hybrid） | 兼顾性能与隔离，可渐进演化 | 边界设计复杂，接口治理成本高 | **推荐目标形态**（中长期） |
+约束边界：
+- 核心组件（调度、内存、中断、syscall、设备框架）统一编译进 `kernel.bin`
+- 子系统通过稳定内部接口解耦，而非通过用户态服务拆分
 
-### 1.2 规划结论
+多架构约束：
+- 通用逻辑放在 `kernel/src/<subsystem>/`，禁止掺杂架构细节
+- 架构差异必须下沉到 `kernel/src/**/arch/{x86_64,aarch64,riscv64}/`
+- 同一子系统对三架构保持一致接口形状，避免分叉 API
 
-短中期采用：
-- **模块化宏内核（Monolithic-first）**
-- 在不破坏性能前提下预留“服务化边界”（Hybrid-ready）
-
-长期演化：
-- 将高风险模块（文件系统、网络协议栈、部分驱动）逐步服务化
-- 保留核心调度、内存管理、中断路径在内核态
+虚拟化约束：
+- `virt/` 作为统一虚拟化能力入口（探测、能力描述、后续扩展）
+- 先做“运行在虚拟机内”的稳定性与可观测性，再做“管理虚拟机”
 
 ---
 
 ## 2. 内核全貌图
 
-### 2.1 逻辑分层图
+### 2.1 内核全貌图（组件化宏内核 / `kernel.bin` 视角）
 
 ```text
-┌───────────────────────────────────────────────────────────────┐
-│                           User Space                          │
-│   libc / shell / app / daemon / tests                         │
-└───────────────────────────────┬───────────────────────────────┘
-                                │ syscall/abi
-┌───────────────────────────────▼───────────────────────────────┐
-│                       Syscall & ABI Layer                     │
-│  table / dispatch / args check / errno / compat               │
-└───────────────────────────────┬───────────────────────────────┘
+User Space
+  (shell / app / test)
+          │
+          │ syscall / fault / signal
+          ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         kernel.bin (Monolithic)                          │
+│                                                                          │
+│  [接口入口组件]                                                          │
+│  syscall::dispatch | trap/irq entry | vfs entry | device entry           │
+│                                                                          │
+│  [核心业务组件]                                                          │
+│  task+scheduler | mm | vfs/fs | ipc | net | security                     │
+│                                                                          │
+│  [基础运行组件]                                                          │
+│  interrupt+timer+smp | driver framework | iommu | power                  │
+│                                                                          │
+│  [虚拟化组件]                                                            │
+│  virt::detect | hypervisor caps | pv hooks (planned)                     │
+│                                                                          │
+│  [公共支撑组件]                                                          │
+│  sync | libs | log | config | diagnostics                                │
+└───────────────────────────────┬──────────────────────────────────────────┘
+                                │ stable arch interface
+                                ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                       Arch Backends (same shape)                         │
+│   x86_64 backend | aarch64 backend | riscv64 backend                     │
+└───────────────────────────────┬──────────────────────────────────────────┘
                                 │
-┌───────────────────────────────▼───────────────────────────────┐
-│                           Kernel Core                         │
-│ task/sched | mm | vfs | ipc | net | security | time           │
-└──────────────┬───────────────┬───────────────┬────────────────┘
-               │               │               │
-┌──────────────▼───────┐ ┌─────▼──────────┐ ┌─▼─────────────────┐
-│ Interrupt/Timer/SMP   │ │ Device Model   │ │ Arch HAL (x86_64) │
-│ gdt/idt/apic/ipi      │ │ bus+drivers    │ │ cpu/mmu/io/asm    │
-└──────────────┬────────┘ └─────┬──────────┘ └─┬─────────────────┘
-               │                │               │
-┌──────────────▼────────────────▼───────────────▼────────────────┐
-│                    Hardware / Firmware (UEFI)                  │
-└─────────────────────────────────────────────────────────────────┘
+                                ▼
+Hardware / Hypervisor
+(Bare Metal | KVM | QEMU | VMware | Hyper-V | Xen)
 ```
 
-### 2.2 启动与运行主路径图
+### 2.2 整体架构图（构建 + 启动 + 运行）
 
 ```text
-UEFI
- -> Bootloader (load kernel + build BootInfo + page tables)
- -> kernel::_start
- -> init::init_kernel
- -> mm + interrupt + smp + drivers + task
- -> shell/user process
- -> syscall loop
+Source Tree
+  boot/<arch> + kernel + tools/cfg + os_cfg.toml
+          │
+          │ make build
+          ▼
+Build Outputs
+  boot EFI (<arch>) + kernel.bin (<arch>) + ESP layout
+          │
+          │ UEFI handoff (BootInfo + page tables)
+          ▼
+Runtime Image
+  ┌────────────────────────────────────────────────────────────┐
+  │  Bootloader (独立 EFI 二进制)                             │
+  │  - 加载 kernel.bin                                        │
+  │  - 采集硬件信息并交接                                     │
+  └──────────────────────────┬─────────────────────────────────┘
+                             │
+                             ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │  kernel.bin（统一内核镜像，组件化组织）                   │
+  │  - init 顺序启动组件                                      │
+  │  - 组件间走内核内部稳定接口                               │
+  │  - arch backend 按目标架构选择                            │
+  │  - virt 组件统一处理虚拟化能力探测                        │
+  └──────────────────────────┬─────────────────────────────────┘
+                             │
+                             ▼
+  User Processes + Syscall ABI
 ```
 
 ---
@@ -284,8 +318,12 @@ pub fn check_inode_perm(task: &Task, inode: &Inode, mask: u32) -> Result<(), Sec
 ### M4：网络与安全闭环（v0.4-v0.5）
 - socket 可用，最小权限模型生效
 
-### M5：混合内核演化（v1.0+）
-- 高风险模块服务化试点（可选）
+### M5：三架构对齐 + 虚拟化增强（v1.0+）
+- x86_64 / aarch64 / riscv64 组件接口对齐
+- guest 虚拟化能力稳定，host 能力按阶段启用
+
+### M6：组件化成熟（v1.0+）
+- 完成组件边界稳定化与接口版本治理
 
 ---
 

@@ -24,8 +24,8 @@ macro_rules! container_of {
 // 常量 (从配置导入)
 // ============================================================================
 
-/// 最大 CPU 数量
-pub const MAX_CPUS: usize = config::MAX_CPUS;
+/// PCP 存储容量上限（编译期）
+const CPU_PAGESETS_CAPACITY: usize = config::MAX_CPUS;
 
 /// PCP 高水位默认值
 const PCP_HIGH_DEFAULT: u32 = config::PCP_HIGH_WATERMARK;
@@ -222,9 +222,9 @@ impl PerCpuPageset {
 // ============================================================================
 
 /// 所有 CPU 的 PCP
-static mut CPU_PAGESETS: [PerCpuPageset; MAX_CPUS] = {
+static mut CPU_PAGESETS: [PerCpuPageset; CPU_PAGESETS_CAPACITY] = {
     const UNINIT: PerCpuPageset = PerCpuPageset::new();
-    [UNINIT; MAX_CPUS]
+    [UNINIT; CPU_PAGESETS_CAPACITY]
 };
 
 /// 当前 CPU 数量
@@ -233,8 +233,11 @@ static NR_CPUS: AtomicU32 = AtomicU32::new(1);
 /// PCP 是否已初始化
 static PCP_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// 临时熔断：PCP 快路径存在页链表损坏问题，先回退到 Buddy 直分配保证稳定性。
-const PCP_TEMP_DISABLED: bool = true;
+/// 临时熔断开关
+///
+/// 历史上 PCP 快路径曾触发过页链表问题。当前实现已修复关键的 CPU 索引初始化边界，
+/// 因此默认开启 PCP。
+const PCP_TEMP_DISABLED: bool = false;
 
 // ============================================================================
 // 初始化
@@ -242,7 +245,7 @@ const PCP_TEMP_DISABLED: bool = true;
 
 /// 初始化 PCP 子系统
 pub fn init_pcp(nr_cpus: u32) {
-    let nr_cpus = nr_cpus.min(MAX_CPUS as u32);
+    let nr_cpus = nr_cpus.clamp(1, CPU_PAGESETS_CAPACITY as u32);
     NR_CPUS.store(nr_cpus, Ordering::SeqCst);
 
     unsafe {
@@ -262,11 +265,16 @@ pub fn pcp_initialized() -> bool {
     PCP_INITIALIZED.load(Ordering::Relaxed)
 }
 
+#[inline]
+fn nr_cpus() -> usize {
+    NR_CPUS.load(Ordering::Relaxed) as usize
+}
+
 /// 获取当前 CPU ID
 #[inline]
 fn current_cpu() -> usize {
     let id = local_apic_id() as usize;
-    if id < MAX_CPUS {
+    if id < nr_cpus() {
         id
     } else {
         0 // Fallback for invalid APIC ID
@@ -350,10 +358,8 @@ pub fn drain_all_pcps() {
         return;
     }
 
-    let nr_cpus = NR_CPUS.load(Ordering::Relaxed) as usize;
-
     unsafe {
-        for cpu in 0..nr_cpus {
+        for cpu in 0..nr_cpus() {
             let pageset = &CPU_PAGESETS[cpu];
 
             for zone_idx in 0..NR_PCP_LISTS {
@@ -419,10 +425,8 @@ pub fn pcp_stats() -> PcpStats {
         return stats;
     }
 
-    let nr_cpus = NR_CPUS.load(Ordering::Relaxed) as usize;
-
     unsafe {
-        for cpu in 0..nr_cpus {
+        for cpu in 0..nr_cpus() {
             let pageset = &CPU_PAGESETS[cpu];
 
             for zone_idx in 0..NR_PCP_LISTS {

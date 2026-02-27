@@ -25,6 +25,8 @@ Deliverables must include:
 
 Return a concise architecture report with these sections:
 - Baseline Snapshot: current implementation status and scope.
+- Multi-Arch Plan: x86_64 / aarch64 / riscv64 split and shared interfaces.
+- Virtualization Plan: guest-first capabilities and host-side roadmap.
 - Design Diagram: boot-to-kernel and subsystem layering.
 - Overall Plan: versioned goals and execution stages.
 - Local Breakdown: per-subsystem status, next work, acceptance signal.
@@ -47,6 +49,7 @@ Return a concise architecture report with these sections:
   - Task/Scheduler/Syscall
   - Drivers
 - Mark empty placeholders explicitly (`fs`, `net`, `security`).
+- Mark per-architecture readiness explicitly (`x86_64`, `aarch64`, `riscv64`).
 
 3. Produce diagram and staged plan.
 - Draw at least one architecture diagram in ASCII.
@@ -66,7 +69,9 @@ Return a concise architecture report with these sections:
 - Prefer repository facts over assumptions.
 - Include exact file paths in conclusions.
 - Distinguish "already implemented" vs "planned".
+- Use the fixed architecture baseline: modular monolithic kernel + componentized OS.
+- Keep target architecture baseline explicit: x86_64 + aarch64 + riscv64.
+- Include virtualization split: guest support first, host capabilities staged.
 - Keep architecture-specific placement rules:
   - `boot/<arch>/`
   - `kernel/src/**/arch/<arch>/`
-
