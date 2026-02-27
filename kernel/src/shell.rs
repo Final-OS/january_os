@@ -12,15 +12,303 @@ use crate::mm;
 use crate::task;
 use crate::{info, kprint, kprintln};
 
+const CMD_BUF_SIZE: usize = 256;
+const HISTORY_SIZE: usize = 16;
+const SHELL_COMMANDS: [&str; 12] = [
+    "shutdown", "poweroff", "reboot", "status", "mm", "drivers", "pci", "usb", "test", "runuser",
+    "hotkey", "help",
+];
+
+#[derive(Clone, Copy)]
+enum EscapeState {
+    None,
+    Esc,
+    Csi,
+    Ss3,
+}
+
+struct ShellState {
+    cmd_buf: [u8; CMD_BUF_SIZE],
+    cmd_len: usize,
+    esc_state: EscapeState,
+
+    history: [[u8; CMD_BUF_SIZE]; HISTORY_SIZE],
+    history_len: [usize; HISTORY_SIZE],
+    history_head: usize,
+    history_count: usize,
+    history_cursor: Option<usize>,
+    draft_buf: [u8; CMD_BUF_SIZE],
+    draft_len: usize,
+}
+
+impl ShellState {
+    const fn new() -> Self {
+        Self {
+            cmd_buf: [0; CMD_BUF_SIZE],
+            cmd_len: 0,
+            esc_state: EscapeState::None,
+            history: [[0; CMD_BUF_SIZE]; HISTORY_SIZE],
+            history_len: [0; HISTORY_SIZE],
+            history_head: 0,
+            history_count: 0,
+            history_cursor: None,
+            draft_buf: [0; CMD_BUF_SIZE],
+            draft_len: 0,
+        }
+    }
+
+    fn history_slot(&self, logical_index: usize) -> usize {
+        (self.history_head + logical_index) % HISTORY_SIZE
+    }
+
+    fn exit_history_browse(&mut self) {
+        self.history_cursor = None;
+        self.draft_len = 0;
+    }
+}
+
+fn print_prompt() {
+    kprint!("> ");
+}
+
+fn redraw_line(state: &ShellState, previous_len: usize) {
+    kprint!("\r> ");
+    for &b in &state.cmd_buf[..state.cmd_len] {
+        kprint!("{}", b as char);
+    }
+
+    if previous_len > state.cmd_len {
+        let clear = previous_len - state.cmd_len;
+        for _ in 0..clear {
+            kprint!(" ");
+        }
+        for _ in 0..clear {
+            kprint!("\x08");
+        }
+    }
+}
+
+fn copy_into(dst: &mut [u8], src: &[u8], len: usize) {
+    let mut i = 0usize;
+    while i < len {
+        dst[i] = src[i];
+        i += 1;
+    }
+}
+
+fn bytes_equal(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0usize;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+fn trim_command_bytes(cmd: &[u8]) -> &[u8] {
+    let mut start = 0usize;
+    let mut end = cmd.len();
+
+    while start < end && cmd[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && cmd[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &cmd[start..end]
+}
+
+fn save_history(state: &mut ShellState, cmd: &[u8]) {
+    let cmd = trim_command_bytes(cmd);
+    if cmd.is_empty() {
+        return;
+    }
+
+    if state.history_count > 0 {
+        let last_idx = state.history_slot(state.history_count - 1);
+        let last_len = state.history_len[last_idx];
+        if last_len == cmd.len() && bytes_equal(&state.history[last_idx][..last_len], cmd) {
+            return;
+        }
+    }
+
+    let slot = if state.history_count < HISTORY_SIZE {
+        let s = state.history_slot(state.history_count);
+        state.history_count += 1;
+        s
+    } else {
+        let s = state.history_head;
+        state.history_head = (state.history_head + 1) % HISTORY_SIZE;
+        s
+    };
+
+    state.history_len[slot] = cmd.len();
+    copy_into(&mut state.history[slot], cmd, cmd.len());
+}
+
+fn load_history_entry(state: &mut ShellState, logical_index: usize) {
+    let slot = state.history_slot(logical_index);
+    let len = state.history_len[slot];
+    state.cmd_len = len;
+    copy_into(&mut state.cmd_buf, &state.history[slot], len);
+}
+
+fn history_up(state: &mut ShellState) {
+    if state.history_count == 0 {
+        return;
+    }
+
+    let previous_len = state.cmd_len;
+    let next_cursor = match state.history_cursor {
+        None => {
+            state.draft_len = state.cmd_len;
+            copy_into(&mut state.draft_buf, &state.cmd_buf, state.cmd_len);
+            state.history_count - 1
+        }
+        Some(0) => 0,
+        Some(c) => c - 1,
+    };
+
+    state.history_cursor = Some(next_cursor);
+    load_history_entry(state, next_cursor);
+    redraw_line(state, previous_len);
+}
+
+fn history_down(state: &mut ShellState) {
+    let Some(cursor) = state.history_cursor else {
+        return;
+    };
+
+    let previous_len = state.cmd_len;
+    if cursor + 1 < state.history_count {
+        let next = cursor + 1;
+        state.history_cursor = Some(next);
+        load_history_entry(state, next);
+    } else {
+        state.history_cursor = None;
+        state.cmd_len = state.draft_len;
+        copy_into(&mut state.cmd_buf, &state.draft_buf, state.draft_len);
+        state.draft_len = 0;
+    }
+    redraw_line(state, previous_len);
+}
+
+fn common_prefix_len(a: &str, b: &str) -> usize {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let mut i = 0usize;
+    let limit = a_bytes.len().min(b_bytes.len());
+    while i < limit {
+        if a_bytes[i] != b_bytes[i] {
+            break;
+        }
+        i += 1;
+    }
+    i
+}
+
+fn set_line_from_str(state: &mut ShellState, line: &str) {
+    let bytes = line.as_bytes();
+    let len = bytes.len().min(CMD_BUF_SIZE - 1);
+    state.cmd_len = len;
+    copy_into(&mut state.cmd_buf, bytes, len);
+}
+
+fn complete_command(state: &mut ShellState) {
+    if state.cmd_len == 0 {
+        kprintln!();
+        for &cmd in &SHELL_COMMANDS {
+            kprint!("{}  ", cmd);
+        }
+        kprintln!();
+        print_prompt();
+        return;
+    }
+
+    if state.cmd_buf[..state.cmd_len]
+        .iter()
+        .any(|&b| b.is_ascii_whitespace())
+    {
+        return;
+    }
+
+    let prefix_len = state.cmd_len;
+    let mut prefix_buf = [0u8; CMD_BUF_SIZE];
+    copy_into(&mut prefix_buf, &state.cmd_buf, prefix_len);
+    let prefix = &prefix_buf[..prefix_len];
+
+    let mut match_count = 0usize;
+    let mut first_match = "";
+    let mut lcp = "";
+
+    for &cmd in &SHELL_COMMANDS {
+        if cmd.as_bytes().starts_with(prefix) {
+            if match_count == 0 {
+                first_match = cmd;
+                lcp = cmd;
+            } else {
+                let n = common_prefix_len(lcp, cmd);
+                lcp = &lcp[..n];
+            }
+            match_count += 1;
+        }
+    }
+
+    if match_count == 0 {
+        return;
+    }
+
+    let previous_len = state.cmd_len;
+    state.exit_history_browse();
+
+    if match_count == 1 {
+        let mut completed = first_match;
+        if completed.len() < CMD_BUF_SIZE - 1 {
+            set_line_from_str(state, completed);
+            if state.cmd_len < CMD_BUF_SIZE - 1 {
+                state.cmd_buf[state.cmd_len] = b' ';
+                state.cmd_len += 1;
+            }
+        } else {
+            completed = &completed[..CMD_BUF_SIZE - 1];
+            set_line_from_str(state, completed);
+        }
+        redraw_line(state, previous_len);
+        return;
+    }
+
+    if lcp.len() > prefix_len {
+        set_line_from_str(state, lcp);
+        redraw_line(state, previous_len);
+        return;
+    }
+
+    kprintln!();
+    for &cmd in &SHELL_COMMANDS {
+        if cmd.as_bytes().starts_with(prefix) {
+            kprint!("{}  ", cmd);
+        }
+    }
+    kprintln!();
+    print_prompt();
+    for &b in &state.cmd_buf[..state.cmd_len] {
+        kprint!("{}", b as char);
+    }
+}
+
 /// 进入 Shell 主循环
 pub fn run() -> ! {
     kprintln!("Commands: shutdown, status, runuser, hotkey, help");
+    kprintln!("Shortcuts: Tab=complete, Up/Down=history");
     kprintln!();
-    kprint!("> ");
+    print_prompt();
 
-    // 命令缓冲区
-    let mut cmd_buf = [0u8; 256];
-    let mut cmd_len = 0usize;
+    let mut shell = ShellState::new();
 
     // 主循环
     loop {
@@ -31,19 +319,19 @@ pub fn run() -> ! {
 
         // 检查键盘输入 (PS/2)
         while let Some(c) = interrupt::read_char() {
-            handle_input(c, &mut cmd_buf, &mut cmd_len);
+            handle_input(c, &mut shell);
             activity = true;
         }
 
         // 检查串口输入 (COM1)
         while let Some(c) = serial_read_char() {
-            handle_input(c, &mut cmd_buf, &mut cmd_len);
+            handle_input(c, &mut shell);
             activity = true;
         }
 
         // 检查 USB 键盘输入
         while let Some(c) = keyboard::read_char() {
-            handle_input(c, &mut cmd_buf, &mut cmd_len);
+            handle_input(c, &mut shell);
             activity = true;
         }
 
@@ -205,31 +493,66 @@ fn execute_runuser_command() {
 }
 
 /// 处理输入字符
-fn handle_input(c: u8, cmd_buf: &mut [u8; 256], cmd_len: &mut usize) {
+fn handle_input(c: u8, state: &mut ShellState) {
+    match state.esc_state {
+        EscapeState::None => {}
+        EscapeState::Esc => {
+            state.esc_state = match c {
+                b'[' => EscapeState::Csi,
+                b'O' => EscapeState::Ss3,
+                _ => EscapeState::None,
+            };
+            return;
+        }
+        EscapeState::Csi | EscapeState::Ss3 => {
+            state.esc_state = EscapeState::None;
+            match c {
+                b'A' => history_up(state),
+                b'B' => history_down(state),
+                _ => {}
+            }
+            return;
+        }
+    }
+
     match c {
+        0x1b => {
+            state.esc_state = EscapeState::Esc;
+        }
         8 | 127 => {
-            // Backspace 或 DEL
-            if *cmd_len > 0 {
-                *cmd_len -= 1;
+            if state.cmd_len > 0 {
+                state.exit_history_browse();
+                state.cmd_len -= 1;
                 kprint!("\x08 \x08");
             }
         }
+        b'\t' => {
+            complete_command(state);
+        }
         b'\n' | b'\r' => {
             kprintln!();
-            execute_command(&cmd_buf[..*cmd_len]);
-            *cmd_len = 0;
-            kprint!("> ");
+            let line_len = state.cmd_len;
+            let mut line_buf = [0u8; CMD_BUF_SIZE];
+            copy_into(&mut line_buf, &state.cmd_buf, line_len);
+            save_history(state, &line_buf[..line_len]);
+            execute_command(&line_buf[..line_len]);
+            state.cmd_len = 0;
+            state.esc_state = EscapeState::None;
+            state.exit_history_browse();
+            print_prompt();
         }
         3 => {
-            // Ctrl+C
             kprintln!("^C");
-            *cmd_len = 0;
-            kprint!("> ");
+            state.cmd_len = 0;
+            state.esc_state = EscapeState::None;
+            state.exit_history_browse();
+            print_prompt();
         }
-        c if c >= 32 && c < 127 => {
-            if *cmd_len < 255 {
-                cmd_buf[*cmd_len] = c;
-                *cmd_len += 1;
+        c if c.is_ascii_graphic() || c == b' ' => {
+            if state.cmd_len < CMD_BUF_SIZE - 1 {
+                state.exit_history_browse();
+                state.cmd_buf[state.cmd_len] = c;
+                state.cmd_len += 1;
                 kprint!("{}", c as char);
             }
         }
@@ -297,6 +620,7 @@ fn execute_command(cmd: &[u8]) {
             kprintln!("  runuser    - Launch built-in ring3 demo");
             kprintln!("  hotkey     - ACPI hotkey debug commands");
             kprintln!("  help       - Show this help message");
+            kprintln!("Shortcuts: Tab=complete command, Up/Down=browse command history");
             kprintln!("Type 'drivers help' or 'mm help' for more info.");
         }
         _ => {

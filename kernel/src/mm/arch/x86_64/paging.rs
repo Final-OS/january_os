@@ -1,14 +1,14 @@
 // ============================================================================
 // january_os - x86_64 页表管理模块
-// 
+//
 // 实现 x86_64 四级页表管理 (PML4 -> PDPT -> PD -> PT)
 // ============================================================================
 
 use crate::config;
 use crate::interrupt;
-use crate::mm::buddy::{alloc_page, free_page};
-use crate::mm::zone::GFP_KERNEL_ZERO;
+use crate::mm::buddy::{alloc_pages, free_page};
 use crate::mm::page::{page_to_pfn, pfn_to_page, MAX_PFN};
+use crate::mm::zone::GFP_KERNEL_ZERO;
 use crate::smp;
 use crate::sync::SpinLock;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -63,12 +63,12 @@ impl PageTableLevel {
     pub const fn entry_size(&self) -> u64 {
         match self {
             PageTableLevel::Pml4 => 512 * 1024 * 1024 * 1024, // 512 GB
-            PageTableLevel::Pdpt => 1024 * 1024 * 1024,        // 1 GB
-            PageTableLevel::Pd => 2 * 1024 * 1024,             // 2 MB
-            PageTableLevel::Pt => config::PAGE_SIZE,           // 4 KB
+            PageTableLevel::Pdpt => 1024 * 1024 * 1024,       // 1 GB
+            PageTableLevel::Pd => 2 * 1024 * 1024,            // 2 MB
+            PageTableLevel::Pt => config::PAGE_SIZE,          // 4 KB
         }
     }
-    
+
     /// 获取下一级页表层级
     pub const fn next_level(&self) -> Option<PageTableLevel> {
         match self {
@@ -94,52 +94,52 @@ impl PageTableEntry {
     pub const fn empty() -> Self {
         Self(0)
     }
-    
+
     /// 创建新条目
     pub const fn new(phys_addr: u64, flags: u64) -> Self {
         Self((phys_addr & PTE_ADDR_MASK) | flags)
     }
-    
+
     /// 获取原始值
     pub const fn raw(&self) -> u64 {
         self.0
     }
-    
+
     /// 检查是否存在
     pub const fn is_present(&self) -> bool {
         self.0 & PTE_PRESENT != 0
     }
-    
+
     /// 检查是否可写
     pub const fn is_writable(&self) -> bool {
         self.0 & PTE_WRITABLE != 0
     }
-    
+
     /// 检查是否为用户态
     pub const fn is_user(&self) -> bool {
         self.0 & PTE_USER != 0
     }
-    
+
     /// 检查是否为大页面
     pub const fn is_huge(&self) -> bool {
         self.0 & PTE_HUGE != 0
     }
-    
+
     /// 检查是否禁止执行
     pub const fn is_no_execute(&self) -> bool {
         self.0 & PTE_NO_EXECUTE != 0
     }
-    
+
     /// 获取物理地址
     pub const fn phys_addr(&self) -> u64 {
         self.0 & PTE_ADDR_MASK
     }
-    
+
     /// 获取标志位
     pub const fn flags(&self) -> u64 {
         self.0 & !PTE_ADDR_MASK
     }
-    
+
     /// 设置存在位
     pub fn set_present(&mut self, present: bool) {
         if present {
@@ -148,7 +148,7 @@ impl PageTableEntry {
             self.0 &= !PTE_PRESENT;
         }
     }
-    
+
     /// 设置可写位
     pub fn set_writable(&mut self, writable: bool) {
         if writable {
@@ -157,7 +157,7 @@ impl PageTableEntry {
             self.0 &= !PTE_WRITABLE;
         }
     }
-    
+
     /// 设置用户态可访问位
     pub fn set_user(&mut self, user: bool) {
         if user {
@@ -166,7 +166,7 @@ impl PageTableEntry {
             self.0 &= !PTE_USER;
         }
     }
-    
+
     /// 设置物理地址
     pub fn set_phys_addr(&mut self, addr: u64) {
         self.0 = (self.0 & !PTE_ADDR_MASK) | (addr & PTE_ADDR_MASK);
@@ -176,11 +176,31 @@ impl PageTableEntry {
 impl core::fmt::Debug for PageTableEntry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "PTE({:#018x} | ", self.phys_addr())?;
-        if self.is_present() { write!(f, "P")?; } else { write!(f, "-")?; }
-        if self.is_writable() { write!(f, "W")?; } else { write!(f, "R")?; }
-        if self.is_user() { write!(f, "U")?; } else { write!(f, "S")?; }
-        if self.is_huge() { write!(f, "H")?; } else { write!(f, "-")?; }
-        if self.is_no_execute() { write!(f, "X")?; } else { write!(f, "-")?; }
+        if self.is_present() {
+            write!(f, "P")?;
+        } else {
+            write!(f, "-")?;
+        }
+        if self.is_writable() {
+            write!(f, "W")?;
+        } else {
+            write!(f, "R")?;
+        }
+        if self.is_user() {
+            write!(f, "U")?;
+        } else {
+            write!(f, "S")?;
+        }
+        if self.is_huge() {
+            write!(f, "H")?;
+        } else {
+            write!(f, "-")?;
+        }
+        if self.is_no_execute() {
+            write!(f, "X")?;
+        } else {
+            write!(f, "-")?;
+        }
         write!(f, ")")
     }
 }
@@ -199,29 +219,31 @@ impl PageTable {
     /// 创建空页表
     pub const fn empty() -> Self {
         const EMPTY: PageTableEntry = PageTableEntry::empty();
-        Self { entries: [EMPTY; 512] }
+        Self {
+            entries: [EMPTY; 512],
+        }
     }
-    
+
     /// 获取条目引用
     pub fn entry(&self, index: usize) -> &PageTableEntry {
         &self.entries[index]
     }
-    
+
     /// 获取条目可变引用
     pub fn entry_mut(&mut self, index: usize) -> &mut PageTableEntry {
         &mut self.entries[index]
     }
-    
+
     /// 获取所有条目
     pub fn entries(&self) -> &[PageTableEntry; 512] {
         &self.entries
     }
-    
+
     /// 获取所有条目可变引用
     pub fn entries_mut(&mut self) -> &mut [PageTableEntry; 512] {
         &mut self.entries
     }
-    
+
     /// 清空页表
     pub fn clear(&mut self) {
         for entry in self.entries.iter_mut() {
@@ -269,7 +291,7 @@ pub const fn page_offset(virt: u64) -> usize {
 // ============================================================================
 
 /// 页表管理器
-/// 
+///
 /// 负责管理内核页表，提供虚拟地址映射功能
 pub struct PageTableManager {
     /// PML4 物理地址
@@ -397,7 +419,9 @@ fn shootdown_other_cpus() {
                 .compare_exchange(true, false, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
             {
-                crate::warn!("TLB shootdown disabled after timeout; fallback to local TLB flush only");
+                crate::warn!(
+                    "TLB shootdown disabled after timeout; fallback to local TLB flush only"
+                );
             }
             break;
         }
@@ -421,7 +445,7 @@ pub fn handle_tlb_shootdown_ipi() {
 
 impl PageTableManager {
     /// 创建页表管理器
-    /// 
+    ///
     /// # Safety
     /// pml4_phys 必须指向有效的 PML4 页表
     pub const unsafe fn new(pml4_phys: u64, direct_map_offset: u64) -> Self {
@@ -430,93 +454,83 @@ impl PageTableManager {
             direct_map_offset,
         }
     }
-    
+
     /// 物理地址转虚拟地址（通过直接映射）
     #[inline]
     pub const fn phys_to_virt(&self, phys: u64) -> u64 {
         self.direct_map_offset + phys
     }
-    
+
     /// 虚拟地址转物理地址（通过直接映射，仅对直接映射区有效）
     #[inline]
     pub const fn virt_to_phys(&self, virt: u64) -> u64 {
         virt - self.direct_map_offset
     }
-    
+
     /// 获取 PML4 页表
     pub fn pml4(&self) -> &PageTable {
-        unsafe {
-            &*(self.phys_to_virt(self.pml4_phys) as *const PageTable)
-        }
+        unsafe { &*(self.phys_to_virt(self.pml4_phys) as *const PageTable) }
     }
-    
+
     /// 获取 PML4 页表可变引用
     pub fn pml4_mut(&mut self) -> &mut PageTable {
-        unsafe {
-            &mut *(self.phys_to_virt(self.pml4_phys) as *mut PageTable)
-        }
+        unsafe { &mut *(self.phys_to_virt(self.pml4_phys) as *mut PageTable) }
     }
-    
+
     /// 获取 PML4 物理地址
     pub const fn pml4_phys(&self) -> u64 {
         self.pml4_phys
     }
-    
+
     /// 遍历页表，查找虚拟地址对应的页表条目
-    /// 
+    ///
     /// 返回 (条目, 页表层级, 页面大小)
     pub fn translate(&self, virt_addr: u64) -> Option<(PageTableEntry, PageTableLevel, u64)> {
         let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
         let pml4 = self.pml4();
         let pml4_entry = pml4.entry(pml4_index(virt_addr));
-        
+
         if !pml4_entry.is_present() {
             return None;
         }
-        
+
         // PDPT
-        let pdpt = unsafe {
-            &*(self.phys_to_virt(pml4_entry.phys_addr()) as *const PageTable)
-        };
+        let pdpt = unsafe { &*(self.phys_to_virt(pml4_entry.phys_addr()) as *const PageTable) };
         let pdpt_entry = pdpt.entry(pdpt_index(virt_addr));
-        
+
         if !pdpt_entry.is_present() {
             return None;
         }
-        
+
         // 1GB 大页面?
         if pdpt_entry.is_huge() {
             return Some((*pdpt_entry, PageTableLevel::Pdpt, 1024 * 1024 * 1024));
         }
-        
+
         // PD
-        let pd = unsafe {
-            &*(self.phys_to_virt(pdpt_entry.phys_addr()) as *const PageTable)
-        };
+        let pd = unsafe { &*(self.phys_to_virt(pdpt_entry.phys_addr()) as *const PageTable) };
         let pd_entry = pd.entry(pd_index(virt_addr));
-        
+
         if !pd_entry.is_present() {
             return None;
         }
-        
+
         // 2MB 大页面?
         if pd_entry.is_huge() {
             return Some((*pd_entry, PageTableLevel::Pd, 2 * 1024 * 1024));
         }
-        
+
         // PT
-        let pt = unsafe {
-            &*(self.phys_to_virt(pd_entry.phys_addr()) as *const PageTable)
-        };
+        let pt = unsafe { &*(self.phys_to_virt(pd_entry.phys_addr()) as *const PageTable) };
         let pt_entry = pt.entry(pt_index(virt_addr));
-        
+
         if !pt_entry.is_present() {
             return None;
         }
-        
+
         Some((*pt_entry, PageTableLevel::Pt, config::PAGE_SIZE))
     }
-    
+
     /// 将虚拟地址转换为物理地址
     pub fn translate_addr(&self, virt_addr: u64) -> Option<u64> {
         let (entry, _level, page_size) = self.translate(virt_addr)?;
@@ -529,7 +543,7 @@ impl PageTableManager {
         self.flush_tlb_local(virt_addr);
         shootdown_other_cpus();
     }
-    
+
     /// 刷新整个 TLB (重新加载 CR3)
     pub fn flush_tlb_all(&self) {
         self.flush_tlb_all_local();
@@ -577,27 +591,27 @@ impl PageTableManager {
     }
 
     /// 映射虚拟地址到物理地址
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// - 需要确保分配内存成功
     pub unsafe fn map_page(&self, virt: u64, phys: u64, flags: u64) -> bool {
         let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
         let direct_map_offset = self.direct_map_offset;
         let pml4_phys = self.pml4_phys;
-        
+
         let phys_to_virt = |p: u64| direct_map_offset + p;
 
         let pml4 = &mut *(phys_to_virt(pml4_phys) as *mut PageTable);
         let pml4_idx = pml4_index(virt);
         let pml4_entry = &mut pml4.entries[pml4_idx];
-        
+
         if !pml4_entry.is_present() {
-            let page = match alloc_page(GFP_KERNEL_ZERO) {
+            let page = match alloc_pages(0, GFP_KERNEL_ZERO) {
                 Some(p) => p,
                 None => {
                     return false;
-                },
+                }
             };
             let pfn = page_to_pfn(page);
             let table_phys = pfn * config::PAGE_SIZE;
@@ -608,23 +622,23 @@ impl PageTableManager {
                 0,
                 config::PAGE_SIZE as usize,
             );
-            
+
             pml4_entry.set_phys_addr(table_phys);
             pml4_entry.set_present(true);
             pml4_entry.set_writable(true);
-            pml4_entry.set_user(true); 
+            pml4_entry.set_user(true);
         }
-        
+
         let pdpt = &mut *(phys_to_virt(pml4_entry.phys_addr()) as *mut PageTable);
         let pdpt_idx = pdpt_index(virt);
         let pdpt_entry = &mut pdpt.entries[pdpt_idx];
-        
+
         if !pdpt_entry.is_present() {
-            let page = match alloc_page(GFP_KERNEL_ZERO) {
+            let page = match alloc_pages(0, GFP_KERNEL_ZERO) {
                 Some(p) => p,
                 None => {
                     return false;
-                },
+                }
             };
             let pfn = page_to_pfn(page);
             let table_phys = pfn * config::PAGE_SIZE;
@@ -634,23 +648,23 @@ impl PageTableManager {
                 0,
                 config::PAGE_SIZE as usize,
             );
-            
+
             pdpt_entry.set_phys_addr(table_phys);
             pdpt_entry.set_present(true);
             pdpt_entry.set_writable(true);
             pdpt_entry.set_user(true);
         }
-        
+
         let pd = &mut *(phys_to_virt(pdpt_entry.phys_addr()) as *mut PageTable);
         let pd_idx = pd_index(virt);
         let pd_entry = &mut pd.entries[pd_idx];
-        
+
         if !pd_entry.is_present() {
-            let page = match alloc_page(GFP_KERNEL_ZERO) {
+            let page = match alloc_pages(0, GFP_KERNEL_ZERO) {
                 Some(p) => p,
                 None => {
                     return false;
-                },
+                }
             };
             let pfn = page_to_pfn(page);
             let table_phys = pfn * config::PAGE_SIZE;
@@ -660,13 +674,13 @@ impl PageTableManager {
                 0,
                 config::PAGE_SIZE as usize,
             );
-            
+
             pd_entry.set_phys_addr(table_phys);
             pd_entry.set_present(true);
             pd_entry.set_writable(true);
             pd_entry.set_user(true);
         }
-        
+
         let pt = &mut *(phys_to_virt(pd_entry.phys_addr()) as *mut PageTable);
         let pt_idx = pt_index(virt);
         let pt_entry = &mut pt.entries[pt_idx];
@@ -694,7 +708,7 @@ impl PageTableManager {
         } else {
             self.flush_tlb_local(virt);
         }
-        
+
         true
     }
 
@@ -782,10 +796,12 @@ impl PageTableManager {
     fn is_table_empty(table: &PageTable) -> bool {
         table.entries().iter().all(|e| !e.is_present())
     }
-    
+
     /// 获取 PML4 中存在的条目数量
     pub fn count_pml4_entries(&self) -> usize {
-        self.pml4().entries().iter()
+        self.pml4()
+            .entries()
+            .iter()
             .filter(|e| e.is_present())
             .count()
     }

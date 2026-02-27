@@ -4,7 +4,7 @@
 
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
-use super::{send_command, wait_input_ready, write_data, wait_output_ready, read_data};
+use super::{read_data, send_command, wait_input_ready, wait_output_ready, write_data};
 
 // ============================================================================
 // 键盘扫描码表 (Set 1)
@@ -68,6 +68,7 @@ static SHIFT_PRESSED: AtomicU8 = AtomicU8::new(0);
 static CTRL_PRESSED: AtomicU8 = AtomicU8::new(0);
 static ALT_PRESSED: AtomicU8 = AtomicU8::new(0);
 static CAPS_LOCK: AtomicU8 = AtomicU8::new(0);
+static EXTENDED_PREFIX: AtomicU8 = AtomicU8::new(0);
 
 /// 输入缓冲区
 const BUFFER_SIZE: usize = 64;
@@ -96,19 +97,25 @@ pub fn init() {
     // 2. 启用键盘端口 (Port 1)
     // 注意：通常默认启用，但为了完整性可以发送启用命令
     // 这里我们主要重置状态
-    
+
     // 3. 重置 LEDs
     set_leds(false, false, false);
-    
+
     INITIALIZED.store(1, Ordering::Relaxed);
 }
 
 /// 设置键盘 LEDs
 pub fn set_leds(caps: bool, num: bool, scroll: bool) {
     let mut data = 0u8;
-    if scroll { data |= 1; }
-    if num { data |= 2; }
-    if caps { data |= 4; }
+    if scroll {
+        data |= 1;
+    }
+    if num {
+        data |= 2;
+    }
+    if caps {
+        data |= 4;
+    }
 
     wait_input_ready();
     write_data(0xED); // Set LEDs command
@@ -117,15 +124,25 @@ pub fn set_leds(caps: bool, num: bool, scroll: bool) {
 }
 
 /// 处理扫描码
-/// 
+///
 /// 由键盘中断处理程序调用
 pub fn handle_scancode(scancode: u8) {
     LAST_SCANCODE.store(scancode, Ordering::Relaxed);
-    
+
+    // 扩展扫描码前缀 (E0 xx)
+    if scancode == 0xE0 {
+        EXTENDED_PREFIX.store(1, Ordering::Relaxed);
+        return;
+    }
+    if EXTENDED_PREFIX.swap(0, Ordering::Relaxed) != 0 {
+        handle_extended_scancode(scancode);
+        return;
+    }
+
     // 检查是否是释放键 (bit 7 set)
     let released = scancode & 0x80 != 0;
     let key = scancode & 0x7F;
-    
+
     // 处理修饰键
     match key {
         KEY_LSHIFT | KEY_RSHIFT => {
@@ -162,23 +179,23 @@ pub fn handle_scancode(scancode: u8) {
         }
         _ => {}
     }
-    
+
     // 只处理按下事件
     if released {
         return;
     }
-    
+
     // 转换为 ASCII
     let shift = SHIFT_PRESSED.load(Ordering::Relaxed) != 0;
     let caps = CAPS_LOCK.load(Ordering::Relaxed) != 0;
-    
+
     let ascii = if key < 128 {
         let base_char = if shift {
             SCANCODE_TO_ASCII_SHIFT[key as usize]
         } else {
             SCANCODE_TO_ASCII[key as usize]
         };
-        
+
         // Caps Lock 只影响字母
         if caps && base_char >= b'a' && base_char <= b'z' {
             base_char - 32 // 转大写
@@ -190,12 +207,33 @@ pub fn handle_scancode(scancode: u8) {
     } else {
         0
     };
-    
+
     LAST_CHAR.store(ascii, Ordering::Relaxed);
-    
+
     // 将字符放入缓冲区
     if ascii != 0 {
         push_char(ascii);
+    }
+}
+
+fn handle_extended_scancode(scancode: u8) {
+    let released = scancode & 0x80 != 0;
+    if released {
+        return;
+    }
+
+    match scancode {
+        0x48 => push_escape_sequence(b"\x1b[A"), // Up
+        0x50 => push_escape_sequence(b"\x1b[B"), // Down
+        0x4D => push_escape_sequence(b"\x1b[C"), // Right
+        0x4B => push_escape_sequence(b"\x1b[D"), // Left
+        _ => {}
+    }
+}
+
+fn push_escape_sequence(seq: &[u8]) {
+    for &b in seq {
+        push_char(b);
     }
 }
 
@@ -203,12 +241,12 @@ pub fn handle_scancode(scancode: u8) {
 fn push_char(c: u8) {
     let head = BUFFER_HEAD.load(Ordering::Relaxed);
     let next_head = (head + 1) % BUFFER_SIZE;
-    
+
     // 检查缓冲区是否已满
     if next_head == BUFFER_TAIL.load(Ordering::Relaxed) {
         return; // 缓冲区满，丢弃字符
     }
-    
+
     BUFFER[head].store(c, Ordering::Relaxed);
     BUFFER_HEAD.store(next_head, Ordering::Relaxed);
 }
@@ -217,11 +255,11 @@ fn push_char(c: u8) {
 pub fn read_char() -> Option<u8> {
     let tail = BUFFER_TAIL.load(Ordering::Relaxed);
     let head = BUFFER_HEAD.load(Ordering::Relaxed);
-    
+
     if tail == head {
         return None; // 缓冲区空
     }
-    
+
     let c = BUFFER[tail].load(Ordering::Relaxed);
     BUFFER_TAIL.store((tail + 1) % BUFFER_SIZE, Ordering::Relaxed);
     Some(c)

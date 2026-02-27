@@ -99,7 +99,8 @@ handle_page_fault
     │   │
     │   └─ 未找到 ──► 内核 oops
     │
-    └─ 用户空间 ──► 发送信号 (TODO)
+    └─ 用户空间 ──► 返回 FaultResult::Sigsegv / Sigbus
+                     （后续由调度/信号层转为进程信号；当前中断层对未处理 fault 仍会 panic）
 ```
 
 ## 错误类型

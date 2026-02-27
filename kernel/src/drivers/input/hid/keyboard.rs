@@ -2,9 +2,9 @@
 //!
 //! 支持 USB HID 键盘设备
 
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use crate::sync::Once;
 use super::hid::{BootKeyboardReport, HidProtocol};
+use crate::sync::Once;
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 // ============================================================================
 // USB HID 键盘码到 ASCII 映射
@@ -132,15 +132,21 @@ impl KeyCode {
         // Safety: 我们接受任何值，无效值映射为 None
         unsafe { core::mem::transmute(code) }
     }
-    
+
     /// 转换为 ASCII (无修饰键)
     pub fn to_ascii(&self) -> Option<u8> {
-        HID_TO_ASCII.get(*self as usize).copied().filter(|&c| c != 0)
+        HID_TO_ASCII
+            .get(*self as usize)
+            .copied()
+            .filter(|&c| c != 0)
     }
-    
+
     /// 转换为 ASCII (带 Shift)
     pub fn to_ascii_shift(&self) -> Option<u8> {
-        HID_TO_ASCII_SHIFT.get(*self as usize).copied().filter(|&c| c != 0)
+        HID_TO_ASCII_SHIFT
+            .get(*self as usize)
+            .copied()
+            .filter(|&c| c != 0)
     }
 }
 
@@ -209,22 +215,22 @@ impl Modifiers {
             scroll_lock: false,
         }
     }
-    
+
     /// 检查是否按下任意 Shift
     pub fn shift(&self) -> bool {
         self.left_shift || self.right_shift
     }
-    
+
     /// 检查是否按下任意 Ctrl
     pub fn ctrl(&self) -> bool {
         self.left_ctrl || self.right_ctrl
     }
-    
+
     /// 检查是否按下任意 Alt
     pub fn alt(&self) -> bool {
         self.left_alt || self.right_alt
     }
-    
+
     /// 检查是否按下任意 GUI
     pub fn gui(&self) -> bool {
         self.left_gui || self.right_gui
@@ -268,7 +274,7 @@ impl KeyEvent {
             } else {
                 keycode.to_ascii()
             };
-            
+
             // 处理 Ctrl 组合键
             if let Some(c) = base {
                 if modifiers.ctrl() && c >= b'a' && c <= b'z' {
@@ -284,7 +290,7 @@ impl KeyEvent {
         } else {
             None
         };
-        
+
         Self {
             keycode,
             event_type,
@@ -329,21 +335,21 @@ impl UsbKeyboard {
             active: false,
         }
     }
-    
+
     /// 处理 Boot 协议报告
     pub fn process_report(&mut self, report: &BootKeyboardReport) {
         // 更新修饰键
         self.modifiers = Modifiers::from_hid(report.modifiers);
-        
+
         // 检测新按下的键
         for &keycode in &report.keycodes {
             if keycode == 0 {
                 continue;
             }
-            
+
             // 检查是否是新按下的键
             let was_pressed = self.last_report.keycodes.contains(&keycode);
-            
+
             if !was_pressed {
                 // 新按下
                 let event = KeyEvent::new(
@@ -354,15 +360,15 @@ impl UsbKeyboard {
                 push_key_event(event);
             }
         }
-        
+
         // 检测释放的键
         for &keycode in &self.last_report.keycodes {
             if keycode == 0 {
                 continue;
             }
-            
+
             let still_pressed = report.keycodes.contains(&keycode);
-            
+
             if !still_pressed {
                 // 已释放
                 let event = KeyEvent::new(
@@ -373,7 +379,7 @@ impl UsbKeyboard {
                 push_key_event(event);
             }
         }
-        
+
         // 保存报告
         self.last_report = *report;
     }
@@ -392,7 +398,7 @@ pub fn handle_boot_report(report: BootKeyboardReport) {
             // 初始化默认实例
             GLOBAL_KEYBOARD = Some(UsbKeyboard::new(0, 0, 0));
         }
-        
+
         if let Some(kbd) = &mut *core::ptr::addr_of_mut!(GLOBAL_KEYBOARD) {
             kbd.process_report(&report);
         }
@@ -407,9 +413,17 @@ static mut KEY_EVENT_BUFFER: [KeyEvent; EVENT_BUFFER_SIZE] = [KeyEvent {
     keycode: KeyCode::None,
     event_type: KeyEventType::Press,
     modifiers: Modifiers {
-        left_ctrl: false, left_shift: false, left_alt: false, left_gui: false,
-        right_ctrl: false, right_shift: false, right_alt: false, right_gui: false,
-        caps_lock: false, num_lock: false, scroll_lock: false,
+        left_ctrl: false,
+        left_shift: false,
+        left_alt: false,
+        left_gui: false,
+        right_ctrl: false,
+        right_shift: false,
+        right_alt: false,
+        right_gui: false,
+        caps_lock: false,
+        num_lock: false,
+        scroll_lock: false,
     },
     ascii: None,
 }; EVENT_BUFFER_SIZE];
@@ -458,7 +472,7 @@ fn push_key_event(event: KeyEvent) {
     // 1. 推送到事件缓冲区 (如果未满)
     let head = KEY_EVENT_HEAD.load(Ordering::Relaxed);
     let next_head = (head + 1) % EVENT_BUFFER_SIZE;
-    
+
     if next_head != KEY_EVENT_TAIL.load(Ordering::Relaxed) {
         unsafe {
             // 使用 addr_of_mut! 避免 static_mut_refs
@@ -466,10 +480,29 @@ fn push_key_event(event: KeyEvent) {
         }
         KEY_EVENT_HEAD.store(next_head, Ordering::Relaxed);
     }
-    
+
     // 2. 独立推送到字符缓冲区 (即使事件缓冲区已满)
     if let Some(c) = event.ascii {
         push_char(c);
+        return;
+    }
+
+    if matches!(event.event_type, KeyEventType::Press | KeyEventType::Repeat) {
+        if let Some(seq) = keycode_escape_sequence(event.keycode) {
+            for &b in seq {
+                push_char(b);
+            }
+        }
+    }
+}
+
+fn keycode_escape_sequence(keycode: KeyCode) -> Option<&'static [u8]> {
+    match keycode {
+        KeyCode::UpArrow => Some(b"\x1b[A"),
+        KeyCode::DownArrow => Some(b"\x1b[B"),
+        KeyCode::RightArrow => Some(b"\x1b[C"),
+        KeyCode::LeftArrow => Some(b"\x1b[D"),
+        _ => None,
     }
 }
 
@@ -477,7 +510,7 @@ fn push_key_event(event: KeyEvent) {
 fn push_char(c: u8) {
     let head = CHAR_HEAD.load(Ordering::Relaxed);
     let next_head = (head + 1) % CHAR_BUFFER_SIZE;
-    
+
     if next_head != CHAR_TAIL.load(Ordering::Relaxed) {
         CHAR_BUFFER[head].store(c, Ordering::Relaxed);
         CHAR_HEAD.store(next_head, Ordering::Relaxed);
@@ -488,11 +521,11 @@ fn push_char(c: u8) {
 pub fn read_event() -> Option<KeyEvent> {
     let tail = KEY_EVENT_TAIL.load(Ordering::Relaxed);
     let head = KEY_EVENT_HEAD.load(Ordering::Relaxed);
-    
+
     if tail == head {
         return None;
     }
-    
+
     let event = unsafe { KEY_EVENT_BUFFER[tail] };
     KEY_EVENT_TAIL.store((tail + 1) % EVENT_BUFFER_SIZE, Ordering::Relaxed);
     Some(event)
@@ -502,11 +535,11 @@ pub fn read_event() -> Option<KeyEvent> {
 pub fn read_char() -> Option<u8> {
     let tail = CHAR_TAIL.load(Ordering::Relaxed);
     let head = CHAR_HEAD.load(Ordering::Relaxed);
-    
+
     if tail == head {
         return None;
     }
-    
+
     let c = CHAR_BUFFER[tail].load(Ordering::Relaxed);
     CHAR_TAIL.store((tail + 1) % CHAR_BUFFER_SIZE, Ordering::Relaxed);
     Some(c)

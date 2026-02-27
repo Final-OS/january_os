@@ -15,7 +15,8 @@ pub struct Vma {
     pub start: VirtAddr,
     pub end: VirtAddr,
     pub flags: VmFlags,
-    pub vm_file: Option<()>,  // TODO: 文件映射
+    pub vm_pgoff: u64,        // 文件映射偏移（页单位）
+    // 当前实现在 MapleTree 的 VmaInfo 中以 `file: *mut ()` 预留文件后备指针
     pub vm_next: Option<&'static Vma>,
 }
 
