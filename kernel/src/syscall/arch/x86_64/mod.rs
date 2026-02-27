@@ -10,6 +10,8 @@ pub use table::SYSCALL_TABLE;
 pub const NR_READ: usize = 0;
 pub const NR_OPEN: usize = 2;
 pub const NR_CLOSE: usize = 3;
+pub const NR_MMAP: usize = 9;
+pub const NR_MUNMAP: usize = 11;
 pub const NR_GETPID: usize = 39;
 pub const NR_CLONE: usize = 56;
 pub const NR_FORK: usize = 57;
@@ -38,6 +40,8 @@ impl SyscallArch for X86_64SyscallArch {
             NR_READ => handlers::sys_read(args),
             NR_OPEN => handlers::sys_open(args),
             NR_CLOSE => handlers::sys_close(args),
+            NR_MMAP => handlers::sys_mmap(args),
+            NR_MUNMAP => handlers::sys_munmap(args),
             NR_GETPID => handlers::sys_getpid(args),
             NR_CLONE => handlers::sys_clone(args),
             NR_FORK => handlers::sys_fork(args),

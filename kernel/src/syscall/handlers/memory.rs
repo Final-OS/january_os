@@ -1,0 +1,228 @@
+use alloc::vec::Vec;
+use core::cmp;
+
+use crate::mm;
+use crate::syscall::{E2BIG, EBUSY, EINVAL, ENOMEM, ENOSYS, SyscallArgs, SyscallRet, err, ok};
+
+const MMAP_PROT_ALLOWED: u32 =
+    mm::prot_flags::PROT_READ | mm::prot_flags::PROT_WRITE | mm::prot_flags::PROT_EXEC;
+const MMAP_FLAGS_ALLOWED: u32 = mm::mmap_flags::MAP_SHARED
+    | mm::mmap_flags::MAP_PRIVATE
+    | mm::mmap_flags::MAP_FIXED
+    | mm::mmap_flags::MAP_ANONYMOUS
+    | mm::mmap_flags::MAP_GROWSDOWN
+    | mm::mmap_flags::MAP_LOCKED
+    | mm::mmap_flags::MAP_HUGETLB;
+
+#[inline]
+fn page_align_up_usize(value: usize) -> Result<usize, i32> {
+    let page = mm::PAGE_SIZE as usize;
+    value.checked_add(page.saturating_sub(1)).map(|v| v & !(page - 1)).ok_or(E2BIG)
+}
+
+#[inline]
+fn validate_user_mmap_range(start: u64, len: u64) -> Result<(), i32> {
+    if len == 0 {
+        return Err(EINVAL);
+    }
+    let end = start.checked_add(len).ok_or(ENOMEM)?;
+    if start < mm::USER_SPACE_START {
+        return Err(EINVAL);
+    }
+    if end <= start {
+        return Err(ENOMEM);
+    }
+    if end > mm::USER_SPACE_END {
+        return Err(ENOMEM);
+    }
+    if !mm::is_user_addr(start) || !mm::is_user_addr(end - 1) {
+        return Err(ENOMEM);
+    }
+    Ok(())
+}
+
+fn mmap_select_addr(
+    req_addr: usize,
+    len_aligned: u64,
+    flags: u32,
+    vm_flags: mm::VmFlags,
+) -> Result<u64, i32> {
+    let map_fixed = (flags & mm::mmap_flags::MAP_FIXED) != 0;
+
+    let mut mm_state = mm::get_init_mm();
+    if map_fixed {
+        let start = req_addr as u64;
+        if (start & (mm::PAGE_SIZE - 1)) != 0 {
+            return Err(EINVAL);
+        }
+        validate_user_mmap_range(start, len_aligned)?;
+        let end = start.checked_add(len_aligned).ok_or(ENOMEM)?;
+
+        // 当前最小实现不做 MAP_FIXED 覆盖替换，仅允许映射到空洞。
+        if mm_state.find_vma_intersection(start, end).is_some() {
+            return Err(EBUSY);
+        }
+        return Ok(start);
+    }
+
+    let hint = if req_addr == 0 {
+        mm::USER_SPACE_START
+    } else {
+        mm::page_align_up(req_addr as u64).max(mm::USER_SPACE_START)
+    };
+
+    let start = mm_state
+        .find_free_area(hint, len_aligned, vm_flags)
+        .or_else(|| {
+            if hint != mm::USER_SPACE_START {
+                mm_state.find_free_area(mm::USER_SPACE_START, len_aligned, vm_flags)
+            } else {
+                None
+            }
+        })
+        .ok_or(ENOMEM)?;
+    validate_user_mmap_range(start, len_aligned)?;
+    Ok(start)
+}
+
+unsafe fn unmap_and_release_pages(start: u64, end: u64) {
+    let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
+    let pt_mgr = mm::PageTableManager::new(cr3, mm::DIRECT_MAP_OFFSET);
+
+    let mut cursor = start;
+    while cursor < end {
+        if let Some(phys) = pt_mgr.translate_addr(cursor) {
+            let _ = pt_mgr.unmap_page(cursor);
+            let pfn = phys / mm::PAGE_SIZE;
+            if pfn < mm::MAX_PFN {
+                let page = mm::pfn_to_page(pfn);
+                if page.mapcount() >= 0 {
+                    page.dec_mapcount();
+                }
+                if !page.is_reserved() && page.refcount() > 0 {
+                    mm::free_page(page);
+                }
+            }
+        }
+        cursor = cursor.saturating_add(mm::PAGE_SIZE);
+    }
+}
+
+pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
+    let req_addr = args.arg0;
+    let length = args.arg1;
+    let prot = args.arg2 as u32;
+    let flags = args.arg3 as u32;
+    let _fd = args.arg4;
+    let offset = args.arg5 as u64;
+
+    if length == 0 {
+        return err(EINVAL);
+    }
+    if (prot & !MMAP_PROT_ALLOWED) != 0 {
+        return err(EINVAL);
+    }
+    if (flags & !MMAP_FLAGS_ALLOWED) != 0 {
+        return err(EINVAL);
+    }
+
+    let shared = (flags & mm::mmap_flags::MAP_SHARED) != 0;
+    let private = (flags & mm::mmap_flags::MAP_PRIVATE) != 0;
+    if shared == private {
+        return err(EINVAL);
+    }
+
+    if (flags & mm::mmap_flags::MAP_ANONYMOUS) == 0 {
+        return err(ENOSYS);
+    }
+    if offset != 0 || (offset & (mm::PAGE_SIZE - 1)) != 0 {
+        return err(EINVAL);
+    }
+
+    let length_aligned = match page_align_up_usize(length) {
+        Ok(value) => value as u64,
+        Err(errno) => return err(errno),
+    };
+    if length_aligned == 0 {
+        return err(E2BIG);
+    }
+
+    let vm_flags = mm::mmap_flags_to_vm_flags(prot, flags);
+    let start = match mmap_select_addr(req_addr, length_aligned, flags, vm_flags) {
+        Ok(addr) => addr,
+        Err(errno) => return err(errno),
+    };
+    let end = match start.checked_add(length_aligned) {
+        Some(value) => value,
+        None => return err(ENOMEM),
+    };
+
+    let mut info = mm::VmaInfo::new(vm_flags);
+    info.pgoff = offset / mm::PAGE_SIZE;
+
+    let mut mm_state = mm::get_init_mm();
+    if mm_state.find_vma_intersection(start, end).is_some() {
+        return err(EBUSY);
+    }
+    if !mm_state.insert_vma(start, end, info) {
+        return err(EBUSY);
+    }
+
+    ok(start as usize)
+}
+
+pub(crate) fn sys_munmap(args: &SyscallArgs) -> SyscallRet {
+    let addr = args.arg0 as u64;
+    let length = args.arg1;
+
+    if length == 0 {
+        return err(EINVAL);
+    }
+    if (addr & (mm::PAGE_SIZE - 1)) != 0 {
+        return err(EINVAL);
+    }
+
+    let length_aligned = match page_align_up_usize(length) {
+        Ok(value) => value as u64,
+        Err(errno) => return err(errno),
+    };
+    let end = match addr.checked_add(length_aligned) {
+        Some(v) => v,
+        None => return err(ENOMEM),
+    };
+    if addr < mm::USER_SPACE_START || end > mm::USER_SPACE_END || end <= addr {
+        return err(EINVAL);
+    }
+
+    let mut unmap_ranges: Vec<(u64, u64)> = Vec::new();
+    {
+        let mut mm_state = mm::get_init_mm();
+        while let Some(vma) = mm_state.find_vma_intersection(addr, end) {
+            let vma_start = vma.vm_start;
+            let vma_end = vma.vm_end;
+            let cut_start = cmp::max(vma_start, addr);
+            let cut_end = cmp::min(vma_end, end);
+
+            let Some((_old_end, info)) = mm_state.remove_vma(vma_start) else {
+                return err(EBUSY);
+            };
+
+            if vma_start < cut_start {
+                let _ = mm_state.insert_vma(vma_start, cut_start, info.clone());
+            }
+            if cut_end < vma_end {
+                let _ = mm_state.insert_vma(cut_end, vma_end, info.clone());
+            }
+
+            unmap_ranges.push((cut_start, cut_end));
+        }
+    }
+
+    for (range_start, range_end) in unmap_ranges.into_iter() {
+        unsafe {
+            unmap_and_release_pages(range_start, range_end);
+        }
+    }
+
+    ok(0)
+}

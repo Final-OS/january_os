@@ -48,7 +48,7 @@ pub fn run(name: &str) {
             kprintln!("                   Available: rbtree, lru, rdtree, btree, mptree, rcu");
             kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator");
             kprintln!("  mm [name]      - Memory management tests");
-            kprintln!("                   Available: swiotlb, slub, buddy, pcp");
+            kprintln!("                   Available: swiotlb, slub, buddy, pcp, mmap");
             kprintln!("  timer          - Timer tick test");
             kprintln!("  all            - Run all tests");
         }

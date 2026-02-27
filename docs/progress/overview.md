@@ -6,6 +6,12 @@ january_os 当前开发状态与功能完成情况。
 
 ## 最近更新 🆕
 
+**2026-02-27 - Batch 5 继续推进（mmap/munmap 最小匿名映射）**
+- ✅ 新增 `mmap(9)/munmap(11)` syscall 最小实现并接入分发
+- ✅ 支持匿名映射 VMA 建立、`munmap` 区间拆分/回收、与缺页分配链路联动
+- ✅ 增加 `test mm mmap` 覆盖：正常映射、非法参数、边界与空洞回收路径
+- ⚠️ 文件后备 `mmap` 暂未接入（待后续 VFS/page cache）
+
 **2026-02-27 - Batch 3/5 最小闭环推进（exec 后端 + 文件 I/O 子集）**
 - ✅ 新增最小内核文件后端（静态只读文件注册 + 按进程 fd 表）
 - ✅ 接入 `open/read/close` syscall 最小实现（`O_RDONLY` 路径）
@@ -187,6 +193,7 @@ january_os 当前开发状态与功能完成情况。
 - **参数传递** - SyscallArgs 结构体
 - **已实现的系统调用**:
   - read/open/close - 最小只读文件 I/O（静态后端）
+  - mmap/munmap - 匿名映射最小路径（VMA + 缺页 + 回收）
   - getpid/getppid/gettid - 进程/线程 ID 查询
   - exit/exit_group - 进程退出
   - execve - ELF 加载、PT_LOAD 映射、ring3 切换（最小镜像后端）
@@ -212,7 +219,7 @@ january_os 当前开发状态与功能完成情况。
 - [x] fork/clone - 进程创建（最小语义）
 - [x] execve - 程序执行（最小闭环）
 - [ ] 文件 I/O 系统调用（已完成 `open/read/close` 子集）
-- [ ] 内存管理系统调用（mmap/munmap）
+- [ ] 内存管理系统调用（已完成匿名 `mmap/munmap` 子集）
 - [ ] 网络系统调用（socket/bind/listen）
 
 ---

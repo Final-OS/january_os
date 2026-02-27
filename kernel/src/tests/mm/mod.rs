@@ -1,6 +1,7 @@
 //! 内存管理子系统测试
 
 mod buddy;
+mod mmap;
 mod pcp;
 mod slub;
 mod swiotlb;
@@ -35,6 +36,8 @@ pub fn run_with_filter(filter: Option<&str>) {
             buddy::run();
             mm_step("run case=pcp");
             pcp::run();
+            mm_step("run case=mmap");
+            mmap::run();
         }
         Some("swiotlb") => {
             mm_step("run case=swiotlb");
@@ -52,9 +55,13 @@ pub fn run_with_filter(filter: Option<&str>) {
             mm_step("run case=pcp");
             pcp::run();
         }
+        Some("mmap") => {
+            mm_step("run case=mmap");
+            mmap::run();
+        }
         Some(name) => {
             error!("Unknown MM test: {}", name);
-            kprintln!("Available MM tests: swiotlb, slub, buddy, pcp");
+            kprintln!("Available MM tests: swiotlb, slub, buddy, pcp, mmap");
         }
     }
 
