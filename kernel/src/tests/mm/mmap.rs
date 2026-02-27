@@ -53,6 +53,7 @@ pub(super) fn run() {
     let page = crate::mm::PAGE_SIZE as usize;
     let map_flags = crate::mm::mmap_flags::MAP_PRIVATE | crate::mm::mmap_flags::MAP_ANONYMOUS;
     let prot_rw = crate::mm::prot_flags::PROT_READ | crate::mm::prot_flags::PROT_WRITE;
+    let low_hint = crate::mm::USER_SPACE_START;
 
     mm_step("mmap: case=invalid_zero_length");
     if expect_errno(
@@ -113,6 +114,16 @@ pub(super) fn run() {
     }
 
     mm_step("mmap: case=anon_private_rw_map_and_access");
+    let low_hint_mapped_before = {
+        let cr3 = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
+        let pt_mgr = unsafe { crate::mm::PageTableManager::new(cr3, crate::mm::DIRECT_MAP_OFFSET) };
+        pt_mgr.translate_addr(low_hint).is_some()
+    };
+    kprintln!(
+        "[test/mm][mmap][precheck] low_hint={:#x} mapped_before={}",
+        low_hint,
+        low_hint_mapped_before
+    );
     let map_ret = do_mmap(0, page * 2, prot_rw, map_flags, usize::MAX, 0);
     if ret_is_err(map_ret) {
         kprintln!(
@@ -135,6 +146,10 @@ pub(super) fn run() {
     if map_addr < crate::mm::USER_SPACE_START || !crate::mm::is_user_addr(map_addr) {
         let _ = do_munmap(map_addr as usize, page * 2);
         return fail("mmap", "mmap returned address outside user range");
+    }
+    if low_hint_mapped_before && map_addr == low_hint {
+        let _ = do_munmap(map_addr as usize, page * 2);
+        return fail("mmap", "mmap selected pre-mapped low hint address");
     }
 
     // 触发匿名页缺页分配：写入两个页面并校验可读回。

@@ -48,6 +48,8 @@ fn mmap_select_addr(
     vm_flags: mm::VmFlags,
 ) -> Result<u64, i32> {
     let map_fixed = (flags & mm::mmap_flags::MAP_FIXED) != 0;
+    let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
+    let pt_mgr = unsafe { mm::PageTableManager::new(cr3, mm::DIRECT_MAP_OFFSET) };
 
     let mut mm_state = mm::get_init_mm();
     if map_fixed {
@@ -62,27 +64,47 @@ fn mmap_select_addr(
         if mm_state.find_vma_intersection(start, end).is_some() {
             return Err(EBUSY);
         }
+        if !range_unmapped_in_page_table(&pt_mgr, start, end) {
+            return Err(EBUSY);
+        }
         return Ok(start);
     }
 
-    let hint = if req_addr == 0 {
+    let mut hint = if req_addr == 0 {
         mm::USER_SPACE_START
     } else {
         mm::page_align_up(req_addr as u64).max(mm::USER_SPACE_START)
     };
 
-    let start = mm_state
-        .find_free_area(hint, len_aligned, vm_flags)
-        .or_else(|| {
-            if hint != mm::USER_SPACE_START {
-                mm_state.find_free_area(mm::USER_SPACE_START, len_aligned, vm_flags)
-            } else {
-                None
-            }
-        })
-        .ok_or(ENOMEM)?;
-    validate_user_mmap_range(start, len_aligned)?;
-    Ok(start)
+    // 在 VMA 空洞中进一步过滤“页表已有映射”的区间，避免覆盖早期恒等映射等遗留映射。
+    for _ in 0..1024 {
+        let Some(start) = mm_state.find_free_area(hint, len_aligned, vm_flags) else {
+            return Err(ENOMEM);
+        };
+        validate_user_mmap_range(start, len_aligned)?;
+        let end = start.checked_add(len_aligned).ok_or(ENOMEM)?;
+        if range_unmapped_in_page_table(&pt_mgr, start, end) {
+            return Ok(start);
+        }
+
+        hint = end;
+        if hint >= mm::USER_SPACE_END {
+            return Err(ENOMEM);
+        }
+    }
+
+    Err(ENOMEM)
+}
+
+fn range_unmapped_in_page_table(pt_mgr: &mm::PageTableManager, start: u64, end: u64) -> bool {
+    let mut cursor = start;
+    while cursor < end {
+        if pt_mgr.translate_addr(cursor).is_some() {
+            return false;
+        }
+        cursor = cursor.saturating_add(mm::PAGE_SIZE);
+    }
+    true
 }
 
 unsafe fn unmap_and_release_pages(start: u64, end: u64) {
