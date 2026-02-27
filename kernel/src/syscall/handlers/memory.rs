@@ -71,7 +71,7 @@ fn mmap_select_addr(
     }
 
     let mut hint = if req_addr == 0 {
-        mm::USER_SPACE_START
+        mm_state.mmap_base.max(mm::USER_SPACE_START)
     } else {
         mm::page_align_up(req_addr as u64).max(mm::USER_SPACE_START)
     };
@@ -90,6 +90,25 @@ fn mmap_select_addr(
         hint = end;
         if hint >= mm::USER_SPACE_END {
             return Err(ENOMEM);
+        }
+    }
+
+    if hint != mm::USER_SPACE_START {
+        hint = mm::USER_SPACE_START;
+        for _ in 0..1024 {
+            let Some(start) = mm_state.find_free_area(hint, len_aligned, vm_flags) else {
+                return Err(ENOMEM);
+            };
+            validate_user_mmap_range(start, len_aligned)?;
+            let end = start.checked_add(len_aligned).ok_or(ENOMEM)?;
+            if range_unmapped_in_page_table(&pt_mgr, start, end) {
+                return Ok(start);
+            }
+
+            hint = end;
+            if hint >= mm::USER_SPACE_END {
+                return Err(ENOMEM);
+            }
         }
     }
 
