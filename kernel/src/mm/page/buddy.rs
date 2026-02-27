@@ -4,7 +4,7 @@
 // 参考 Linux 内核实现，基于 Zone 和 struct page
 // ============================================================================
 
-use super::page::{Page, PageFlags, pfn_to_page, page_to_pfn};
+use super::page::{max_pfn, vmemmap_base_ptr, Page, PageFlags, page_to_pfn, pfn_to_page};
 use super::zone::{Zone, GfpFlags, MAX_ORDER, get_zone, gfp_to_zone_list};
 use super::zone::{pages_per_order, get_buddy_pfn};
 use super::pcp::{pcp_alloc_page, pcp_free_page, pcp_initialized};
@@ -28,38 +28,34 @@ static INVALID_MM_STATE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 #[inline]
 fn mm_state_ready() -> bool {
-    unsafe {
-        let base = super::page::VMEMMAP_BASE as usize;
-        let max_pfn = super::page::MAX_PFN;
-        if base != 0 && max_pfn != 0 {
-            return true;
-        }
-        if !INVALID_MM_STATE_LOGGED.swap(true, Ordering::SeqCst) {
-            crate::kprintln!(
-                "[diag][buddy] mm state invalid: vmemmap_base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
-                base,
-                max_pfn,
-                core::ptr::addr_of!(super::page::VMEMMAP_BASE) as usize,
-                core::ptr::addr_of!(super::page::MAX_PFN) as usize,
-            );
-        }
-        false
+    let base = vmemmap_base_ptr() as usize;
+    let max = max_pfn();
+    if base != 0 && max != 0 {
+        return true;
     }
+    if !INVALID_MM_STATE_LOGGED.swap(true, Ordering::SeqCst) {
+        crate::kprintln!(
+            "[diag][buddy] mm state invalid: vmemmap_base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
+            base,
+            max,
+            core::ptr::addr_of!(super::page::VMEMMAP_BASE) as usize,
+            core::ptr::addr_of!(super::page::MAX_PFN) as usize,
+        );
+    }
+    false
 }
 
 #[inline]
 fn is_page_ptr_in_vmemmap(page: *const Page) -> bool {
-    unsafe {
-        let base = super::page::VMEMMAP_BASE as usize;
-        let max_pfn = super::page::MAX_PFN as usize;
-        if base == 0 || max_pfn == 0 {
-            return false;
-        }
-        let span_bytes = max_pfn.saturating_mul(core::mem::size_of::<Page>());
-        let end = base.saturating_add(span_bytes);
-        let ptr = page as usize;
-        ptr >= base && ptr < end && ((ptr - base) % core::mem::size_of::<Page>() == 0)
+    let base = vmemmap_base_ptr() as usize;
+    let max = max_pfn() as usize;
+    if base == 0 || max == 0 {
+        return false;
     }
+    let span_bytes = max.saturating_mul(core::mem::size_of::<Page>());
+    let end = base.saturating_add(span_bytes);
+    let ptr = page as usize;
+    ptr >= base && ptr < end && ((ptr - base) % core::mem::size_of::<Page>() == 0)
 }
 
 // ============================================================================
@@ -86,12 +82,12 @@ pub fn alloc_pages(order: usize, gfp: GfpFlags) -> Option<&'static mut Page> {
     let zone_list = gfp_to_zone_list(gfp);
     
     for &zone_type in zone_list {
-        let zone = unsafe { get_zone(zone_type) };
+        let mut zone = get_zone(zone_type);
         if !zone.initialized {
             continue;
         }
         
-        if let Some(page) = zone_alloc_pages(zone, order, gfp) {
+        if let Some(page) = zone_alloc_pages(&mut zone, order, gfp) {
             if !is_page_ptr_in_vmemmap(page as *const Page) {
                 crate::kprintln!(
                     "[diag][buddy] invalid page pointer from zone_alloc_pages: zone={:?} order={} page_ptr={:#x}",
@@ -230,7 +226,7 @@ pub unsafe fn free_pages(page: &mut Page, order: usize) {
         }
         
         let mut pfn = page_to_pfn(page);
-        let zone = match super::zone::pfn_to_zone(pfn) {
+        let mut zone = match super::zone::pfn_to_zone(pfn) {
             Some(z) => z,
             None => return,
         };

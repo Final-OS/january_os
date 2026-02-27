@@ -28,7 +28,9 @@
 //! 4. Buddy 初始化时，memblock 将剩余空闲内存释放给 Buddy
 //! 5. Memblock 不再使用（但保留的内存仍然有效）
 
+use core::cell::UnsafeCell;
 use core::cmp::{min, max};
+use core::sync::atomic::{AtomicBool, Ordering};
 use crate::error::{KernelError, KernelResult};
 
 // ============================================================================
@@ -151,16 +153,40 @@ pub struct Memblock {
 // 全局 Memblock 实例
 // ============================================================================
 
+struct MemblockState {
+    inner: UnsafeCell<Memblock>,
+}
+
+unsafe impl Sync for MemblockState {}
+
+impl MemblockState {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new(Memblock {
+                bottom_up: false,
+                current_limit: u64::MAX,
+                memory: MemblockType::new("memory", MEMBLOCK_REGIONS_MAX),
+                reserved: MemblockType::new("reserved", MEMBLOCK_RESERVED_MAX),
+            }),
+        }
+    }
+}
+
 /// 全局 memblock 实例
-static mut MEMBLOCK: Memblock = Memblock {
-    bottom_up: false,
-    current_limit: u64::MAX,
-    memory: MemblockType::new("memory", MEMBLOCK_REGIONS_MAX),
-    reserved: MemblockType::new("reserved", MEMBLOCK_RESERVED_MAX),
-};
+static MEMBLOCK: MemblockState = MemblockState::new();
 
 /// Memblock 是否已初始化
-static mut MEMBLOCK_INITIALIZED: bool = false;
+static MEMBLOCK_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+fn memblock_ref() -> &'static Memblock {
+    unsafe { &*MEMBLOCK.inner.get() }
+}
+
+#[inline]
+unsafe fn memblock_mut() -> &'static mut Memblock {
+    unsafe { &mut *MEMBLOCK.inner.get() }
+}
 
 // ============================================================================
 // 公共 API
@@ -169,20 +195,20 @@ static mut MEMBLOCK_INITIALIZED: bool = false;
 /// 初始化 memblock
 pub fn memblock_init() {
     unsafe {
-        let mb = &mut *core::ptr::addr_of_mut!(MEMBLOCK);
+        let mb = memblock_mut();
         mb.memory.cnt = 0;
         mb.memory.total_size = 0;
         mb.reserved.cnt = 0;
         mb.reserved.total_size = 0;
         mb.bottom_up = false;
         mb.current_limit = u64::MAX;
-        *core::ptr::addr_of_mut!(MEMBLOCK_INITIALIZED) = true;
+        MEMBLOCK_INITIALIZED.store(true, Ordering::Release);
     }
 }
 
 /// 检查 memblock 是否已初始化
 pub fn memblock_initialized() -> bool {
-    unsafe { *core::ptr::addr_of!(MEMBLOCK_INITIALIZED) }
+    MEMBLOCK_INITIALIZED.load(Ordering::Acquire)
 }
 
 /// 添加内存区域到 memory 列表
@@ -195,7 +221,7 @@ pub fn memblock_initialized() -> bool {
 /// 成功返回 Ok(()), 失败返回错误信息
 pub fn memblock_add(base: u64, size: u64) -> KernelResult<()> {
     unsafe {
-        memblock_add_range(&mut (*core::ptr::addr_of_mut!(MEMBLOCK)).memory, base, size, MemblockFlags::NONE)
+        memblock_add_range(&mut memblock_mut().memory, base, size, MemblockFlags::NONE)
     }
 }
 
@@ -206,7 +232,7 @@ pub fn memblock_add(base: u64, size: u64) -> KernelResult<()> {
 /// * `size` - 区域大小
 pub fn memblock_reserve(base: u64, size: u64) -> KernelResult<()> {
     unsafe {
-        memblock_add_range(&mut (*core::ptr::addr_of_mut!(MEMBLOCK)).reserved, base, size, MemblockFlags::NONE)
+        memblock_add_range(&mut memblock_mut().reserved, base, size, MemblockFlags::NONE)
     }
 }
 
@@ -219,7 +245,7 @@ pub fn memblock_reserve(base: u64, size: u64) -> KernelResult<()> {
 /// # Returns
 /// 成功返回物理地址，失败返回 0
 pub fn memblock_alloc(size: u64, align: u64) -> u64 {
-    memblock_alloc_range(size, align, 0, unsafe { (*core::ptr::addr_of!(MEMBLOCK)).current_limit })
+    memblock_alloc_range(size, align, 0, memblock_ref().current_limit)
 }
 
 /// 从指定范围分配内存
@@ -237,7 +263,7 @@ pub fn memblock_alloc_range(size: u64, align: u64, start: u64, end: u64) -> u64 
     let align = if align == 0 { 1 } else { align };
 
     unsafe {
-        let memblock = &mut *core::ptr::addr_of_mut!(MEMBLOCK);
+        let memblock = memblock_mut();
         
         // 根据 bottom_up 决定分配方向
         if memblock.bottom_up {
@@ -266,7 +292,7 @@ pub fn memblock_alloc_zeroed(size: u64, align: u64) -> u64 {
 /// 注意：这只是从 reserved 列表中移除，不影响 memory 列表
 pub fn memblock_free(base: u64, size: u64) -> KernelResult<()> {
     unsafe {
-        memblock_remove_range(&mut (*core::ptr::addr_of_mut!(MEMBLOCK)).reserved, base, size)
+        memblock_remove_range(&mut memblock_mut().reserved, base, size)
     }
 }
 
@@ -275,25 +301,25 @@ pub fn memblock_free(base: u64, size: u64) -> KernelResult<()> {
 /// * `enable` - true 从底部分配，false 从顶部分配（默认）
 pub fn memblock_set_bottom_up(enable: bool) {
     unsafe {
-        (*core::ptr::addr_of_mut!(MEMBLOCK)).bottom_up = enable;
+        memblock_mut().bottom_up = enable;
     }
 }
 
 /// 设置分配限制
 pub fn memblock_set_current_limit(limit: u64) {
     unsafe {
-        (*core::ptr::addr_of_mut!(MEMBLOCK)).current_limit = limit;
+        memblock_mut().current_limit = limit;
     }
 }
 
 /// 获取物理内存总大小
 pub fn memblock_phys_mem_size() -> u64 {
-    unsafe { (*core::ptr::addr_of!(MEMBLOCK)).memory.total_size }
+    memblock_ref().memory.total_size
 }
 
 /// 获取已保留内存总大小
 pub fn memblock_reserved_size() -> u64 {
-    unsafe { (*core::ptr::addr_of!(MEMBLOCK)).reserved.total_size }
+    memblock_ref().reserved.total_size
 }
 
 /// 获取空闲内存大小
@@ -303,11 +329,10 @@ pub fn memblock_free_size() -> u64 {
 
 /// 获取最大物理地址
 pub fn memblock_end_of_phys_mem() -> u64 {
-    unsafe {
-        let memory = &(*core::ptr::addr_of!(MEMBLOCK)).memory;
-        if memory.cnt == 0 {
-            return 0;
-        }
+    let memory = &memblock_ref().memory;
+    if memory.cnt == 0 {
+        0
+    } else {
         memory.regions[memory.cnt - 1].end()
     }
 }
@@ -320,49 +345,47 @@ pub fn memblock_for_each_free_region<F>(mut callback: F)
 where
     F: FnMut(u64, u64) -> bool,
 {
-    unsafe {
-        let memblock = &*core::ptr::addr_of!(MEMBLOCK);
-        
-        for i in 0..memblock.memory.cnt {
-            let mem_region = &memblock.memory.regions[i];
-            if mem_region.is_empty() {
+    let memblock = memblock_ref();
+    
+    for i in 0..memblock.memory.cnt {
+        let mem_region = &memblock.memory.regions[i];
+        if mem_region.is_empty() {
+            continue;
+        }
+
+        let mut current = mem_region.base;
+        let mem_end = mem_region.end();
+
+        // 遍历该内存区域，排除已保留的部分
+        for j in 0..memblock.reserved.cnt {
+            let res_region = &memblock.reserved.regions[j];
+            if res_region.is_empty() {
                 continue;
             }
 
-            let mut current = mem_region.base;
-            let mem_end = mem_region.end();
-
-            // 遍历该内存区域，排除已保留的部分
-            for j in 0..memblock.reserved.cnt {
-                let res_region = &memblock.reserved.regions[j];
-                if res_region.is_empty() {
-                    continue;
-                }
-
-                // 检查保留区域是否在当前内存区域内
-                if res_region.base >= mem_end {
-                    break;
-                }
-                if res_region.end() <= current {
-                    continue;
-                }
-
-                // 保留区域之前的部分是空闲的
-                if current < res_region.base {
-                    let free_end = min(res_region.base, mem_end);
-                    if !callback(current, free_end - current) {
-                        return;
-                    }
-                }
-
-                current = max(current, res_region.end());
+            // 检查保留区域是否在当前内存区域内
+            if res_region.base >= mem_end {
+                break;
+            }
+            if res_region.end() <= current {
+                continue;
             }
 
-            // 处理最后一个保留区域之后的空闲部分
-            if current < mem_end {
-                if !callback(current, mem_end - current) {
+            // 保留区域之前的部分是空闲的
+            if current < res_region.base {
+                let free_end = min(res_region.base, mem_end);
+                if !callback(current, free_end - current) {
                     return;
                 }
+            }
+
+            current = max(current, res_region.end());
+        }
+
+        // 处理最后一个保留区域之后的空闲部分
+        if current < mem_end {
+            if !callback(current, mem_end - current) {
+                return;
             }
         }
     }
@@ -374,46 +397,40 @@ where
 
 /// 打印 memblock 状态
 pub fn memblock_dump() {
-    unsafe {
-        let memblock = &*core::ptr::addr_of!(MEMBLOCK);
-        
-        // 这里可以使用串口打印
-        // 由于没有 kprintln 宏的直接访问，调用者需要自己打印
-        let _ = memblock;
-    }
+    let memblock = memblock_ref();
+    
+    // 这里可以使用串口打印
+    // 由于没有 kprintln 宏的直接访问，调用者需要自己打印
+    let _ = memblock;
 }
 
 /// 获取 memory 区域数量
 pub fn memblock_memory_region_count() -> usize {
-    unsafe { (*core::ptr::addr_of!(MEMBLOCK)).memory.cnt }
+    memblock_ref().memory.cnt
 }
 
 /// 获取 reserved 区域数量
 pub fn memblock_reserved_region_count() -> usize {
-    unsafe { (*core::ptr::addr_of!(MEMBLOCK)).reserved.cnt }
+    memblock_ref().reserved.cnt
 }
 
 /// 获取 memory 区域（用于迭代）
 pub fn memblock_memory_region(index: usize) -> Option<MemblockRegion> {
-    unsafe {
-        let mb = &*core::ptr::addr_of!(MEMBLOCK);
-        if index < mb.memory.cnt {
-            Some(mb.memory.regions[index])
-        } else {
-            None
-        }
+    let mb = memblock_ref();
+    if index < mb.memory.cnt {
+        Some(mb.memory.regions[index])
+    } else {
+        None
     }
 }
 
 /// 获取 reserved 区域（用于迭代）
 pub fn memblock_reserved_region(index: usize) -> Option<MemblockRegion> {
-    unsafe {
-        let mb = &*core::ptr::addr_of!(MEMBLOCK);
-        if index < mb.reserved.cnt {
-            Some(mb.reserved.regions[index])
-        } else {
-            None
-        }
+    let mb = memblock_ref();
+    if index < mb.reserved.cnt {
+        Some(mb.reserved.regions[index])
+    } else {
+        None
     }
 }
 
@@ -642,7 +659,7 @@ fn memblock_find_in_range_top_down(
             region_end,
         ) {
             // 找到了，保留这块内存
-            if memblock_reserve(addr, size).is_ok() {
+            if memblock_add_range(&mut memblock.reserved, addr, size, MemblockFlags::NONE).is_ok() {
                 return addr;
             }
         }
@@ -683,7 +700,7 @@ fn memblock_find_in_range_bottom_up(
             region_end,
         ) {
             // 找到了，保留这块内存
-            if memblock_reserve(addr, size).is_ok() {
+            if memblock_add_range(&mut memblock.reserved, addr, size, MemblockFlags::NONE).is_ok() {
                 return addr;
             }
         }

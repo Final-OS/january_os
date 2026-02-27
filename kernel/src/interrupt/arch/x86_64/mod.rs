@@ -107,26 +107,34 @@ pub unsafe fn init(info: &InterruptInitInfo) -> Result<(), &'static str> {
 ///
 /// 必须在 AP 核心启动时调用，中断禁用。
 pub unsafe fn init_ap(cpu_id: usize, kernel_stack_top: u64, local_apic_addr: u64, direct_map_base: u64) -> Result<(), &'static str> {
+    crate::smp::ap_boot_probe_set_stage(31);
+
     // 1. 初始化 GDT 和 TSS (Local)
     init_gdt(cpu_id, kernel_stack_top);
+    crate::smp::ap_boot_probe_set_stage(32);
 
     // 1.0 AP 同步初始化 syscall 指令入口
     crate::arch::syscall::init_syscall();
+    crate::smp::ap_boot_probe_set_stage(33);
 
-    // 1.1 分配并设置 IST1 栈 (用于 Double Fault)
+    // 1.1 先初始化本核 Local APIC，确保后续可能涉及锁/CPU 标识的路径可用。
+    if local_apic_addr != 0 {
+        init_local_apic(local_apic_addr);
+    }
+    crate::smp::ap_boot_probe_set_stage(34);
+
+    // 1.2 分配并设置 IST1 栈 (用于 Double Fault)
     if let Some(ist_page) = mm::alloc_pages(2, mm::GFP_KERNEL) {
         let ist_top = direct_map_base + mm::page_to_pfn(ist_page) * 4096 + 16 * 1024;
         set_interrupt_stack(cpu_id, 1, ist_top);
     }
+    crate::smp::ap_boot_probe_set_stage(35);
 
     // 2. 加载 IDT (Global IDT, Local IDTR)
     idt::load_idt();
+    crate::smp::ap_boot_probe_set_stage(36);
 
-    // 3. 初始化 Local APIC (Local)
-    if local_apic_addr != 0 {
-        init_local_apic(local_apic_addr);
-    }
-
+    crate::smp::ap_boot_probe_set_stage(37);
     Ok(())
 }
 

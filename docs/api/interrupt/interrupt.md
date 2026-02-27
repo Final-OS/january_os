@@ -202,15 +202,14 @@ ioapic_unmask_irq(5);
 
 ```rust
 use kernel::interrupt::without_interrupts;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-static mut COUNTER: u64 = 0;
+static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn increment_counter() {
-    // 禁用中断，保证原子性
+    // 在临界区内完成更新
     without_interrupts(|| {
-        unsafe {
-            COUNTER += 1;
-        }
+        COUNTER.fetch_add(1, Ordering::Relaxed);
     });
 }
 ```

@@ -135,8 +135,8 @@ unsafe fn unmap_and_release_pages(start: u64, end: u64) {
         if let Some(phys) = pt_mgr.translate_addr(cursor) {
             let _ = pt_mgr.unmap_page(cursor);
             let pfn = phys / mm::PAGE_SIZE;
-            if pfn < mm::MAX_PFN {
-                let page = mm::pfn_to_page(pfn);
+            if pfn < mm::max_pfn() {
+                let page = &mut *mm::pfn_to_page(pfn);
                 if page.mapcount() >= 0 {
                     page.dec_mapcount();
                 }

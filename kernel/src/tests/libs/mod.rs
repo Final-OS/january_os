@@ -49,6 +49,7 @@ pub fn run_with_filter(filter: Option<&str>) {
             run_case("hlist", collections::run_hlist);
             run_case("wait_queue", collections::run_wait_queue);
             run_case("id_allocator", collections::run_id_allocator);
+            run_case("sync_once", collections::run_sync_once);
         }
         Some("rbtree") => run_case("rbtree", rbtree::run),
         Some("lru") => run_case("lru", lru::run),
@@ -62,9 +63,10 @@ pub fn run_with_filter(filter: Option<&str>) {
         Some("hlist") => run_case("hlist", collections::run_hlist),
         Some("waitq") | Some("wait_queue") => run_case("wait_queue", collections::run_wait_queue),
         Some("idalloc") | Some("id_allocator") => run_case("id_allocator", collections::run_id_allocator),
+        Some("once") | Some("sync_once") => run_case("sync_once", collections::run_sync_once),
         Some(name) => {
             error!("Unknown test: {}", name);
-            kprintln!("Available tests: rbtree, lru, rdtree, btree, mptree, rcu, ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator");
+            kprintln!("Available tests: rbtree, lru, rdtree, btree, mptree, rcu, ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once");
         }
     }
 

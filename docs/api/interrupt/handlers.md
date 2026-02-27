@@ -127,18 +127,17 @@ idt.set_handler(DIVIDE_ERROR,
 ```rust
 use x86_64::structures::idt::InterruptStackFrame;
 use kernel::interrupt::local_apic_eoi;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 extern "x86-interrupt" fn custom_timer_handler(
     _frame: InterruptStackFrame)
 {
-    static mut COUNT: u64 = 0;
+    static COUNT: AtomicU64 = AtomicU64::new(0);
 
-    unsafe {
-        COUNT += 1;
+    let count = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
-        if COUNT % 100 == 0 {
-            kprintln!("Timer: {}", COUNT);
-        }
+    if count % 100 == 0 {
+        kprintln!("Timer: {}", count);
     }
 
     // 发送 EOI

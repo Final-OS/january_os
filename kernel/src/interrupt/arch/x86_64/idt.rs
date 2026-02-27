@@ -36,6 +36,7 @@
 //! ```
 
 use core::arch::asm;
+use core::cell::UnsafeCell;
 use core::mem::size_of;
 use super::gdt::KERNEL_CODE_SELECTOR;
 use super::handlers;
@@ -293,7 +294,31 @@ pub struct InterruptFrameWithError {
 // ============================================================================
 
 /// 全局 IDT
-static mut IDT: Idt = Idt::new();
+struct IdtState {
+    inner: UnsafeCell<Idt>,
+}
+
+unsafe impl Sync for IdtState {}
+
+impl IdtState {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new(Idt::new()),
+        }
+    }
+}
+
+static IDT: IdtState = IdtState::new();
+
+#[inline]
+unsafe fn idt_mut() -> &'static mut Idt {
+    unsafe { &mut *IDT.inner.get() }
+}
+
+#[inline]
+unsafe fn idt_ref() -> &'static Idt {
+    unsafe { &*IDT.inner.get() }
+}
 
 /// 获取 IDT 可变引用
 /// 
@@ -301,7 +326,7 @@ static mut IDT: Idt = Idt::new();
 /// 
 /// 调用者必须确保没有并发访问
 pub unsafe fn get_idt_mut() -> &'static mut Idt {
-    unsafe { &mut *core::ptr::addr_of_mut!(IDT) }
+    unsafe { idt_mut() }
 }
 
 /// 初始化 IDT
@@ -410,7 +435,7 @@ pub unsafe fn init() -> Result<(), &'static str> {
 /// 只应在初始化时调用一次
 pub unsafe fn load_idt() {
     unsafe {
-        let idt = &*core::ptr::addr_of!(IDT);
+        let idt = idt_ref();
         idt.load();
     }
 }

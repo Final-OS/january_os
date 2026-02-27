@@ -23,6 +23,7 @@ pub struct RwLock<T> {
     /// - WRITER: 写锁被持有
     /// - WRITER | n: 写锁被持有，n 个读者在等待（不使用此模式）
     state: AtomicU32,
+    waiting_writers: AtomicU32,
     data: UnsafeCell<T>,
 }
 
@@ -34,6 +35,7 @@ impl<T> RwLock<T> {
     pub const fn new(data: T) -> Self {
         Self {
             state: AtomicU32::new(UNLOCKED),
+            waiting_writers: AtomicU32::new(0),
             data: UnsafeCell::new(data),
         }
     }
@@ -45,6 +47,10 @@ impl<T> RwLock<T> {
     pub fn read(&self) -> RwLockReadGuard<T> {
         loop {
             let state = self.state.load(Ordering::Relaxed);
+            if self.waiting_writers.load(Ordering::Acquire) > 0 {
+                core::hint::spin_loop();
+                continue;
+            }
             
             // 如果没有写者，尝试增加读者计数
             if state < WRITER {
@@ -73,6 +79,9 @@ impl<T> RwLock<T> {
     /// 尝试获取读锁（非阻塞）
     pub fn try_read(&self) -> Option<RwLockReadGuard<T>> {
         let state = self.state.load(Ordering::Relaxed);
+        if self.waiting_writers.load(Ordering::Acquire) > 0 {
+            return None;
+        }
         
         if state < WRITER && state < MAX_READERS {
             if self.state
@@ -95,6 +104,7 @@ impl<T> RwLock<T> {
     ///
     /// 独占访问，等待所有读者和其他写者释放。
     pub fn write(&self) -> RwLockWriteGuard<T> {
+        self.waiting_writers.fetch_add(1, Ordering::AcqRel);
         loop {
             // 尝试从 UNLOCKED 状态获取写锁
             if self.state
@@ -106,6 +116,7 @@ impl<T> RwLock<T> {
                 )
                 .is_ok()
             {
+                self.waiting_writers.fetch_sub(1, Ordering::AcqRel);
                 return RwLockWriteGuard { lock: self };
             }
             
@@ -115,6 +126,9 @@ impl<T> RwLock<T> {
 
     /// 尝试获取写锁（非阻塞）
     pub fn try_write(&self) -> Option<RwLockWriteGuard<T>> {
+        if self.waiting_writers.load(Ordering::Acquire) > 0 {
+            return None;
+        }
         if self.state
             .compare_exchange(
                 UNLOCKED,

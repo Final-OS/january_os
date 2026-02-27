@@ -3,7 +3,7 @@
 //! 支持 USB HID 鼠标设备
 
 use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
-use crate::sync::Once;
+use crate::sync::{IrqSpinLock, Once};
 use super::hid::{BootMouseReport, HidProtocol};
 
 // ============================================================================
@@ -203,19 +203,18 @@ impl UsbMouse {
 // 全局状态
 // ============================================================================
 
-static mut GLOBAL_MOUSE: Option<UsbMouse> = None;
+static GLOBAL_MOUSE: IrqSpinLock<Option<UsbMouse>> = IrqSpinLock::new(None);
 
 /// 处理 Boot 协议报告 (供外部驱动调用)
 pub fn handle_boot_report(report: BootMouseReport) {
-    unsafe {
-        if (*core::ptr::addr_of!(GLOBAL_MOUSE)).is_none() {
-            // 初始化默认实例
-            GLOBAL_MOUSE = Some(UsbMouse::new(0, 0, 0));
-        }
-        
-        if let Some(mouse) = &mut *core::ptr::addr_of_mut!(GLOBAL_MOUSE) {
-            mouse.process_report(&report);
-        }
+    let mut mouse = GLOBAL_MOUSE.lock();
+    if mouse.is_none() {
+        // 初始化默认实例
+        *mouse = Some(UsbMouse::new(0, 0, 0));
+    }
+    
+    if let Some(mouse) = mouse.as_mut() {
+        mouse.process_report(&report);
     }
 }
 
@@ -223,14 +222,14 @@ pub fn handle_boot_report(report: BootMouseReport) {
 const EVENT_BUFFER_SIZE: usize = 64;
 
 /// 鼠标事件缓冲区
-static mut MOUSE_EVENT_BUFFER: [MouseEvent; EVENT_BUFFER_SIZE] = [MouseEvent {
+static MOUSE_EVENT_BUFFER: IrqSpinLock<[MouseEvent; EVENT_BUFFER_SIZE]> = IrqSpinLock::new([MouseEvent {
     event_type: MouseEventType::Move,
     dx: 0,
     dy: 0,
     scroll: 0,
     button: None,
     buttons: 0,
-}; EVENT_BUFFER_SIZE];
+}; EVENT_BUFFER_SIZE]);
 
 static MOUSE_EVENT_HEAD: AtomicUsize = AtomicUsize::new(0);
 static MOUSE_EVENT_TAIL: AtomicUsize = AtomicUsize::new(0);
@@ -259,7 +258,7 @@ pub fn poll() {
 
 /// 检查鼠标是否存在
 pub fn is_present() -> bool {
-    unsafe { (*core::ptr::addr_of!(GLOBAL_MOUSE)).is_some() }
+    GLOBAL_MOUSE.lock().is_some()
 }
 
 /// 获取缓冲区状态 (head, tail)
@@ -275,10 +274,7 @@ fn push_mouse_event(event: MouseEvent) {
     let next_head = (head + 1) % EVENT_BUFFER_SIZE;
     
     if next_head != MOUSE_EVENT_TAIL.load(Ordering::Relaxed) {
-        unsafe {
-            // 使用 addr_of_mut! 避免 static_mut_refs
-            (*core::ptr::addr_of_mut!(MOUSE_EVENT_BUFFER))[head] = event;
-        }
+        MOUSE_EVENT_BUFFER.lock()[head] = event;
         MOUSE_EVENT_HEAD.store(next_head, Ordering::Relaxed);
     }
     
@@ -295,7 +291,7 @@ pub fn read_event() -> Option<MouseEvent> {
         return None;
     }
     
-    let event = unsafe { MOUSE_EVENT_BUFFER[tail] };
+    let event = MOUSE_EVENT_BUFFER.lock()[tail];
     MOUSE_EVENT_TAIL.store((tail + 1) % EVENT_BUFFER_SIZE, Ordering::Relaxed);
     Some(event)
 }

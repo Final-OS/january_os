@@ -3,7 +3,7 @@
 //! 支持 USB HID 键盘设备
 
 use super::hid::{BootKeyboardReport, HidProtocol};
-use crate::sync::Once;
+use crate::sync::{IrqSpinLock, Once};
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 // ============================================================================
@@ -389,19 +389,18 @@ impl UsbKeyboard {
 // 全局状态
 // ============================================================================
 
-static mut GLOBAL_KEYBOARD: Option<UsbKeyboard> = None;
+static GLOBAL_KEYBOARD: IrqSpinLock<Option<UsbKeyboard>> = IrqSpinLock::new(None);
 
 /// 处理 Boot 协议报告 (供外部驱动调用)
 pub fn handle_boot_report(report: BootKeyboardReport) {
-    unsafe {
-        if (*core::ptr::addr_of!(GLOBAL_KEYBOARD)).is_none() {
-            // 初始化默认实例
-            GLOBAL_KEYBOARD = Some(UsbKeyboard::new(0, 0, 0));
-        }
+    let mut keyboard = GLOBAL_KEYBOARD.lock();
+    if keyboard.is_none() {
+        // 初始化默认实例
+        *keyboard = Some(UsbKeyboard::new(0, 0, 0));
+    }
 
-        if let Some(kbd) = &mut *core::ptr::addr_of_mut!(GLOBAL_KEYBOARD) {
-            kbd.process_report(&report);
-        }
+    if let Some(kbd) = keyboard.as_mut() {
+        kbd.process_report(&report);
     }
 }
 
@@ -409,7 +408,7 @@ pub fn handle_boot_report(report: BootKeyboardReport) {
 const EVENT_BUFFER_SIZE: usize = 64;
 
 /// 按键事件缓冲区
-static mut KEY_EVENT_BUFFER: [KeyEvent; EVENT_BUFFER_SIZE] = [KeyEvent {
+static KEY_EVENT_BUFFER: IrqSpinLock<[KeyEvent; EVENT_BUFFER_SIZE]> = IrqSpinLock::new([KeyEvent {
     keycode: KeyCode::None,
     event_type: KeyEventType::Press,
     modifiers: Modifiers {
@@ -426,7 +425,7 @@ static mut KEY_EVENT_BUFFER: [KeyEvent; EVENT_BUFFER_SIZE] = [KeyEvent {
         scroll_lock: false,
     },
     ascii: None,
-}; EVENT_BUFFER_SIZE];
+}; EVENT_BUFFER_SIZE]);
 
 static KEY_EVENT_HEAD: AtomicUsize = AtomicUsize::new(0);
 static KEY_EVENT_TAIL: AtomicUsize = AtomicUsize::new(0);
@@ -457,7 +456,7 @@ pub fn poll() {
 
 /// 检查键盘是否存在
 pub fn is_present() -> bool {
-    unsafe { (*core::ptr::addr_of!(GLOBAL_KEYBOARD)).is_some() }
+    GLOBAL_KEYBOARD.lock().is_some()
 }
 
 /// 获取缓冲区状态 (head, tail)
@@ -474,10 +473,7 @@ fn push_key_event(event: KeyEvent) {
     let next_head = (head + 1) % EVENT_BUFFER_SIZE;
 
     if next_head != KEY_EVENT_TAIL.load(Ordering::Relaxed) {
-        unsafe {
-            // 使用 addr_of_mut! 避免 static_mut_refs
-            (*core::ptr::addr_of_mut!(KEY_EVENT_BUFFER))[head] = event;
-        }
+        KEY_EVENT_BUFFER.lock()[head] = event;
         KEY_EVENT_HEAD.store(next_head, Ordering::Relaxed);
     }
 
@@ -526,7 +522,7 @@ pub fn read_event() -> Option<KeyEvent> {
         return None;
     }
 
-    let event = unsafe { KEY_EVENT_BUFFER[tail] };
+    let event = KEY_EVENT_BUFFER.lock()[tail];
     KEY_EVENT_TAIL.store((tail + 1) % EVENT_BUFFER_SIZE, Ordering::Relaxed);
     Some(event)
 }

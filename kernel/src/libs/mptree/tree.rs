@@ -222,6 +222,48 @@ impl<V> MapleTree<V> {
         }
     }
 
+    /// 将一个区间的起始地址移动到新位置，结束地址保持不变。
+    ///
+    /// 该操作用于 VMA 栈扩展等场景，要求目标区间与其它区间不重叠。
+    pub fn move_start(
+        &mut self,
+        old_start: usize,
+        new_start: usize,
+    ) -> Result<(usize, usize), MapleInsertError> {
+        let Some(existing) = self.tree.get(&old_start) else {
+            return Err(MapleInsertError::InvalidRange);
+        };
+        let old_end = existing.end;
+        if new_start >= old_end {
+            return Err(MapleInsertError::InvalidRange);
+        }
+
+        // 预检查重叠（排除当前要移动的区间本身）
+        for (_, entry) in self.tree.iter() {
+            if entry.start == old_start {
+                continue;
+            }
+            if !(old_end <= entry.start || new_start >= entry.end) {
+                return Err(MapleInsertError::Overlap);
+            }
+        }
+
+        let old_entry = self
+            .tree
+            .remove(&old_start)
+            .ok_or(MapleInsertError::InvalidRange)?;
+        let replaced = self.tree.insert(
+            new_start,
+            RangeEntry {
+                start: new_start,
+                end: old_end,
+                value: old_entry.value,
+            },
+        );
+        debug_assert!(replaced.is_none(), "move_start inserted over existing key");
+        Ok((old_start, old_end))
+    }
+
     /// 插入并覆盖重叠的区间
     pub fn insert_overwrite(
         &mut self,

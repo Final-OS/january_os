@@ -6,12 +6,13 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use crate::mm::page::page::{Page, PageFlags, pfn_to_page, page_to_pfn};
+use crate::mm::page::page::{max_pfn, page_to_pfn, pfn_to_page, Page, PageFlags};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::page::buddy::{alloc_pages, free_pages};
 use crate::mm::vm::layout::{DIRECT_MAP_OFFSET, PAGE_SIZE};
-use crate::sync::SpinLock;
+use crate::sync::IrqSpinLock;
 
 // ============================================================================
 // 常量
@@ -24,6 +25,7 @@ pub const KMALLOC_NUM_CACHES: usize = KMALLOC_SHIFT_HIGH - KMALLOC_SHIFT_LOW + 1
 
 /// 每个 slab 最大对象数
 pub const MAX_OBJS_PER_SLAB: usize = 512;
+const KMEM_CACHE_MAGIC: u64 = 0x4a4f_534c_5542_4348;
 
 // ============================================================================
 // Slab 页管理
@@ -56,6 +58,8 @@ pub struct FreePointer {
 /// 
 /// 管理特定大小对象的分配
 pub struct KmemCache {
+    /// 校验标记，防止 page.private 损坏后误解引用
+    pub magic: u64,
     /// 缓存名称
     pub name: &'static str,
     /// 对象大小
@@ -75,7 +79,7 @@ pub struct KmemCache {
     /// 分配的 slab 数
     pub slabs: AtomicUsize,
     /// 保护 partial 链表和 freelist 操作
-    pub lock: SpinLock<()>,
+    pub lock: IrqSpinLock<()>,
     /// 是否已初始化
     pub initialized: bool,
 }
@@ -84,6 +88,7 @@ impl KmemCache {
     /// 创建未初始化的缓存
     pub const fn uninit() -> Self {
         Self {
+            magic: 0,
             name: "",
             object_size: 0,
             size: 0,
@@ -93,13 +98,14 @@ impl KmemCache {
             partial: AtomicPtr::new(core::ptr::null_mut()),
             allocated: AtomicUsize::new(0),
             slabs: AtomicUsize::new(0),
-            lock: SpinLock::new(()),
+            lock: IrqSpinLock::new(()),
             initialized: false,
         }
     }
     
     /// 初始化缓存
     pub fn init(&mut self, name: &'static str, size: usize, align: usize) {
+        self.magic = KMEM_CACHE_MAGIC;
         self.name = name;
         self.object_size = size;
         self.align = align.max(core::mem::size_of::<FreePointer>());
@@ -252,7 +258,7 @@ impl KmemCache {
 
         // 找到对象所属的页
         let addr = ptr as u64;
-        let phys = match virt_to_phys(addr) {
+        let phys = match virt_to_phys_direct_map(addr) {
             Some(p) => p,
             None => return,
         };
@@ -284,19 +290,33 @@ impl KmemCache {
 // ============================================================================
 
 /// kmalloc 大小类缓存
-pub static mut KMALLOC_CACHES: [KmemCache; KMALLOC_NUM_CACHES] = [
-    KmemCache::uninit(), // 8
-    KmemCache::uninit(), // 16
-    KmemCache::uninit(), // 32
-    KmemCache::uninit(), // 64
-    KmemCache::uninit(), // 128
-    KmemCache::uninit(), // 256
-    KmemCache::uninit(), // 512
-    KmemCache::uninit(), // 1024
-    KmemCache::uninit(), // 2048
-    KmemCache::uninit(), // 4096
-    KmemCache::uninit(), // 8192
-];
+struct KmallocCaches {
+    inner: UnsafeCell<[KmemCache; KMALLOC_NUM_CACHES]>,
+}
+
+unsafe impl Sync for KmallocCaches {}
+
+impl KmallocCaches {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new([
+                KmemCache::uninit(), // 8
+                KmemCache::uninit(), // 16
+                KmemCache::uninit(), // 32
+                KmemCache::uninit(), // 64
+                KmemCache::uninit(), // 128
+                KmemCache::uninit(), // 256
+                KmemCache::uninit(), // 512
+                KmemCache::uninit(), // 1024
+                KmemCache::uninit(), // 2048
+                KmemCache::uninit(), // 4096
+                KmemCache::uninit(), // 8192
+            ]),
+        }
+    }
+}
+
+static KMALLOC_CACHES: KmallocCaches = KmallocCaches::new();
 
 /// kmalloc 大小类名称
 const KMALLOC_NAMES: [&str; KMALLOC_NUM_CACHES] = [
@@ -315,9 +335,10 @@ const KMALLOC_NAMES: [&str; KMALLOC_NUM_CACHES] = [
 
 /// 初始化 kmalloc 缓存
 pub unsafe fn init_kmalloc_caches() {
+    let caches = kmalloc_caches_mut();
     for i in 0..KMALLOC_NUM_CACHES {
         let size = 1 << (KMALLOC_SHIFT_LOW + i);
-        KMALLOC_CACHES[i].init(KMALLOC_NAMES[i], size, 8);
+        caches[i].init(KMALLOC_NAMES[i], size, 8);
     }
 }
 
@@ -331,9 +352,11 @@ fn find_kmalloc_cache(size: usize) -> Option<&'static KmemCache> {
     let min_size = 1 << KMALLOC_SHIFT_LOW;
     let size = size.max(min_size);
     
+    let caches = kmalloc_caches_ref();
+
     let index = size.next_power_of_two().trailing_zeros() as usize;
     if index < KMALLOC_SHIFT_LOW {
-        return Some(unsafe { &KMALLOC_CACHES[0] });
+        return Some(&caches[0]);
     }
     
     let cache_index = index - KMALLOC_SHIFT_LOW;
@@ -341,7 +364,7 @@ fn find_kmalloc_cache(size: usize) -> Option<&'static KmemCache> {
         return None; // 太大，应该用 alloc_pages
     }
     
-    Some(unsafe { &KMALLOC_CACHES[cache_index] })
+    Some(&caches[cache_index])
 }
 
 // ============================================================================
@@ -394,21 +417,37 @@ pub unsafe fn kfree(ptr: *mut u8) {
 
     // 找到对应的页
     let addr = ptr as u64;
-    let phys = match virt_to_phys(addr) {
+    let phys = match virt_to_phys_direct_map(addr) {
         Some(p) => p,
-        None => return,
+        None => {
+            crate::warn!(
+                "slub: kfree ignored non direct-map pointer addr={:#x}",
+                addr
+            );
+            return;
+        }
     };
     let pfn = phys / PAGE_SIZE;
-    let page = pfn_to_page(pfn);
+    let page = &mut *pfn_to_page(pfn);
 
     // 检查是否为 slab 页
     if page.is_slab() {
-        // 通过 page.private 获取拥有此 slab 的 cache
-        let cache_ptr = page.private() as *const KmemCache;
-        if !cache_ptr.is_null() {
-            (*cache_ptr).free(ptr);
+        if let Some(cache) = resolve_kmalloc_cache_from_page(page) {
+            cache.free(ptr);
+        } else {
+            crate::warn!(
+                "slub: kfree ignored slab page with invalid owner pfn={}",
+                pfn
+            );
         }
     } else {
+        if addr & (PAGE_SIZE - 1) != 0 {
+            crate::warn!(
+                "slub: kfree ignored non-page-aligned large allocation addr={:#x}",
+                addr
+            );
+            return;
+        }
         // 大分配，释放页
         let order = page.order() as usize;
         free_pages(&mut *page, order);
@@ -425,12 +464,45 @@ const fn phys_to_virt(phys: u64) -> u64 {
 }
 
 #[inline]
-const fn virt_to_phys(virt: u64) -> Option<u64> {
-    if virt >= DIRECT_MAP_OFFSET {
-        Some(virt - DIRECT_MAP_OFFSET)
-    } else {
+fn virt_to_phys_direct_map(virt: u64) -> Option<u64> {
+    let phys = virt.checked_sub(DIRECT_MAP_OFFSET)?;
+    let max_phys = max_pfn().saturating_mul(PAGE_SIZE);
+    if max_phys == 0 || phys >= max_phys {
         None
+    } else {
+        Some(phys)
     }
+}
+
+fn resolve_kmalloc_cache_from_page(page: &Page) -> Option<&'static KmemCache> {
+    let cache_ptr = page.private() as *const KmemCache;
+    if cache_ptr.is_null() {
+        return None;
+    }
+
+    let cache_addr = cache_ptr as usize;
+    if cache_addr % core::mem::align_of::<KmemCache>() != 0 {
+        return None;
+    }
+
+    let caches = kmalloc_caches_ref();
+    let kmalloc_base = caches.as_ptr() as usize;
+    let kmalloc_end = kmalloc_base + core::mem::size_of_val(caches);
+    if cache_addr < kmalloc_base || cache_addr >= kmalloc_end {
+        return None;
+    }
+
+    let cache_size = core::mem::size_of::<KmemCache>();
+    if (cache_addr - kmalloc_base) % cache_size != 0 {
+        return None;
+    }
+
+    let cache = unsafe { &*cache_ptr };
+    if cache.magic != KMEM_CACHE_MAGIC || !cache.initialized {
+        return None;
+    }
+
+    Some(cache)
 }
 
 /// 向上对齐
@@ -440,5 +512,15 @@ const fn align_up(value: usize, align: usize) -> usize {
 
 /// SLUB 是否已初始化
 pub fn slub_initialized() -> bool {
-    unsafe { KMALLOC_CACHES[0].initialized }
+    kmalloc_caches_ref()[0].initialized
+}
+
+#[inline]
+fn kmalloc_caches_ref() -> &'static [KmemCache; KMALLOC_NUM_CACHES] {
+    unsafe { &*KMALLOC_CACHES.inner.get() }
+}
+
+#[inline]
+unsafe fn kmalloc_caches_mut() -> &'static mut [KmemCache; KMALLOC_NUM_CACHES] {
+    unsafe { &mut *KMALLOC_CACHES.inner.get() }
 }

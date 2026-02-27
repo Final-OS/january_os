@@ -1,5 +1,5 @@
 use core::arch::{asm, global_asm};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::interrupt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
@@ -7,8 +7,8 @@ const IA32_EFER: u32 = 0xC000_0080;
 const IA32_STAR: u32 = 0xC000_0081;
 const IA32_LSTAR: u32 = 0xC000_0082;
 const IA32_FMASK: u32 = 0xC000_0084;
-
 const EFER_SCE: u64 = 1 << 0;
+const EFER_NXE: u64 = 1 << 11;
 
 const FMASK_CLEAR_FLAGS: u64 = (1 << 9) | (1 << 8);
 
@@ -24,14 +24,15 @@ struct RawSyscallFrame {
     arg5: usize,
 }
 
-/// 进入用户态前写入：`syscall` 指令进入 ring0 后使用的内核栈指针。
-///
-/// 说明：当前实现使用单槽位内核栈指针，后续会收敛到 per-cpu/per-task
-/// 的正式上下文管理。
+/// 每 CPU 的 syscall 内核栈槽位（按 APIC ID 索引）。
+const SYSCALL_RSP_SLOT_COUNT: usize = 256;
+
 #[unsafe(no_mangle)]
-static mut SYSCALL_KERNEL_RSP_SLOT: u64 = 0;
+static SYSCALL_KERNEL_RSP_SLOTS: [AtomicU64; SYSCALL_RSP_SLOT_COUNT] =
+    [const { AtomicU64::new(0) }; SYSCALL_RSP_SLOT_COUNT];
 
 static SYSCALL_DIAG_SEQ: AtomicU64 = AtomicU64::new(0);
+static SYSCALL_INIT_LOGGED: AtomicBool = AtomicBool::new(false);
 
 #[inline]
 unsafe fn rdmsr(msr: u32) -> u64 {
@@ -65,14 +66,32 @@ unsafe fn wrmsr(msr: u32, value: u64) {
 
 #[inline]
 fn read_syscall_kernel_rsp() -> u64 {
-    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(SYSCALL_KERNEL_RSP_SLOT)) }
+    let idx = syscall_slot_index_current_cpu();
+    SYSCALL_KERNEL_RSP_SLOTS[idx].load(Ordering::Acquire)
 }
 
 #[inline]
 pub fn set_syscall_kernel_rsp(rsp: u64) {
-    unsafe {
-        core::ptr::write_volatile(core::ptr::addr_of_mut!(SYSCALL_KERNEL_RSP_SLOT), rsp);
+    let idx = syscall_slot_index_current_cpu();
+    SYSCALL_KERNEL_RSP_SLOTS[idx].store(rsp, Ordering::Release);
+}
+
+#[inline]
+fn syscall_slot_index_current_cpu() -> usize {
+    if !crate::interrupt::apic_initialized() {
+        return 0;
     }
+    let apic_id = crate::interrupt::local_apic_id() as usize;
+    if apic_id < SYSCALL_RSP_SLOT_COUNT {
+        apic_id
+    } else {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn syscall_kernel_rsp_slot_for_current_cpu() -> u64 {
+    read_syscall_kernel_rsp()
 }
 
 #[unsafe(no_mangle)]
@@ -126,6 +145,7 @@ unsafe extern "C" {
 }
 
 pub unsafe fn init_syscall() {
+    crate::smp::ap_boot_probe_set_stage(330);
     let kernel_cs = (KERNEL_CODE_SELECTOR & !0x3) as u64;
 
     // Intel/AMD 约定：64 位 SYSRET 的 CS 来自 STAR[63:48] + 16。
@@ -133,20 +153,31 @@ pub unsafe fn init_syscall() {
     let user_sysret_base = ((USER_CODE_SELECTOR & !0x3) as u64).saturating_sub(16);
 
     let star = (kernel_cs << 32) | (user_sysret_base << 48);
+    crate::smp::ap_boot_probe_set_stage(331);
     wrmsr(IA32_STAR, star);
+    crate::smp::ap_boot_probe_set_stage(332);
     wrmsr(IA32_LSTAR, syscall_entry as *const () as usize as u64);
+    crate::smp::ap_boot_probe_set_stage(333);
     wrmsr(IA32_FMASK, FMASK_CLEAR_FLAGS);
+    crate::smp::ap_boot_probe_set_stage(334);
 
     let mut efer = rdmsr(IA32_EFER);
-    efer |= EFER_SCE;
+    crate::smp::ap_boot_probe_set_stage(335);
+    efer |= EFER_SCE | EFER_NXE;
     wrmsr(IA32_EFER, efer);
+    crate::smp::ap_boot_probe_set_stage(336);
 
-    crate::kprintln!(
-        "[diag][syscall] init STAR={:#x} LSTAR={:#x} FMASK={:#x}",
-        star,
-        syscall_entry as *const () as usize,
-        FMASK_CLEAR_FLAGS,
-    );
+    if SYSCALL_INIT_LOGGED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::kprintln!(
+            "[diag][syscall] init STAR={:#x} LSTAR={:#x} FMASK={:#x}",
+            star,
+            syscall_entry as *const () as usize,
+            FMASK_CLEAR_FLAGS,
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -201,8 +232,11 @@ syscall_entry:
     // r12: 用户保存帧基址
     mov r12, rsp
 
-    // 切到预先武装的内核栈（由 enter_user_mode_iret 写入）
-    mov rsp, qword ptr [rip + SYSCALL_KERNEL_RSP_SLOT]
+    // 切到当前 CPU 预先武装的内核栈（由 enter_user_mode_iret 写入）
+    // 这里仍在用户栈上，先按 SysV 对齐后调用 Rust 辅助函数读取 per-CPU 槽位。
+    and rsp, -16
+    call syscall_kernel_rsp_slot_for_current_cpu
+    mov rsp, rax
     test rsp, rsp
     jnz 1f
     // 兜底：内核栈尚未武装时，继续使用当前栈，避免直接崩溃。

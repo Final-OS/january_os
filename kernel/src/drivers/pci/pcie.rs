@@ -1,5 +1,6 @@
 use crate::drivers::acpi::{AcpiTable, SdtHeader};
 use crate::{info, warn};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
@@ -31,7 +32,7 @@ impl Mcfg {
     }
 }
 
-static mut ECAM_BASE: u64 = 0;
+static ECAM_BASE: AtomicU64 = AtomicU64::new(0);
 
 pub fn init() {
     if let Some(mcfg) = crate::drivers::acpi::find_table::<Mcfg>() {
@@ -45,7 +46,7 @@ pub fn init() {
              info!("PCIe: ECAM Base {:#x}, Bus {}-{}", base, start, end);
              // For simplicity, we just take the first one (segment 0) for now
              if segment == 0 && start == 0 {
-                 unsafe { ECAM_BASE = base };
+                 ECAM_BASE.store(base, Ordering::Release);
              }
         }
     } else {
@@ -54,10 +55,11 @@ pub fn init() {
 }
 
 pub unsafe fn read_config(bus: u8, dev: u8, func: u8, offset: u16) -> Option<u32> {
-    if ECAM_BASE == 0 { return None; }
+    let ecam_base = ECAM_BASE.load(Ordering::Acquire);
+    if ecam_base == 0 { return None; }
     // Calculate address
     // Address = Base + (Bus << 20) + (Device << 15) + (Function << 12) + Offset
-    let addr = ECAM_BASE + ((bus as u64) << 20) + ((dev as u64) << 15) + ((func as u64) << 12) + (offset as u64);
+    let addr = ecam_base + ((bus as u64) << 20) + ((dev as u64) << 15) + ((func as u64) << 12) + (offset as u64);
     
     // Map physical to virtual
     let virt_addr = addr + crate::config::DIRECT_MAP_OFFSET;
@@ -66,9 +68,10 @@ pub unsafe fn read_config(bus: u8, dev: u8, func: u8, offset: u16) -> Option<u32
 }
 
 pub unsafe fn write_config(bus: u8, dev: u8, func: u8, offset: u16, value: u32) -> bool {
-    if ECAM_BASE == 0 { return false; }
+    let ecam_base = ECAM_BASE.load(Ordering::Acquire);
+    if ecam_base == 0 { return false; }
     
-    let addr = ECAM_BASE + ((bus as u64) << 20) + ((dev as u64) << 15) + ((func as u64) << 12) + (offset as u64);
+    let addr = ecam_base + ((bus as u64) << 20) + ((dev as u64) << 15) + ((func as u64) << 12) + (offset as u64);
     let virt_addr = addr + crate::config::DIRECT_MAP_OFFSET;
     
     core::ptr::write_volatile(virt_addr as *mut u32, value);

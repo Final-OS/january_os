@@ -46,7 +46,7 @@ pub fn run(name: &str) {
             kprintln!("                   Default (`test task`) runs all");
             kprintln!("  libs [name]    - Data structure tests");
             kprintln!("                   Available: rbtree, lru, rdtree, btree, mptree, rcu");
-            kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator");
+            kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once");
             kprintln!("  mm [name]      - Memory management tests");
             kprintln!("                   Available: swiotlb, slub, buddy, pcp, mmap");
             kprintln!("  timer          - Timer tick test");

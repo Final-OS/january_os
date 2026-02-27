@@ -4,11 +4,11 @@
 // 参考 Linux 内核，将物理内存划分为不同的 Zone
 // ============================================================================
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use super::page::{Page, ListHead, PageFlags};
 use crate::mm::vm::layout::PAGE_SIZE;
 use crate::config;
-use crate::sync::SpinLock;
+use crate::sync::{IrqSpinLock, IrqSpinLockGuard};
 
 // ============================================================================
 // 常量定义 (从配置导入)
@@ -213,7 +213,7 @@ pub struct Zone {
     /// Buddy 空闲区域 [order]
     pub free_area: [FreeArea; MAX_ORDER],
     /// Zone 锁 - 保护 free_area 链表操作
-    pub lock: SpinLock<()>,
+    pub lock: IrqSpinLock<()>,
     /// 保留的页帧数（低水位）
     pub watermark_min: u64,
     /// 低水位
@@ -223,6 +223,10 @@ pub struct Zone {
     /// 是否已初始化
     pub initialized: bool,
 }
+
+// Zone 内部包含用于页链表的裸指针（ListHead），这些指针由外部锁协议保护。
+// 通过 `IrqSpinLock<Zone>` 暴露时需要 `Zone: Send`，这里显式声明。
+unsafe impl Send for Zone {}
 
 impl Zone {
     pub const fn uninit() -> Self {
@@ -239,7 +243,7 @@ impl Zone {
                 FreeArea::new(), FreeArea::new(), FreeArea::new(),
                 FreeArea::new(), FreeArea::new(),
             ],
-            lock: SpinLock::new(()),
+            lock: IrqSpinLock::new(()),
             watermark_min: 0,
             watermark_low: 0,
             watermark_high: 0,
@@ -332,19 +336,19 @@ impl Default for Zone {
 // ============================================================================
 
 /// 全局 Zone 数组
-pub static mut ZONES: [Zone; NR_ZONES] = [
-    Zone::uninit(),
-    Zone::uninit(),
-    Zone::uninit(),
+pub static ZONES: [IrqSpinLock<Zone>; NR_ZONES] = [
+    IrqSpinLock::new(Zone::uninit()),
+    IrqSpinLock::new(Zone::uninit()),
+    IrqSpinLock::new(Zone::uninit()),
 ];
 
 /// 获取 Zone 引用
-pub unsafe fn get_zone(zone_type: ZoneType) -> &'static mut Zone {
-    &mut ZONES[zone_type as usize]
+pub fn get_zone(zone_type: ZoneType) -> IrqSpinLockGuard<'static, Zone> {
+    ZONES[zone_type as usize].lock()
 }
 
 /// 根据 PFN 获取 Zone
-pub unsafe fn pfn_to_zone(pfn: u64) -> Option<&'static mut Zone> {
+pub fn pfn_to_zone(pfn: u64) -> Option<IrqSpinLockGuard<'static, Zone>> {
     let phys = pfn * PAGE_SIZE;
     let zone_type = ZoneType::from_phys_addr(phys);
     let zone = get_zone(zone_type);
@@ -409,16 +413,16 @@ pub fn get_buddy_pfn(pfn: u64, order: usize) -> u64 {
 // ============================================================================
 
 /// Zone 子系统是否已初始化
-static mut ZONES_INITIALIZED: bool = false;
+static ZONES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// 检查 Zone 是否已初始化
 pub fn zones_initialized() -> bool {
-    unsafe { ZONES_INITIALIZED }
+    ZONES_INITIALIZED.load(Ordering::Acquire)
 }
 
 /// 标记 Zone 已初始化
-pub unsafe fn mark_zones_initialized() {
-    ZONES_INITIALIZED = true;
+pub fn mark_zones_initialized() {
+    ZONES_INITIALIZED.store(true, Ordering::Release);
 }
 
 // ============================================================================

@@ -169,11 +169,13 @@ pub fn handle_page_fault(ctx: &mut FaultContext) -> FaultResult {
         let vma = match mm.find_vma(address) {
             Some(v) => v,
             None => {
-                // 检查是否是栈扩展
-                if can_expand_stack(mm, address) {
-                    return handle_stack_expansion(ctx, mm, address);
+                // 尝试按地址空间策略扩展用户栈
+                if let Some(expanded) = mm.expand_stack_for_fault(address) {
+                    FAULT_STATS.stack_grows.fetch_add(1, Ordering::Relaxed);
+                    expanded
+                } else {
+                    return FaultResult::Sigsegv;
                 }
-                return FaultResult::Sigsegv;
             }
         };
 
@@ -280,7 +282,7 @@ fn map_zero_page(ctx: &FaultContext, mark_anon: bool) -> FaultResult {
 
     // 映射页面
     let phys = page_to_pfn(page) * PAGE_SIZE;
-    let pte_flags = ctx.vma_flags.to_pte_flags();
+    let pte_flags = ctx.vma_flags.to_user_pte_flags();
 
     // 实际映射到页表
     unsafe {
@@ -314,7 +316,7 @@ fn handle_file_fault(ctx: &FaultContext) -> FaultResult {
         let pte_flags = if mapped.flags != 0 {
             mapped.flags
         } else {
-            ctx.vma_flags.to_pte_flags()
+            ctx.vma_flags.to_user_pte_flags()
         };
 
         unsafe {
@@ -324,7 +326,7 @@ fn handle_file_fault(ctx: &FaultContext) -> FaultResult {
             }
         }
 
-        let page = unsafe { pfn_to_page(mapped.phys / PAGE_SIZE) };
+        let page = unsafe { &*pfn_to_page(mapped.phys / PAGE_SIZE) };
         page.inc_mapcount();
         FAULT_STATS.minor_faults.fetch_add(1, Ordering::Relaxed);
         return FaultResult::Retry;
@@ -351,12 +353,14 @@ fn handle_write_protection(ctx: &FaultContext) -> FaultResult {
             None => return FaultResult::Sigsegv,
         };
 
-        let old_page = pfn_to_page(old_phys / PAGE_SIZE);
+        let old_page = &*pfn_to_page(old_phys / PAGE_SIZE);
 
         // 如果只有一个引用，直接修改权限
         if old_page.refcount() == 1 {
-            let pte_flags = ctx.vma_flags.to_pte_flags();
-            pt_mgr.map_page(address, old_phys, pte_flags);
+            let pte_flags = ctx.vma_flags.to_user_pte_flags();
+            if !pt_mgr.map_page(address, old_phys, pte_flags) {
+                return FaultResult::Oom;
+            }
             return FaultResult::Retry;
         }
     }
@@ -394,8 +398,11 @@ fn do_cow_fault(ctx: &FaultContext, address: u64) -> FaultResult {
         copy_page(new_virt, old_virt);
 
         // 3. 更新映射
-        let pte_flags = ctx.vma_flags.to_pte_flags();
-        pt_mgr.map_page(address, new_phys, pte_flags);
+        let pte_flags = ctx.vma_flags.to_user_pte_flags();
+        if !pt_mgr.map_page(address, new_phys, pte_flags) {
+            free_page(new_page);
+            return FaultResult::Oom;
+        }
 
         // 4. 旧页引用释放由 map_page 的重映射语义统一处理
 
@@ -407,64 +414,6 @@ fn do_cow_fault(ctx: &FaultContext, address: u64) -> FaultResult {
     FAULT_STATS.minor_faults.fetch_add(1, Ordering::Relaxed);
 
     FaultResult::Retry
-}
-
-// ============================================================================
-// 栈扩展
-// ============================================================================
-
-/// 检查是否可以扩展栈
-fn can_expand_stack(mm: &Mm, address: u64) -> bool {
-    // 栈向下增长，检查是否在栈底附近
-    let stack_bottom = mm.start_stack.saturating_sub(mm.stack_vm * PAGE_SIZE);
-
-    // 允许栈扩展的最大距离 (如 256 KB)
-    const MAX_STACK_EXPAND: u64 = 256 * 1024;
-
-    address >= stack_bottom.saturating_sub(MAX_STACK_EXPAND) && address < stack_bottom
-}
-
-/// 处理栈扩展
-fn handle_stack_expansion(ctx: &FaultContext, mm: &mut Mm, address: u64) -> FaultResult {
-    let page_addr = address & !(PAGE_SIZE - 1);
-
-    // 使用 MapleTree 查找栈 VMA
-    // 查找 start >= page_addr 的第一个区间
-    let stack_info = mm.vma_tree.lower_bound(page_addr as usize);
-
-    match stack_info {
-        Some((s, _e, info)) if info.flags.contains(VmFlags::GROWSDOWN)
-            && (s as u64) > page_addr
-            && page_addr >= (s as u64).saturating_sub(256 * 1024) =>
-        {
-            let vma_start = s as u64;
-
-            // 扩展栈
-            if !mm.expand_stack(vma_start, page_addr) {
-                return FaultResult::Sigsegv;
-            }
-            FAULT_STATS.stack_grows.fetch_add(1, Ordering::Relaxed);
-
-            // 更新上下文中的 VMA 信息
-            // 重新查找以获取更新后的信息
-            if let Some(vma) = mm.find_vma(page_addr) {
-                let mut new_ctx = FaultContext {
-                    address: ctx.address,
-                    error_code: ctx.error_code,
-                    mm: ctx.mm,
-                    vma_start: vma.vm_start,
-                    vma_end: vma.vm_end,
-                    vma_flags: vma.vm_flags,
-                    direct_map_offset: ctx.direct_map_offset,
-                };
-                // 分配并映射新页
-                handle_anonymous_fault(&new_ctx)
-            } else {
-                FaultResult::Sigsegv
-            }
-        }
-        _ => FaultResult::Sigsegv,
-    }
 }
 
 // ============================================================================

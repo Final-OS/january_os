@@ -240,14 +240,14 @@ fn map_zero_page(
     let page = mm::alloc_page(user_zero_gfp()).ok_or(ENOMEM)?;
     let page_ptr = page as *mut mm::Page as usize;
     let pfn = mm::page_to_pfn(page);
-    let max_pfn = unsafe { mm::MAX_PFN };
+    let max_pfn = mm::max_pfn();
 
     if pfn >= max_pfn {
-        let vmemmap_base = unsafe { mm::VMEMMAP_BASE } as usize;
-        let raw_offset = if vmemmap_base == 0 {
+        let vmemmap_base = mm::vmemmap_base_ptr();
+        let raw_offset = if vmemmap_base.is_null() {
             0isize
         } else {
-            unsafe { (page as *const mm::Page).offset_from(mm::VMEMMAP_BASE) }
+            unsafe { (page as *const mm::Page).offset_from(vmemmap_base as *const mm::Page) }
         };
         crate::kprintln!(
             "[diag][execve] map_zero_page invalid page metadata kind={:?} virt={:#x} page_ptr={:#x} pfn={} max_pfn={} vmemmap_base={:#x} raw_offset={}",
@@ -256,7 +256,7 @@ fn map_zero_page(
             page_ptr,
             pfn,
             max_pfn,
-            vmemmap_base,
+            vmemmap_base as usize,
             raw_offset,
         );
         return Err(E2BIG);
@@ -631,11 +631,11 @@ fn release_mapped_phys_page(phys: u64) {
     let pfn = phys / mm::PAGE_SIZE;
 
     unsafe {
-        if pfn >= mm::MAX_PFN {
+        if pfn >= mm::max_pfn() {
             return;
         }
 
-        let page = mm::pfn_to_page(pfn);
+        let page = &mut *mm::pfn_to_page(pfn);
 
         if page.mapcount() >= 0 {
             page.dec_mapcount();

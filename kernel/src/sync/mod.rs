@@ -7,6 +7,7 @@
 //! | 原语 | 说明 | 使用场景 |
 //! |------|------|----------|
 //! | `SpinLock` | 自旋锁 | 短临界区，中断上下文 |
+//! | `IrqSpinLock` | 关中断自旋锁 | 同时被中断与普通上下文访问的数据 |
 //! | `Mutex` | 互斥锁 | 一般互斥访问 |
 //! | `IrqMutex` | 中断安全互斥锁 | 可能在中断中访问的数据 |
 //! | `RwLock` | 读写锁 | 读多写少的场景 |
@@ -23,7 +24,7 @@ mod semaphore;
 mod barrier;
 
 // SpinLock
-pub use spinlock::{SpinLock, SpinLockGuard};
+pub use spinlock::{IrqSpinLock, IrqSpinLockGuard, SpinLock, SpinLockGuard};
 
 // Mutex
 pub use mutex::{Mutex, MutexGuard, IrqMutex, IrqMutexGuard};

@@ -235,7 +235,7 @@ impl<T> IrqMutex<T> {
         let guard = self.inner.lock();
 
         IrqMutexGuard {
-            guard,
+            guard: Some(guard),
             irq_was_enabled: irq_enabled,
         }
     }
@@ -249,7 +249,7 @@ impl<T> IrqMutex<T> {
 
         match self.inner.try_lock() {
             Some(guard) => Some(IrqMutexGuard {
-                guard,
+                guard: Some(guard),
                 irq_was_enabled: irq_enabled,
             }),
             None => {
@@ -265,7 +265,7 @@ impl<T> IrqMutex<T> {
 
 /// IRQ 互斥锁守卫
 pub struct IrqMutexGuard<'a, T> {
-    guard: MutexGuard<'a, T>,
+    guard: Option<MutexGuard<'a, T>>,
     irq_was_enabled: bool,
 }
 
@@ -273,22 +273,26 @@ impl<T> Deref for IrqMutexGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        &*self.guard
+        &*self.guard.as_ref().expect("IrqMutexGuard without inner guard")
     }
 }
 
 impl<T> DerefMut for IrqMutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        &mut *self.guard
+        &mut *self
+            .guard
+            .as_mut()
+            .expect("IrqMutexGuard without inner guard")
     }
 }
 
 impl<T> Drop for IrqMutexGuard<'_, T> {
     fn drop(&mut self) {
-        // 先释放锁（通过 drop guard）
-        // guard 会在这里自动 drop
+        // 必须先释放锁，再恢复中断，避免“开中断但锁尚未释放”的竞态窗口。
+        if let Some(guard) = self.guard.take() {
+            drop(guard);
+        }
 
-        // 然后恢复中断
         if self.irq_was_enabled {
             enable_interrupts();
         }

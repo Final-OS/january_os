@@ -493,7 +493,7 @@ fn execute_mm_command(args: &[&str]) {
     match subcommand {
         "status" => {
             let total_free: u64 = mm::ZoneType::iter()
-                .map(|zt| unsafe { mm::get_zone(zt) })
+                .map(mm::get_zone)
                 .filter(|z| z.initialized)
                 .map(|z| z.nr_free_pages())
                 .sum();

@@ -511,7 +511,7 @@ fn print_system_summary(info: &BootInfo, acpi_config: &acpi::AcpiConfig) {
     }
 
     let total_free = mm::ZoneType::iter()
-        .map(|zt| unsafe { mm::get_zone(zt) })
+        .map(mm::get_zone)
         .filter(|z| z.initialized)
         .map(|z| z.nr_free_pages())
         .sum::<u64>();
@@ -525,8 +525,9 @@ fn print_system_summary(info: &BootInfo, acpi_config: &acpi::AcpiConfig) {
         (total_free * 4) / 1024
     );
     kprintln!(
-        "  \x1b[37mCPUs:\x1b[0m       \x1b[33m{}\x1b[0m (BSP APIC ID: {})",
+        "  \x1b[37mCPUs:\x1b[0m       detected=\x1b[33m{}\x1b[0m online=\x1b[32m{}\x1b[0m (BSP APIC ID: {})",
         acpi_config.cpu_count,
+        smp::cpu_count(),
         interrupt::local_apic_id()
     );
     kprintln!(

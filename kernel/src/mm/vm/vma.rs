@@ -5,9 +5,10 @@
 // 使用 MapleTree 进行 O(log n) 的区间查找和间隙搜索
 // ============================================================================
 
-use super::layout::PAGE_SIZE;
+use super::layout::{PAGE_SIZE, USER_STACK_SIZE, USER_STACK_TOP};
 use crate::libs::mptree::MapleTree;
-use crate::sync::SpinLock;
+use crate::sync::IrqSpinLock;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 // ============================================================================
 // VMA 标志位
@@ -114,8 +115,10 @@ impl VmFlags {
         self.contains(Self::SHARED)
     }
 
-    /// 转换为页表标志
-    pub fn to_pte_flags(&self) -> u64 {
+    /// 转换为用户页表标志
+    ///
+    /// 仅用于用户空间 VMA。内核映射不得复用该接口（该接口固定带 `PTE_USER`）。
+    pub fn to_user_pte_flags(&self) -> u64 {
         let mut pte: u64 = 1; // Present
 
         if self.is_write() {
@@ -225,14 +228,16 @@ impl Vma {
 ///
 /// 管理一个进程的所有虚拟内存区域
 pub struct Mm {
+    /// 地址空间内部锁（保护 VMA 树和统计字段）
+    pub lock: IrqSpinLock<()>,
     /// VMA 树 (区间 -> VmaInfo)
     pub vma_tree: MapleTree<VmaInfo>,
     /// VMA 数量
     pub vma_count: u32,
     /// 引用计数
-    pub mm_count: u32,
+    pub mm_count: AtomicU32,
     /// 用户数量 (共享此 mm 的线程数)
-    pub mm_users: u32,
+    pub mm_users: AtomicU32,
     /// PML4 页表物理地址
     pub pgd: u64,
 
@@ -282,13 +287,28 @@ pub struct Mm {
 }
 
 impl Mm {
+    #[inline]
+    fn stack_top_addr(&self) -> u64 {
+        if self.start_stack != 0 {
+            self.start_stack
+        } else {
+            USER_STACK_TOP
+        }
+    }
+
+    #[inline]
+    fn stack_expand_min_addr(&self) -> u64 {
+        self.stack_top_addr().saturating_sub(USER_STACK_SIZE)
+    }
+
     /// 创建未初始化的 Mm
     pub fn uninit() -> Self {
         Self {
+            lock: IrqSpinLock::new(()),
             vma_tree: MapleTree::new(),
             vma_count: 0,
-            mm_count: 1,
-            mm_users: 1,
+            mm_count: AtomicU32::new(1),
+            mm_users: AtomicU32::new(1),
             pgd: 0,
             start_code: 0,
             end_code: 0,
@@ -316,8 +336,8 @@ impl Mm {
     pub fn init(&mut self, pgd: u64) {
         self.vma_tree = MapleTree::new();
         self.vma_count = 0;
-        self.mm_count = 1;
-        self.mm_users = 1;
+        self.mm_count.store(1, Ordering::Relaxed);
+        self.mm_users.store(1, Ordering::Relaxed);
         self.pgd = pgd;
 
         // 设置默认地址布局 (用户空间: 0 - 0x7FFFFFFFFFFF)
@@ -328,6 +348,12 @@ impl Mm {
 
     /// 查找包含指定地址的 VMA
     pub fn find_vma(&self, addr: u64) -> Option<Vma> {
+        let _guard = self.lock.lock();
+        self.find_vma_nolock(addr)
+    }
+
+    #[inline]
+    fn find_vma_nolock(&self, addr: u64) -> Option<Vma> {
         self.vma_tree.find(addr as usize).map(|(s, e, info)| {
             Vma::from_tree(s, e, info)
         })
@@ -335,11 +361,23 @@ impl Mm {
 
     /// 查找包含指定地址的 VMA 的标志
     pub fn find_vma_flags(&self, addr: u64) -> Option<VmFlags> {
+        let _guard = self.lock.lock();
+        self.find_vma_flags_nolock(addr)
+    }
+
+    #[inline]
+    fn find_vma_flags_nolock(&self, addr: u64) -> Option<VmFlags> {
         self.vma_tree.find(addr as usize).map(|(_, _, info)| info.flags)
     }
 
     /// 查找与指定范围重叠的 VMA
     pub fn find_vma_intersection(&self, start: u64, end: u64) -> Option<Vma> {
+        let _guard = self.lock.lock();
+        self.find_vma_intersection_nolock(start, end)
+    }
+
+    #[inline]
+    fn find_vma_intersection_nolock(&self, start: u64, end: u64) -> Option<Vma> {
         self.vma_tree
             .iter_intersecting(start as usize, end as usize)
             .next()
@@ -350,6 +388,11 @@ impl Mm {
     ///
     /// 返回一个至少 size 大小的空闲区域起始地址
     pub fn find_free_area(&self, hint: u64, size: u64, _flags: VmFlags) -> Option<u64> {
+        let _guard = self.lock.lock();
+        self.find_free_area_nolock(hint, size)
+    }
+
+    fn find_free_area_nolock(&self, hint: u64, size: u64) -> Option<u64> {
         let size = page_align_up(size) as usize;
         let mut hint = page_align_up(hint) as usize;
         let limit = 0x7FFF_FFFF_F000usize; // 用户空间上限
@@ -365,6 +408,12 @@ impl Mm {
 
     /// 插入 VMA
     pub fn insert_vma(&mut self, start: u64, end: u64, info: VmaInfo) -> bool {
+        let _guard = unsafe { (*core::ptr::addr_of!(self.lock)).lock() };
+        let mm = self as *mut Self;
+        unsafe { (*mm).insert_vma_nolock(start, end, info) }
+    }
+
+    fn insert_vma_nolock(&mut self, start: u64, end: u64, info: VmaInfo) -> bool {
         let nr_pages = (end - start) / PAGE_SIZE;
         let flags = info.flags;
 
@@ -388,6 +437,12 @@ impl Mm {
 
     /// 从树中移除 VMA
     pub fn remove_vma(&mut self, start: u64) -> Option<(u64, VmaInfo)> {
+        let _guard = unsafe { (*core::ptr::addr_of!(self.lock)).lock() };
+        let mm = self as *mut Self;
+        unsafe { (*mm).remove_vma_nolock(start) }
+    }
+
+    fn remove_vma_nolock(&mut self, start: u64) -> Option<(u64, VmaInfo)> {
         let (end, info) = self.vma_tree.remove(start as usize)?;
         let end = end as u64;
         let nr_pages = (end - start) / PAGE_SIZE;
@@ -409,6 +464,12 @@ impl Mm {
     ///
     /// 扩展或收缩堆
     pub fn do_brk(&mut self, new_brk: u64) -> Result<u64, &'static str> {
+        let _guard = unsafe { (*core::ptr::addr_of!(self.lock)).lock() };
+        let mm = self as *mut Self;
+        unsafe { (*mm).do_brk_nolock(new_brk) }
+    }
+
+    fn do_brk_nolock(&mut self, new_brk: u64) -> Result<u64, &'static str> {
         let new_brk = page_align_up(new_brk);
         let old_brk = self.brk;
 
@@ -423,23 +484,38 @@ impl Mm {
         if new_brk > old_brk {
             // 扩展堆
             // 检查是否与其他 VMA 冲突
-            if self.find_vma_intersection(old_brk, new_brk).is_some() {
+            if self.find_vma_intersection_nolock(old_brk, new_brk).is_some() {
                 return Err("brk conflicts with existing VMA");
             }
 
             // 查找堆 VMA 并扩展
             let heap_start = old_brk.saturating_sub(1);
+            let mut expanded_existing_heap = false;
             if let Some((s, e, info)) = self.vma_tree.find(heap_start as usize) {
                 if info.flags.contains(VmFlags::HEAP) {
                     let start = s as u64;
                     let old_end = e as u64;
-                    let delta = (new_brk - old_end) / PAGE_SIZE;
+                    let delta = new_brk.saturating_sub(old_end) / PAGE_SIZE;
                     let new_info = info.clone();
                     // 使用 replace 原子替换，避免 remove+insert 导致 VMA 丢失
                     match self.vma_tree.replace(start as usize, new_brk as usize, new_info) {
-                        Ok(_) => { self.total_vm += delta; }
-                        Err(_) => { return Err("brk expansion failed"); }
+                        Ok(_) => {
+                            self.total_vm += delta;
+                            expanded_existing_heap = true;
+                        }
+                        Err(_) => return Err("brk expansion failed"),
                     }
+                }
+            }
+            if !expanded_existing_heap {
+                let mut heap_flags = VmFlags::empty();
+                heap_flags.set(VmFlags::READ);
+                heap_flags.set(VmFlags::WRITE);
+                heap_flags.set(VmFlags::MAYWRITE);
+                heap_flags.set(VmFlags::ANONYMOUS);
+                heap_flags.set(VmFlags::HEAP);
+                if !self.insert_vma_nolock(old_brk, new_brk, VmaInfo::new(heap_flags)) {
+                    return Err("brk create heap vma failed");
                 }
             }
         } else {
@@ -464,23 +540,59 @@ impl Mm {
 
     /// 扩展栈 VMA (向下增长)
     pub fn expand_stack(&mut self, vma_start: u64, new_start: u64) -> bool {
+        let _guard = unsafe { (*core::ptr::addr_of!(self.lock)).lock() };
+        let mm = self as *mut Self;
+        unsafe { (*mm).expand_stack_nolock(vma_start, new_start) }
+    }
+
+    fn expand_stack_nolock(&mut self, vma_start: u64, new_start: u64) -> bool {
         let old_start = vma_start;
-        // 预检查：确保 [new_start, old_start) 区间没有其他 VMA
-        if self.find_vma_intersection(new_start, old_start).is_some() {
+        if new_start >= old_start {
             return false;
         }
-        if let Some((end, info)) = self.vma_tree.remove(old_start as usize) {
-            let info_backup = info.clone();
-            if self.vma_tree.insert(new_start as usize, end, info).is_ok() {
-                let delta = (old_start - new_start) / PAGE_SIZE;
-                self.stack_vm += delta;
-                self.total_vm += delta;
-                return true;
-            }
-            // insert 失败，恢复原 VMA 防止丢失
-            let _ = self.vma_tree.insert(old_start as usize, end, info_backup);
+        if self
+            .vma_tree
+            .move_start(old_start as usize, new_start as usize)
+            .is_ok()
+        {
+            let delta = (old_start - new_start) / PAGE_SIZE;
+            self.stack_vm += delta;
+            self.total_vm += delta;
+            return true;
         }
         false
+    }
+
+    /// 缺页路径使用：在用户栈增长限制内扩展栈并返回更新后的 VMA。
+    pub fn expand_stack_for_fault(&mut self, fault_addr: u64) -> Option<Vma> {
+        let _guard = unsafe { (*core::ptr::addr_of!(self.lock)).lock() };
+        let mm = self as *mut Self;
+        unsafe { (*mm).expand_stack_for_fault_nolock(fault_addr) }
+    }
+
+    fn expand_stack_for_fault_nolock(&mut self, fault_addr: u64) -> Option<Vma> {
+        let page_addr = fault_addr & !(PAGE_SIZE - 1);
+        let stack_top = self.stack_top_addr();
+        let stack_min = self.stack_expand_min_addr();
+        let stack_bottom = stack_top.saturating_sub(self.stack_vm * PAGE_SIZE);
+
+        if page_addr < stack_min || page_addr >= stack_bottom {
+            return None;
+        }
+
+        let stack_info = self.vma_tree.lower_bound(page_addr as usize);
+        match stack_info {
+            Some((s, _e, info)) if info.flags.contains(VmFlags::GROWSDOWN)
+                && (s as u64) > page_addr =>
+            {
+                let vma_start = s as u64;
+                if !self.expand_stack_nolock(vma_start, page_addr) {
+                    return None;
+                }
+                self.find_vma_nolock(page_addr)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -556,16 +668,16 @@ pub fn mmap_flags_to_vm_flags(prot: u32, flags: u32) -> VmFlags {
 // ============================================================================
 
 /// 内核 mm (共享内核页表)
-static INIT_MM: crate::sync::OnceCell<SpinLock<Mm>> = crate::sync::OnceCell::new();
+static INIT_MM: crate::sync::OnceCell<IrqSpinLock<Mm>> = crate::sync::OnceCell::new();
 
 /// 获取内核 mm (加锁)
-pub fn get_init_mm() -> crate::sync::SpinLockGuard<'static, Mm> {
-    INIT_MM.get_or_init(|| SpinLock::new(Mm::uninit())).lock()
+pub fn get_init_mm() -> crate::sync::IrqSpinLockGuard<'static, Mm> {
+    INIT_MM.get_or_init(|| IrqSpinLock::new(Mm::uninit())).lock()
 }
 
 /// 初始化 VMA 子系统
 pub fn init_vma() {
-    let mut mm = INIT_MM.get_or_init(|| SpinLock::new(Mm::uninit())).lock();
+    let mut mm = INIT_MM.get_or_init(|| IrqSpinLock::new(Mm::uninit())).lock();
     mm.init(kernel_pgd_phys());
 }
 

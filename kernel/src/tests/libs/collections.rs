@@ -25,6 +25,10 @@ pub(super) fn run_id_allocator() {
     test_id_allocator();
 }
 
+pub(super) fn run_sync_once() {
+    test_sync_once();
+}
+
 fn test_ring_buffer() {
     use crate::libs::ring_buffer::RingBuffer;
 
@@ -303,7 +307,8 @@ fn test_wait_queue() {
     if !wq.mark_interrupted(20) {
         return fail("wait_queue", "interrupt 20");
     }
-    if wq.wake_all_if(|entry| entry.token >= 30) != 1 {
+    let woke = wq.wake_all_if(|entry| entry.token >= 30);
+    if woke.len() != 1 || woke[0].token != 30 || woke[0].state != WaitState::Woken {
         return fail("wait_queue", "wake_all_if should wake 30 only");
     }
 
@@ -371,4 +376,87 @@ fn test_id_allocator() {
     }
 
     pass("id_allocator");
+}
+
+fn test_sync_once() {
+    use crate::sync::{Once, OnceCell};
+
+    let once = Once::new();
+    let mut once_attempts = 0usize;
+
+    if once
+        .call_once_try(|| -> Result<(), i32> {
+            once_attempts += 1;
+            Err(7)
+        })
+        .is_ok()
+    {
+        return fail("sync_once", "call_once_try error path");
+    }
+    if once.is_completed() {
+        return fail("sync_once", "once should remain incomplete after error");
+    }
+
+    if once
+        .call_once_try(|| -> Result<(), i32> {
+            once_attempts += 1;
+            Ok(())
+        })
+        .is_err()
+    {
+        return fail("sync_once", "call_once_try success path");
+    }
+    if !once.is_completed() {
+        return fail("sync_once", "once should be completed after success");
+    }
+    if once
+        .call_once_try(|| -> Result<(), i32> {
+            once_attempts += 100;
+            Ok(())
+        })
+        .is_err()
+    {
+        return fail("sync_once", "call_once_try completed fast path");
+    }
+    if once_attempts != 2 {
+        return fail("sync_once", "unexpected once attempt count");
+    }
+
+    let cell: OnceCell<u32> = OnceCell::new();
+    let mut cell_attempts = 0usize;
+
+    let first = cell.get_or_try_init(|| -> Result<u32, i32> {
+        cell_attempts += 1;
+        Err(22)
+    });
+    if first != Err(22) {
+        return fail("sync_once", "once_cell first try should fail");
+    }
+    if cell.get().is_some() {
+        return fail("sync_once", "once_cell should stay uninitialized after failure");
+    }
+
+    let second = cell.get_or_try_init(|| -> Result<u32, i32> {
+        cell_attempts += 1;
+        Ok(42)
+    });
+    match second {
+        Ok(v) if *v == 42 => {}
+        _ => return fail("sync_once", "once_cell second try should succeed"),
+    }
+
+    let third = cell.get_or_try_init(|| -> Result<u32, i32> {
+        cell_attempts += 100;
+        Ok(777)
+    });
+    match third {
+        Ok(v) if *v == 42 => {}
+        _ => return fail("sync_once", "once_cell completed fast path"),
+    }
+
+    if cell_attempts != 2 {
+        return fail("sync_once", "unexpected once_cell attempt count");
+    }
+
+    pass("sync_once");
 }

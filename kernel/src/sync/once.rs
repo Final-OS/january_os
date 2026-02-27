@@ -17,6 +17,33 @@ pub struct Once {
     state: AtomicU8,
 }
 
+struct RunningGuard<'a> {
+    state: &'a AtomicU8,
+    completed: bool,
+}
+
+impl<'a> RunningGuard<'a> {
+    fn new(state: &'a AtomicU8) -> Self {
+        Self {
+            state,
+            completed: false,
+        }
+    }
+
+    fn complete(&mut self) {
+        self.completed = true;
+        self.state.store(COMPLETE, Ordering::Release);
+    }
+}
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.state.store(INCOMPLETE, Ordering::Release);
+        }
+    }
+}
+
 impl Once {
     /// 创建新的 Once
     pub const fn new() -> Self {
@@ -31,16 +58,25 @@ impl Once {
     /// 如果正在初始化，自旋等待完成。
     /// 如果未初始化，执行闭包。
     pub fn call_once<F: FnOnce()>(&self, f: F) {
-        // 快速路径：已完成
-        if self.is_completed() {
-            return;
-        }
-
-        self.call_once_slow(f);
+        let _ = self.call_once_try(|| {
+            f();
+            Ok::<(), ()>(())
+        });
     }
 
-    #[cold]
-    fn call_once_slow<F: FnOnce()>(&self, f: F) {
+    /// 尝试执行一次初始化。
+    ///
+    /// - `Ok(())`: 初始化成功（或已由其他 CPU 成功初始化）。
+    /// - `Err(e)`: 本次初始化失败，状态会回滚为未完成，可重试。
+    pub fn call_once_try<F, E>(&self, f: F) -> Result<(), E>
+    where
+        F: FnOnce() -> Result<(), E>,
+    {
+        if self.is_completed() {
+            return Ok(());
+        }
+
+        let mut init = Some(f);
         loop {
             match self.state.compare_exchange(
                 INCOMPLETE,
@@ -49,22 +85,27 @@ impl Once {
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    // 我们获得了执行权
-                    f();
-                    self.state.store(COMPLETE, Ordering::Release);
-                    return;
+                    // 我们获得了执行权。
+                    // 使用 guard 保证：失败或 panic unwind 时状态回滚到 INCOMPLETE。
+                    let mut guard = RunningGuard::new(&self.state);
+                    let f = init
+                        .take()
+                        .expect("call_once_try initializer consumed");
+                    f()?;
+                    guard.complete();
+                    return Ok(());
                 }
                 Err(COMPLETE) => {
-                    // 已经完成
-                    return;
+                    return Ok(());
                 }
                 Err(RUNNING) => {
-                    // 其他线程正在执行，等待
                     while self.state.load(Ordering::Relaxed) == RUNNING {
                         core::hint::spin_loop();
                     }
-                    // 等待完成后返回
-                    return;
+                    if self.state.load(Ordering::Acquire) == COMPLETE {
+                        return Ok(());
+                    }
+                    // 可能是其他初始化尝试失败后回滚到 INCOMPLETE，继续重试 CAS。
                 }
                 Err(_) => unreachable!(),
             }
@@ -175,27 +216,19 @@ impl<T> OnceCell<T> {
     where
         F: FnOnce() -> Result<T, E>,
     {
-        if self.once.is_completed() {
-            return Ok(unsafe { (*self.value.get()).as_ref().unwrap() });
-        }
-
-        let mut result: Result<(), E> = Ok(());
-
-        self.once.call_once(|| {
-            match f() {
-                Ok(v) => {
-                    unsafe {
-                        *self.value.get() = Some(v);
-                    }
-                }
-                Err(e) => {
-                    result = Err(e);
-                }
+        self.once.call_once_try(|| {
+            let value = f()?;
+            unsafe {
+                *self.value.get() = Some(value);
             }
-        });
+            Ok(())
+        })?;
 
-        result?;
-        Ok(unsafe { (*self.value.get()).as_ref().unwrap() })
+        Ok(unsafe {
+            (*self.value.get())
+                .as_ref()
+                .expect("OnceCell completed without value")
+        })
     }
 
     /// 消费并返回内部值

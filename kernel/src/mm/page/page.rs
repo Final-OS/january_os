@@ -4,7 +4,7 @@
 // 参考 Linux 内核设计，每个物理页帧都有一个对应的 Page 结构
 // ============================================================================
 
-use core::sync::atomic::{AtomicU32, AtomicI32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 // ============================================================================
 // 页帧标志位
@@ -362,10 +362,10 @@ impl Default for Page {
 /// vmemmap 基地址（所有 Page 结构的数组）
 /// 
 /// 在初始化时设置，之后通过此地址访问任意 PFN 的 Page 结构
-pub static mut VMEMMAP_BASE: *mut Page = core::ptr::null_mut();
+pub static VMEMMAP_BASE: AtomicUsize = AtomicUsize::new(0);
 
 /// 最大 PFN
-pub static mut MAX_PFN: u64 = 0;
+pub static MAX_PFN: AtomicU64 = AtomicU64::new(0);
 
 /// 初始化 vmemmap
 /// 
@@ -374,60 +374,87 @@ pub static mut MAX_PFN: u64 = 0;
 /// - base 必须指向足够大的内存区域
 /// - max_pfn 必须正确
 pub unsafe fn init_vmemmap(base: *mut Page, max_pfn: u64) {
-    unsafe {
-        VMEMMAP_BASE = base;
-        MAX_PFN = max_pfn;
-        let vmemmap_base = VMEMMAP_BASE as usize;
-        let max_pfn_snapshot = MAX_PFN;
-        crate::kprintln!(
-            "[diag][mm] init_vmemmap base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
-            vmemmap_base,
-            max_pfn_snapshot,
-            core::ptr::addr_of!(VMEMMAP_BASE) as usize,
-            core::ptr::addr_of!(MAX_PFN) as usize,
-        );
-    }
+    VMEMMAP_BASE.store(base as usize, Ordering::Release);
+    MAX_PFN.store(max_pfn, Ordering::Release);
+    let vmemmap_base = VMEMMAP_BASE.load(Ordering::Acquire);
+    let max_pfn_snapshot = MAX_PFN.load(Ordering::Acquire);
+    crate::kprintln!(
+        "[diag][mm] init_vmemmap base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
+        vmemmap_base,
+        max_pfn_snapshot,
+        core::ptr::addr_of!(VMEMMAP_BASE) as usize,
+        core::ptr::addr_of!(MAX_PFN) as usize,
+    );
+}
+
+#[inline]
+pub fn vmemmap_base_ptr() -> *mut Page {
+    VMEMMAP_BASE.load(Ordering::Acquire) as *mut Page
+}
+
+#[inline]
+pub fn max_pfn() -> u64 {
+    MAX_PFN.load(Ordering::Acquire)
 }
 
 /// PFN 转 Page 指针
-/// 
+///
 /// # Safety
-/// 
-/// pfn 必须有效
+///
+/// - pfn 必须有效
+/// - 返回的是原始指针，不提供 Rust 独占可变借用保证
 #[inline]
-pub unsafe fn pfn_to_page(pfn: u64) -> &'static mut Page {
-    unsafe {
-        debug_assert!(pfn < MAX_PFN, "PFN out of range");
-        &mut *VMEMMAP_BASE.add(pfn as usize)
-    }
+pub unsafe fn pfn_to_page(pfn: u64) -> *mut Page {
+    let max = max_pfn();
+    let base = vmemmap_base_ptr();
+    debug_assert!(pfn < max, "PFN out of range");
+    base.add(pfn as usize)
+}
+
+/// PFN 转 Page 共享引用
+///
+/// # Safety
+///
+/// 调用者需确保 pfn 有效且生命周期内底层 Page 元数据有效。
+#[inline]
+pub unsafe fn pfn_to_page_ref(pfn: u64) -> &'static Page {
+    unsafe { &*pfn_to_page(pfn) }
+}
+
+/// PFN 转 Page 可变引用（显式独占语义）
+///
+/// # Safety
+///
+/// 调用者必须保证该 Page 在当前时刻不存在其他可变或不可变别名访问。
+#[inline]
+pub unsafe fn pfn_to_page_mut(pfn: u64) -> &'static mut Page {
+    unsafe { &mut *pfn_to_page(pfn) }
 }
 
 /// Page 指针转 PFN
 #[inline]
 pub fn page_to_pfn(page: &Page) -> u64 {
-    unsafe {
-        let base = VMEMMAP_BASE as usize;
-        let ptr = page as *const Page as usize;
-        let max_pfn = MAX_PFN as usize;
-        let page_size = core::mem::size_of::<Page>();
+    let base = vmemmap_base_ptr() as usize;
+    let ptr = page as *const Page as usize;
+    let max_pfn = max_pfn() as usize;
+    let page_size = core::mem::size_of::<Page>();
 
-        if base == 0 || max_pfn == 0 || ptr < base {
-            return u64::MAX;
-        }
-
-        let span_bytes = max_pfn.saturating_mul(page_size);
-        let end = base.saturating_add(span_bytes);
-        if ptr >= end {
-            return u64::MAX;
-        }
-
-        let delta = ptr - base;
-        if delta % page_size != 0 {
-            return u64::MAX;
-        }
-
-        (delta / page_size) as u64
+    if base == 0 || max_pfn == 0 || ptr < base {
+        return u64::MAX;
     }
+
+    let span_bytes = max_pfn.saturating_mul(page_size);
+    let end = base.saturating_add(span_bytes);
+    if ptr >= end {
+        return u64::MAX;
+    }
+
+    let delta = ptr - base;
+    if delta % page_size != 0 {
+        return u64::MAX;
+    }
+
+    (delta / page_size) as u64
 }
 
 // ============================================================================

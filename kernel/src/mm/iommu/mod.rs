@@ -533,8 +533,7 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
     };
     
     unsafe {
-        let page = crate::mm::page::page::pfn_to_page(pfn);
-        crate::mm::page::buddy::free_pages(page, order);
+        crate::mm::page::buddy::free_pages(&mut *crate::mm::page::page::pfn_to_page(pfn), order);
     }
 }
 

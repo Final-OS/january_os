@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `kernel/src/interrupt/gdt.rs`
+- `kernel/src/interrupt/arch/x86_64/gdt.rs`
 
 ## GDT 结构
 
@@ -34,38 +34,64 @@ pub unsafe fn init_gdt(kernel_stack_top: u64)
 ### 创建 GDT
 
 ```rust
+use core::cell::UnsafeCell;
+
 // 5 个段 + TSS
 const GDT_ENTRIES: usize = 6;
 
-static mut GDT: [GdtEntry; GDT_ENTRIES] = [GdtEntry::NULL; GDT_ENTRIES];
+struct GdtState {
+    inner: UnsafeCell<[GdtEntry; GDT_ENTRIES]>,
+}
+
+unsafe impl Sync for GdtState {}
+
+impl GdtState {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new([GdtEntry::NULL; GDT_ENTRIES]),
+        }
+    }
+}
+
+static GDT: GdtState = GdtState::new();
+
+fn gdt_ref() -> &'static [GdtEntry; GDT_ENTRIES] {
+    unsafe { &*GDT.inner.get() }
+}
+
+fn gdt_mut() -> &'static mut [GdtEntry; GDT_ENTRIES] {
+    unsafe { &mut *GDT.inner.get() }
+}
 ```
 
 ### 设置段描述符
 
 ```rust
+let gdt = gdt_mut();
+
 // 内核代码段
-GDT[1] = GdtEntry::new_code_segment(
+gdt[1] = GdtEntry::new_code_segment(
     0,           // 基址
     0xFFFFF800,  // 限制 (实际被忽略)
     0,           // DPL (内核)
 );
 
 // 内核数据段
-GDT[2] = GdtEntry::new_data_segment(
+gdt[2] = GdtEntry::new_data_segment(
     0,
     0xFFFFF800,
     0,
 );
 
 // 用户代码段
-GDT[3] = GdtEntry::new_code_segment(
+gdt[3] = GdtEntry::new_code_segment(
     0,
     0xFFFFF800,
     3,           // DPL (用户)
 );
 
 // 用户数据段
-GDT[4] = GdtEntry::new_data_segment(
+gdt[4] = GdtEntry::new_data_segment(
     0,
     0xFFFFF800,
     3,
@@ -106,9 +132,10 @@ pub struct TaskStateSegment {
 
 ```rust
 unsafe fn load_gdt() {
+    let gdt = gdt_ref();
     let gdt_ptr = GdtPointer {
         limit: (GDT_ENTRIES * 16 - 1) as u16,
-        base: &GDT as *const _ as u64,
+        base: gdt.as_ptr() as u64,
     };
 
     asm!("lgdt [{}]", in(reg) &gdt_ptr);

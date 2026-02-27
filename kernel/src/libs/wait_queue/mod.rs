@@ -6,6 +6,7 @@
 //! - 按谓词选择唤醒
 
 use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitState {
@@ -118,26 +119,26 @@ impl WaitQueue {
         Some(entry)
     }
 
-    pub fn wake_all(&mut self) -> usize {
+    pub fn wake_all(&mut self) -> Vec<WaitEntry> {
         self.wake_all_if(|_| true)
     }
 
-    pub fn wake_all_if<F>(&mut self, mut predicate: F) -> usize
+    pub fn wake_all_if<F>(&mut self, mut predicate: F) -> Vec<WaitEntry>
     where
         F: FnMut(&WaitEntry) -> bool,
     {
-        let mut woke = 0;
+        let mut retained = VecDeque::new();
+        let mut woke = Vec::new();
 
-        for entry in self.queue.iter_mut() {
-            if entry.is_sleeping() && predicate(entry) {
+        while let Some(mut entry) = self.queue.pop_front() {
+            if entry.is_sleeping() && predicate(&entry) {
                 entry.state = WaitState::Woken;
-                woke += 1;
+                woke.push(entry);
+            } else {
+                retained.push_back(entry);
             }
         }
-
-        // Keep interrupted entries so callers can observe and dequeue them explicitly.
-        self.queue.retain(|entry| entry.state != WaitState::Woken);
-
+        self.queue = retained;
         woke
     }
 

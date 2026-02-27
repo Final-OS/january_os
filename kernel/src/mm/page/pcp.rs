@@ -4,11 +4,12 @@
 // 减少 Zone 锁竞争，加速单页分配/释放
 // ============================================================================
 
-use super::page::{ListHead, Page};
+use super::page::{max_pfn, vmemmap_base_ptr, ListHead, Page};
 use super::zone::{get_zone, GfpFlags, Zone, ZoneType, NR_ZONES};
 use crate::config;
 use crate::interrupt::apic::local_apic_id;
-use crate::sync::SpinLock;
+use crate::sync::IrqSpinLock;
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// container_of 宏
@@ -40,7 +41,7 @@ pub const NR_PCP_LISTS: usize = NR_ZONES;
 // PCP 数据结构
 // ============================================================================
 
-/// PCP 内部状态 (受 SpinLock 保护)
+/// PCP 内部状态 (受 IrqSpinLock 保护)
 pub struct PcpInner {
     /// 缓存的页数
     pub count: u32,
@@ -69,7 +70,7 @@ pub struct PerCpuPages {
     /// 批量操作数量
     pub batch: u32,
     /// 受保护的内部状态
-    inner: SpinLock<PcpInner>,
+    inner: IrqSpinLock<PcpInner>,
 }
 
 impl PerCpuPages {
@@ -77,7 +78,7 @@ impl PerCpuPages {
         Self {
             high: PCP_HIGH_DEFAULT,
             batch: PCP_BATCH_DEFAULT,
-            inner: SpinLock::new(PcpInner::new()),
+            inner: IrqSpinLock::new(PcpInner::new()),
         }
     }
 
@@ -222,10 +223,22 @@ impl PerCpuPageset {
 // ============================================================================
 
 /// 所有 CPU 的 PCP
-static mut CPU_PAGESETS: [PerCpuPageset; CPU_PAGESETS_CAPACITY] = {
-    const UNINIT: PerCpuPageset = PerCpuPageset::new();
-    [UNINIT; CPU_PAGESETS_CAPACITY]
-};
+struct CpuPagesets {
+    inner: UnsafeCell<[PerCpuPageset; CPU_PAGESETS_CAPACITY]>,
+}
+
+unsafe impl Sync for CpuPagesets {}
+
+impl CpuPagesets {
+    const fn new() -> Self {
+        const UNINIT: PerCpuPageset = PerCpuPageset::new();
+        Self {
+            inner: UnsafeCell::new([UNINIT; CPU_PAGESETS_CAPACITY]),
+        }
+    }
+}
+
+static CPU_PAGESETS: CpuPagesets = CpuPagesets::new();
 
 /// 当前 CPU 数量
 static NR_CPUS: AtomicU32 = AtomicU32::new(1);
@@ -250,7 +263,7 @@ pub fn init_pcp(nr_cpus: u32) {
 
     unsafe {
         for i in 0..nr_cpus as usize {
-            CPU_PAGESETS[i].init();
+            cpu_pageset_mut(i).init();
         }
     }
 
@@ -283,17 +296,15 @@ fn current_cpu() -> usize {
 
 #[inline]
 fn is_page_ptr_in_vmemmap(page: *const Page) -> bool {
-    unsafe {
-        let base = super::page::VMEMMAP_BASE as usize;
-        let max_pfn = super::page::MAX_PFN as usize;
-        if base == 0 || max_pfn == 0 {
-            return false;
-        }
-        let span_bytes = max_pfn.saturating_mul(core::mem::size_of::<Page>());
-        let end = base.saturating_add(span_bytes);
-        let ptr = page as usize;
-        ptr >= base && ptr < end && ((ptr - base) % core::mem::size_of::<Page>() == 0)
+    let base = vmemmap_base_ptr() as usize;
+    let max = max_pfn() as usize;
+    if base == 0 || max == 0 {
+        return false;
     }
+    let span_bytes = max.saturating_mul(core::mem::size_of::<Page>());
+    let end = base.saturating_add(span_bytes);
+    let ptr = page as usize;
+    ptr >= base && ptr < end && ((ptr - base) % core::mem::size_of::<Page>() == 0)
 }
 
 // ============================================================================
@@ -313,7 +324,7 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
     // NORMAL -> DMA32 -> DMA
     for zone_idx in (0..=preferred_zone).rev() {
         unsafe {
-            let pageset = &CPU_PAGESETS[cpu];
+            let pageset = cpu_pageset(cpu);
             let pcp = &pageset.pcp[zone_idx];
 
             // 尝试从 PCP 分配
@@ -342,10 +353,10 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
             }
 
             // PCP 为空，从 Buddy 补充
-            let zone = get_zone(idx_to_zone_type(zone_idx));
+            let mut zone = get_zone(idx_to_zone_type(zone_idx));
             if zone.initialized && zone.nr_free_pages() > 0 {
                 let batch = pcp.batch;
-                pcp.refill_from_buddy(zone, batch);
+                pcp.refill_from_buddy(&mut zone, batch);
                 if let Some(page) = pcp.alloc() {
                     if !is_page_ptr_in_vmemmap(page as *const Page) {
                         crate::kprintln!(
@@ -411,7 +422,7 @@ pub fn pcp_free_page(page: &mut Page) {
             return;
         }
 
-        let pageset = &CPU_PAGESETS[cpu];
+        let pageset = cpu_pageset(cpu);
         let pcp = &pageset.pcp[zone_idx];
 
         // 释放到 PCP
@@ -419,10 +430,10 @@ pub fn pcp_free_page(page: &mut Page) {
 
         // 如果超过高水位，批量归还给 Buddy
         if pcp.above_high() {
-            let zone = get_zone(idx_to_zone_type(zone_idx));
+            let mut zone = get_zone(idx_to_zone_type(zone_idx));
             if zone.initialized {
                 let batch = pcp.batch;
-                pcp.drain_to_buddy(zone, batch);
+                pcp.drain_to_buddy(&mut zone, batch);
             }
         }
     }
@@ -436,17 +447,17 @@ pub fn drain_all_pcps() {
 
     unsafe {
         for cpu in 0..nr_cpus() {
-            let pageset = &CPU_PAGESETS[cpu];
+            let pageset = cpu_pageset(cpu);
 
             for zone_idx in 0..NR_PCP_LISTS {
                 let pcp = &pageset.pcp[zone_idx];
-                let zone = get_zone(idx_to_zone_type(zone_idx));
+                let mut zone = get_zone(idx_to_zone_type(zone_idx));
 
                 if zone.initialized {
                     // 排空所有页
                     let batch = pcp.batch;
                     while pcp.nr_pages() > 0 {
-                        pcp.drain_to_buddy(zone, batch);
+                        pcp.drain_to_buddy(&mut zone, batch);
                     }
                 }
             }
@@ -503,7 +514,7 @@ pub fn pcp_stats() -> PcpStats {
 
     unsafe {
         for cpu in 0..nr_cpus() {
-            let pageset = &CPU_PAGESETS[cpu];
+            let pageset = cpu_pageset(cpu);
 
             for zone_idx in 0..NR_PCP_LISTS {
                 let count = pageset.pcp[zone_idx].nr_pages() as u64;
@@ -514,4 +525,14 @@ pub fn pcp_stats() -> PcpStats {
     }
 
     stats
+}
+
+#[inline]
+fn cpu_pageset(cpu: usize) -> &'static PerCpuPageset {
+    unsafe { &(*CPU_PAGESETS.inner.get())[cpu] }
+}
+
+#[inline]
+unsafe fn cpu_pageset_mut(cpu: usize) -> &'static mut PerCpuPageset {
+    unsafe { &mut (*CPU_PAGESETS.inner.get())[cpu] }
 }

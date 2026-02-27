@@ -342,8 +342,7 @@ unsafe fn cleanup_partial(vaddr: u64, mapped_pages: u32, _total_pages: u32) {
         if let Some(phys) = get_vmalloc_phys(virt) {
             unmap_vmalloc_page(virt);
             let pfn = phys / PAGE_SIZE;
-            let page = pfn_to_page(pfn);
-            free_page(page);
+            free_page(&mut *pfn_to_page(pfn));
         }
     }
 
@@ -368,8 +367,7 @@ unsafe fn __vfree(addr: u64, area: &VmArea) {
             // 释放物理页 (仅当不是 IO 映射时)
             if !area.flags.contains(VmFlags::IOREMAP) {
                 let pfn = phys / PAGE_SIZE;
-                let page = pfn_to_page(pfn);
-                free_page(page);
+                free_page(&mut *pfn_to_page(pfn));
             }
         }
     }
@@ -414,6 +412,9 @@ fn map_vmalloc_page(virt: u64, phys: u64, flags: u64) -> bool {
         let ok = pt_mgr.map_page(virt, phys, flags);
         crate::kprintln!("[diag][vmalloc] pt_mgr.map_page -> {}", ok);
         if ok {
+            // map_page 对“新增映射”仅做本地刷新；vmalloc/ioremap 为低频路径，
+            // 这里追加一次跨核 TLB shootdown 保障内核映射可见性一致。
+            pt_mgr.flush_tlb(virt);
             // 验证映射是否生效
             if pt_mgr.translate_addr(virt).is_none() {
                 crate::kprintln!(

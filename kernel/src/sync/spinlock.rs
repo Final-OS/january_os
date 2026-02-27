@@ -147,3 +147,112 @@ impl<T> Drop for SpinLockGuard<'_, T> {
         self.lock.locked.store(false, Ordering::Release);
     }
 }
+
+/// 带中断禁用的自旋锁
+///
+/// 用于同时会被中断上下文和普通上下文访问的数据。
+pub struct IrqSpinLock<T> {
+    inner: SpinLock<T>,
+}
+
+unsafe impl<T: Send> Sync for IrqSpinLock<T> {}
+unsafe impl<T: Send> Send for IrqSpinLock<T> {}
+
+impl<T> IrqSpinLock<T> {
+    pub const fn new(data: T) -> Self {
+        Self {
+            inner: SpinLock::new(data),
+        }
+    }
+
+    pub const fn with_name(data: T, name: &'static str) -> Self {
+        Self {
+            inner: SpinLock::with_name(data, name),
+        }
+    }
+
+    pub fn lock(&self) -> IrqSpinLockGuard<T> {
+        let irq_was_enabled = interrupts_enabled();
+        if irq_was_enabled {
+            disable_interrupts();
+        }
+
+        let guard = self.inner.lock();
+        IrqSpinLockGuard {
+            guard: Some(guard),
+            irq_was_enabled,
+        }
+    }
+
+    pub fn try_lock(&self) -> Option<IrqSpinLockGuard<T>> {
+        let irq_was_enabled = interrupts_enabled();
+        if irq_was_enabled {
+            disable_interrupts();
+        }
+
+        match self.inner.try_lock() {
+            Some(guard) => Some(IrqSpinLockGuard {
+                guard: Some(guard),
+                irq_was_enabled,
+            }),
+            None => {
+                if irq_was_enabled {
+                    enable_interrupts();
+                }
+                None
+            }
+        }
+    }
+}
+
+pub struct IrqSpinLockGuard<'a, T> {
+    guard: Option<SpinLockGuard<'a, T>>,
+    irq_was_enabled: bool,
+}
+
+impl<T> Deref for IrqSpinLockGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &*self
+            .guard
+            .as_ref()
+            .expect("IrqSpinLockGuard without inner guard")
+    }
+}
+
+impl<T> DerefMut for IrqSpinLockGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut *self
+            .guard
+            .as_mut()
+            .expect("IrqSpinLockGuard without inner guard")
+    }
+}
+
+impl<T> Drop for IrqSpinLockGuard<'_, T> {
+    fn drop(&mut self) {
+        if let Some(guard) = self.guard.take() {
+            drop(guard);
+        }
+
+        if self.irq_was_enabled {
+            enable_interrupts();
+        }
+    }
+}
+
+#[inline]
+fn interrupts_enabled() -> bool {
+    crate::interrupt::interrupts_enabled()
+}
+
+#[inline]
+fn disable_interrupts() {
+    crate::interrupt::disable_interrupts();
+}
+
+#[inline]
+fn enable_interrupts() {
+    crate::interrupt::enable_interrupts();
+}

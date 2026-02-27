@@ -116,6 +116,104 @@ pub(super) fn run() {
         return fail("mmap", "MAP_FIXED with unaligned addr must fail");
     }
 
+    mm_step("mmap: case=brk_bootstrap_heap_vma");
+    {
+        let mut local_mm = mm::Mm::uninit();
+        let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
+        local_mm.init(cr3);
+        let heap_base = mm::USER_SPACE_START.saturating_add(0x20_0000);
+        let heap_new = heap_base.saturating_add(mm::PAGE_SIZE * 2);
+        local_mm.start_brk = heap_base;
+        local_mm.brk = heap_base;
+
+        if local_mm.find_vma(heap_base).is_some() {
+            return fail("mmap", "brk bootstrap precondition failed: heap vma already exists");
+        }
+
+        match local_mm.do_brk(heap_new) {
+            Ok(actual) if actual == heap_new => {}
+            Ok(actual) => {
+                kprintln!(
+                    "[test/mm][mmap][brk-bootstrap] unexpected brk value expected={:#x} actual={:#x}",
+                    heap_new,
+                    actual
+                );
+                return fail("mmap", "do_brk returned unexpected value");
+            }
+            Err(e) => {
+                kprintln!(
+                    "[test/mm][mmap][brk-bootstrap] do_brk failed err={}",
+                    e
+                );
+                return fail("mmap", "do_brk should create heap vma when missing");
+            }
+        }
+
+        let Some(vma) = local_mm.find_vma(heap_base) else {
+            return fail("mmap", "do_brk did not create heap VMA");
+        };
+        let Some(flags) = local_mm.find_vma_flags(heap_base) else {
+            return fail("mmap", "heap VMA flags missing after do_brk");
+        };
+        kprintln!(
+            "[test/mm][mmap][brk-bootstrap] vma=[{:#x}, {:#x}) flags={:#x}",
+            vma.vm_start,
+            vma.vm_end,
+            flags.bits()
+        );
+        if vma.vm_start != heap_base || vma.vm_end != heap_new {
+            return fail("mmap", "heap VMA range mismatch after do_brk bootstrap");
+        }
+        if !flags.contains(mm::VmFlags::HEAP)
+            || !flags.contains(mm::VmFlags::ANONYMOUS)
+            || !flags.contains(mm::VmFlags::WRITE)
+            || !flags.contains(mm::VmFlags::MAYWRITE)
+        {
+            return fail("mmap", "heap bootstrap VMA flags incomplete");
+        }
+    }
+
+    mm_step("mmap: case=stack_expand_limit_window");
+    {
+        let mut local_mm = mm::Mm::uninit();
+        let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
+        local_mm.init(cr3);
+        local_mm.start_stack = mm::USER_STACK_TOP;
+
+        let stack_top = mm::USER_STACK_TOP;
+        let stack_start = stack_top.saturating_sub(mm::PAGE_SIZE);
+        let mut stack_flags = mm::VmFlags::empty();
+        stack_flags.set(mm::VmFlags::READ);
+        stack_flags.set(mm::VmFlags::WRITE);
+        stack_flags.set(mm::VmFlags::ANONYMOUS);
+        stack_flags.set(mm::VmFlags::GROWSDOWN);
+        if !local_mm.insert_vma(stack_start, stack_top, mm::VmaInfo::new(stack_flags)) {
+            return fail("mmap", "stack expand regression setup failed: insert stack vma");
+        }
+
+        let too_low = stack_top
+            .saturating_sub(mm::USER_STACK_SIZE)
+            .saturating_sub(mm::PAGE_SIZE);
+        let allowed = stack_top.saturating_sub(2 * mm::PAGE_SIZE);
+
+        if local_mm.expand_stack_for_fault(too_low).is_some() {
+            return fail("mmap", "stack expansion must reject addresses below stack size limit");
+        }
+
+        let Some(expanded_vma) = local_mm.expand_stack_for_fault(allowed) else {
+            return fail("mmap", "stack expansion should succeed within stack size limit");
+        };
+        kprintln!(
+            "[test/mm][mmap][stack-expand] old_start={:#x} new_start={:#x} limit_bottom={:#x}",
+            stack_start,
+            expanded_vma.vm_start,
+            stack_top.saturating_sub(mm::USER_STACK_SIZE)
+        );
+        if expanded_vma.vm_start != allowed || expanded_vma.vm_end != stack_top {
+            return fail("mmap", "stack expansion produced unexpected VMA range");
+        }
+    }
+
     mm_step("mmap: case=anon_private_rw_map_and_access");
     let low_hint_mapped_before = {
         let cr3 = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
@@ -268,8 +366,20 @@ pub(super) fn run() {
     }
 
     mm_step("mmap: case=munmap_cross_cpu_visibility");
-    if crate::smp::cpu_count() <= 1 {
-        warn!("mm/mmap: single-cpu environment, skip cross-cpu munmap visibility check");
+    let online_cpus = crate::smp::cpu_count();
+    let detected_cpus = crate::smp::detected_cpu_count();
+    if online_cpus <= 1 {
+        if detected_cpus > 1 {
+            return fail(
+                "mmap",
+                "cross-cpu munmap visibility: detected multiple CPUs but only one CPU online",
+            );
+        }
+        warn!(
+            "mm/mmap: single-cpu environment, skip cross-cpu munmap visibility check (detected={} online={})",
+            detected_cpus,
+            online_cpus,
+        );
     } else {
         let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
         let mut pt_mgr = unsafe { mm::PageTableManager::new(cr3, mm::DIRECT_MAP_OFFSET) };
@@ -343,11 +453,16 @@ pub(super) fn run() {
             return fail("mmap", "cross-cpu munmap visibility: insert_vma failed");
         }
 
-        let mut remote_ready = false;
+        let mut case_error: Option<&str> = None;
         let (targets_old, handled_old, matched_old) =
             mm::paging::run_tlb_probe_on_other_cpus(test_va, TLB_OLD_VALUE);
         if targets_old == 0 {
-            warn!("mm/mmap: cross-cpu munmap visibility skipped (no remote probe targets)");
+            warn!(
+                "mm/mmap: cross-cpu probe found no targets (cpu_count={} registered_shootdown_cpus={})",
+                crate::smp::cpu_count(),
+                mm::paging::tlb_shootdown_registered_cpu_count(),
+            );
+            case_error = Some("cross-cpu munmap visibility: no remote probe targets");
         } else {
             kprintln!(
                 "[test/mm][mmap][cross-cpu][pre] va={:#x} targets={} handled={} matched_old={}",
@@ -356,19 +471,16 @@ pub(super) fn run() {
                 handled_old,
                 matched_old,
             );
-            if handled_old == targets_old && matched_old > 0 {
-                remote_ready = true;
+            if handled_old != targets_old {
+                case_error = Some("cross-cpu munmap visibility: pre probe IPI not handled on all targets");
+            } else if matched_old == 0 {
+                case_error = Some("cross-cpu munmap visibility: pre probe did not observe old mapping");
             }
         }
 
-        let mut case_error: Option<&str> = None;
         let mut vma_present = true;
 
-        if !remote_ready {
-            warn!(
-                "mm/mmap: cross-cpu munmap visibility skipped (remote probe did not confirm old mapping)"
-            );
-        } else {
+        if case_error.is_none() {
             if case_error.is_none() {
                 let munmap_ret = do_munmap(test_va as usize, page);
                 if ret_is_err(munmap_ret) {
@@ -427,8 +539,24 @@ pub(super) fn run() {
         }
 
         unsafe {
-            mm::free_page(&mut *new_page_ptr);
-            mm::free_page(&mut *old_page_ptr);
+            // Cleanup may run after mm teardown paths already released these pages.
+            // Guard refcount to avoid test-path double-free noise.
+            if (*new_page_ptr).refcount() > 0 {
+                mm::free_page(&mut *new_page_ptr);
+            } else {
+                kprintln!(
+                    "[test/mm][mmap][cleanup] skip free new_page (already released) pfn={}",
+                    mm::page_to_pfn(&*new_page_ptr),
+                );
+            }
+            if (*old_page_ptr).refcount() > 0 {
+                mm::free_page(&mut *old_page_ptr);
+            } else {
+                kprintln!(
+                    "[test/mm][mmap][cleanup] skip free old_page (already released) pfn={}",
+                    mm::page_to_pfn(&*old_page_ptr),
+                );
+            }
         }
 
         if let Some(msg) = case_error {

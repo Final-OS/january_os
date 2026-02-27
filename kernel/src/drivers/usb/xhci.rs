@@ -12,7 +12,7 @@ use crate::mm::buddy::alloc_pages;
 use crate::mm::page::page_to_pfn;
 use crate::mm::vmalloc::{ioremap, iounmap};
 use crate::mm::zone::{GfpFlags, GFP_KERNEL_ZERO};
-use crate::sync::SpinLock;
+use crate::sync::IrqSpinLock;
 use crate::{debug, error, info, kprint, kprintln, ok, warn};
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -361,8 +361,8 @@ struct XhciController {
 
 unsafe impl Send for XhciController {}
 
-static XHCI_CONTROLLER: SpinLock<Option<XhciController>> =
-    SpinLock::with_name(None, "XhciController");
+static XHCI_CONTROLLER: IrqSpinLock<Option<XhciController>> =
+    IrqSpinLock::with_name(None, "XhciController");
 
 impl XhciController {
     unsafe fn enqueue_command(&mut self, param: u64, status: u32, control: u32) {

@@ -18,6 +18,7 @@
 //! ```
 
 use core::arch::asm;
+use core::cell::UnsafeCell;
 use core::mem::size_of;
 
 // ============================================================================
@@ -313,16 +314,50 @@ use crate::config::MAX_CPUS;
 // ============================================================================
 
 /// 全局 GDT 数组
-static mut GDTS: [Gdt; MAX_CPUS] = {
-    const UNINIT: Gdt = Gdt::new();
-    [UNINIT; MAX_CPUS]
-};
+struct GdtArray {
+    inner: UnsafeCell<[Gdt; MAX_CPUS]>,
+}
+
+unsafe impl Sync for GdtArray {}
+
+impl GdtArray {
+    const fn new() -> Self {
+        const UNINIT: Gdt = Gdt::new();
+        Self {
+            inner: UnsafeCell::new([UNINIT; MAX_CPUS]),
+        }
+    }
+}
+
+static GDTS: GdtArray = GdtArray::new();
 
 /// 全局 TSS 数组
-static mut TSSS: [Tss; MAX_CPUS] = {
-    const UNINIT: Tss = Tss::new();
-    [UNINIT; MAX_CPUS]
-};
+struct TssArray {
+    inner: UnsafeCell<[Tss; MAX_CPUS]>,
+}
+
+unsafe impl Sync for TssArray {}
+
+impl TssArray {
+    const fn new() -> Self {
+        const UNINIT: Tss = Tss::new();
+        Self {
+            inner: UnsafeCell::new([UNINIT; MAX_CPUS]),
+        }
+    }
+}
+
+static TSSS: TssArray = TssArray::new();
+
+#[inline]
+unsafe fn gdt_mut(cpu_id: usize) -> &'static mut Gdt {
+    unsafe { &mut (*GDTS.inner.get())[cpu_id] }
+}
+
+#[inline]
+unsafe fn tss_mut(cpu_id: usize) -> &'static mut Tss {
+    unsafe { &mut (*TSSS.inner.get())[cpu_id] }
+}
 
 /// 初始化 GDT 和 TSS
 /// 
@@ -341,11 +376,11 @@ pub unsafe fn init_gdt(cpu_id: usize, kernel_stack_top: u64) {
 
     unsafe {
         // 设置 TSS
-        let tss = &mut TSSS[cpu_id];
+        let tss = tss_mut(cpu_id);
         tss.set_kernel_stack(kernel_stack_top);
         
         // 初始化 GDT
-        let gdt = &mut GDTS[cpu_id];
+        let gdt = gdt_mut(cpu_id);
         gdt.init(tss);
         
         // 加载 GDT
@@ -403,7 +438,7 @@ pub unsafe fn get_tss_mut(cpu_id: usize) -> &'static mut Tss {
     if cpu_id >= MAX_CPUS {
         panic!("CPU ID {} exceeds MAX_CPUS {}", cpu_id, MAX_CPUS);
     }
-    unsafe { &mut TSSS[cpu_id] }
+    unsafe { tss_mut(cpu_id) }
 }
 
 /// 设置中断栈

@@ -4,19 +4,20 @@ use crate::mm;
 use crate::interrupt;
 use crate::drivers::acpi::{Madt, MadtEntry, MultiprocessorWakeupMailbox};
 use core::arch::global_asm;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // Global state for ACPI Wakeup (shared with ASM)
 #[unsafe(no_mangle)]
-static mut DIRECT_MAP_BASE_VAL: u64 = 0;
+static DIRECT_MAP_BASE_VAL: AtomicU64 = AtomicU64::new(0);
 #[unsafe(no_mangle)]
-static mut NEXT_AP_STACK_VAL: u64 = 0;
+static NEXT_AP_STACK_VAL: AtomicU64 = AtomicU64::new(0);
 
 // Internal state
-static mut MAILBOX_VIRT_ADDR: u64 = 0;
+static MAILBOX_VIRT_ADDR: AtomicU64 = AtomicU64::new(0);
 
 /// AP signals it has started and read trampoline data
 static AP_STARTED: AtomicBool = AtomicBool::new(false);
+const AP_START_TIMEOUT_SPINS: u64 = 10_000_000;
 
 global_asm!(r#"
 .section .text
@@ -57,7 +58,10 @@ fn read_cr3() -> u64 {
 /// If not, prepares the Legacy Trampoline.
 pub unsafe fn prepare_smp(madt: &Madt, direct_map_base: u64) {
     // Save direct_map_base for ASM
-    DIRECT_MAP_BASE_VAL = direct_map_base;
+    DIRECT_MAP_BASE_VAL.store(direct_map_base, Ordering::Release);
+
+    // 始终准备 Legacy Trampoline，便于 ACPI wakeup 失败时回退。
+    prepare_trampoline(direct_map_base);
 
     // 1. Check for ACPI Multiprocessor Wakeup Mailbox
     let mut mp_wakeup = None;
@@ -70,16 +74,19 @@ pub unsafe fn prepare_smp(madt: &Madt, direct_map_base: u64) {
 
     if let Some(wakeup) = mp_wakeup {
         let addr = wakeup.mailbox_address;
-        crate::info!("SMP: Using ACPI Multiprocessor Wakeup (Mailbox: {:#x})", addr);
-        MAILBOX_VIRT_ADDR = direct_map_base + addr;
+        crate::info!(
+            "SMP: Using ACPI Multiprocessor Wakeup (Mailbox: {:#x}, legacy fallback ready)",
+            addr
+        );
+        MAILBOX_VIRT_ADDR.store(direct_map_base + addr, Ordering::Release);
     } else {
+        MAILBOX_VIRT_ADDR.store(0, Ordering::Release);
         crate::info!("SMP: Using Legacy Trampoline");
-        prepare_trampoline(direct_map_base);
     }
 }
 
 /// Boot a specific AP
-pub fn boot_ap(apic_id: u32, direct_map_base: u64) {
+pub fn boot_ap(apic_id: u32, direct_map_base: u64) -> bool {
     // Allocate stack: order=2 → 2^2 = 4 pages = 16KB
     let stack_order = 2;
     let stack_pages = 1u64 << stack_order; // 4
@@ -94,23 +101,59 @@ pub fn boot_ap(apic_id: u32, direct_map_base: u64) {
     );
 
     // Save stack for ACPI Wakeup (if used)
-    unsafe {
-        NEXT_AP_STACK_VAL = stack_top;
+    NEXT_AP_STACK_VAL.store(stack_top, Ordering::Release);
+    AP_STARTED.store(false, Ordering::Release);
+    crate::smp::ap_boot_probe_reset();
+    let online_before = crate::smp::cpu_count();
+
+    let mailbox_virt = MAILBOX_VIRT_ADDR.load(Ordering::Acquire);
+    let started = unsafe {
+        if mailbox_virt != 0 {
+            if boot_ap_acpi(apic_id, stack_top) {
+                true
+            } else {
+                crate::warn!(
+                    "  [SMP] AP {} ACPI wakeup failed, fallback to Legacy Trampoline",
+                    apic_id
+                );
+                AP_STARTED.store(false, Ordering::Release);
+                boot_ap_legacy(apic_id, direct_map_base, stack_top)
+            }
+        } else {
+            boot_ap_legacy(apic_id, direct_map_base, stack_top)
+        }
+    };
+
+    if !started {
+        return false;
     }
 
-    unsafe {
-        if MAILBOX_VIRT_ADDR != 0 {
-            boot_ap_acpi(apic_id, stack_top);
-        } else {
-            boot_ap_legacy(apic_id, direct_map_base, stack_top);
+    let mut timeout = 0u64;
+    while crate::smp::cpu_count() <= online_before {
+        core::hint::spin_loop();
+        timeout += 1;
+        if timeout > AP_START_TIMEOUT_SPINS {
+            let (probe_cpu_id, probe_stage) = crate::smp::ap_boot_probe_snapshot();
+            crate::warn!(
+                "  [SMP] AP {} started but did not reach online state (online_before={} online_now={} probe_cpu_id={} probe_stage={})",
+                apic_id,
+                online_before,
+                crate::smp::cpu_count(),
+                probe_cpu_id,
+                probe_stage,
+            );
+            return false;
         }
     }
+
+    true
 }
 
 /// Boot AP using ACPI Multiprocessor Wakeup
-unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) {
+unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) -> bool {
     crate::info!("  [SMP] Booting AP {} via ACPI Wakeup...", apic_id);
-    let mailbox = &mut *(MAILBOX_VIRT_ADDR as *mut MultiprocessorWakeupMailbox);
+    let mailbox_virt = MAILBOX_VIRT_ADDR.load(Ordering::Acquire);
+    let mailbox = &mut *(mailbox_virt as *mut MultiprocessorWakeupMailbox);
 
     // 1. Setup Mailbox
     core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.apic_id), apic_id);
@@ -125,16 +168,18 @@ unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) {
     while !AP_STARTED.load(Ordering::Acquire) {
         core::hint::spin_loop();
         timeout += 1;
-        if timeout > 10_000_000 {
+        if timeout > AP_START_TIMEOUT_SPINS {
             crate::warn!("  [SMP] AP {} (ACPI) start timeout!", apic_id);
-            break;
+            AP_STARTED.store(false, Ordering::Release);
+            return false;
         }
     }
     AP_STARTED.store(false, Ordering::Release);
+    true
 }
 
 /// Boot AP using Legacy Trampoline (SIPI)
-unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) {
+unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) -> bool {
     crate::info!("  [SMP] Booting AP {} via Legacy Trampoline...", apic_id);
     let pml4_phys = read_cr3();
 
@@ -170,14 +215,16 @@ unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) {
     while !AP_STARTED.load(Ordering::Acquire) {
         core::hint::spin_loop();
         timeout += 1;
-        if timeout > 10_000_000 {
+        if timeout > AP_START_TIMEOUT_SPINS {
             crate::warn!("  [SMP] AP {} start timeout!", apic_id);
             // 超时也必须重置标志，但不能继续启动下一个 AP
             // 因为当前 AP 可能稍后才读取 trampoline 数据
-            return;
+            AP_STARTED.store(false, Ordering::Release);
+            return false;
         }
     }
     AP_STARTED.store(false, Ordering::Release);
+    true
 }
 
 fn delay_ms(ms: u64) {
@@ -214,8 +261,12 @@ fn delay_us(us: u64) {
 pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
     // Signal BSP that we have started and read trampoline data
     AP_STARTED.store(true, Ordering::Release);
+    let _ = direct_map_base;
+    crate::smp::ap_boot_probe_set_stage(1);
 
     let cpu_id = crate::smp::alloc_cpu_id();
+    crate::smp::ap_boot_probe_set_cpu(cpu_id);
+    crate::smp::ap_boot_probe_set_stage(2);
     
     // Init AP interrupts
     // We need kernel_stack_top. It is current RSP.
@@ -225,18 +276,25 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
     }
     
     let local_apic_base = 0xFEE00000; // Default address
+    crate::smp::ap_boot_probe_set_stage(3);
     
     unsafe {
         interrupt::init_ap(cpu_id, kernel_stack_top, local_apic_base, direct_map_base).unwrap();
     }
+    crate::smp::ap_boot_probe_set_stage(4);
     interrupt::enable_interrupts();
+    crate::smp::ap_boot_probe_set_stage(5);
     crate::mm::paging::register_tlb_shootdown_cpu();
+    crate::smp::ap_boot_probe_set_stage(6);
+    let online_cpus = crate::smp::mark_cpu_online();
+    crate::smp::ap_boot_probe_set_stage(7);
 
     crate::kprintln!(
-        "[diag][smp] ap_entry cpu_id={} local_apic_id={} if={}",
+        "[diag][smp] ap_entry cpu_id={} local_apic_id={} if={} online_cpus={}",
         cpu_id,
         interrupt::local_apic_id(),
         interrupt::interrupts_enabled(),
+        online_cpus,
     );
     
     crate::kprintln!("      [SMP] AP Started (CPU {})", cpu_id);

@@ -38,11 +38,12 @@ use crate::mm::page::memblock::{
     memblock_reserved_region_count, memblock_reserved_region,
 };
 use crate::mm::page::page::{Page, init_vmemmap, PAGE_STRUCT_SIZE};
-use crate::mm::page::zone::{Zone, ZoneType, ZONES, mark_zones_initialized};
+use crate::mm::page::zone::{Zone, ZoneType, get_zone, mark_zones_initialized};
 use crate::mm::page::buddy::init_zone_buddy;
 use crate::mm::slub::init_kmalloc_caches;
 use crate::mm::vm::layout::PAGE_SIZE;
 use crate::error::{KernelError, KernelResult};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 // ============================================================================
 // 初始化阶段
@@ -64,16 +65,27 @@ pub enum MmInitStage {
 }
 
 /// 当前初始化阶段
-static mut INIT_STAGE: MmInitStage = MmInitStage::None;
+static INIT_STAGE: AtomicU8 = AtomicU8::new(MmInitStage::None as u8);
+
+#[inline]
+fn decode_stage(raw: u8) -> MmInitStage {
+    match raw {
+        x if x == MmInitStage::Memblock as u8 => MmInitStage::Memblock,
+        x if x == MmInitStage::Buddy as u8 => MmInitStage::Buddy,
+        x if x == MmInitStage::Slub as u8 => MmInitStage::Slub,
+        x if x == MmInitStage::Complete as u8 => MmInitStage::Complete,
+        _ => MmInitStage::None,
+    }
+}
 
 /// 获取当前初始化阶段
 pub fn init_stage() -> MmInitStage {
-    unsafe { INIT_STAGE }
+    decode_stage(INIT_STAGE.load(Ordering::Acquire))
 }
 
 /// 设置初始化阶段
 unsafe fn set_stage(stage: MmInitStage) {
-    unsafe { INIT_STAGE = stage; }
+    INIT_STAGE.store(stage as u8, Ordering::Release);
 }
 
 // ============================================================================
@@ -154,7 +166,7 @@ pub unsafe fn init_buddy_system(
     _direct_map_offset: u64,
 ) -> KernelResult<()> {
     unsafe {
-        if INIT_STAGE != MmInitStage::Memblock {
+        if init_stage() != MmInitStage::Memblock {
             return Err(KernelError::InvalidParam);
         }
         
@@ -182,19 +194,19 @@ pub unsafe fn init_buddy_system(
         
         // ZONE_DMA: 0 - 16MB (ISA DMA)
         if dma_end_pfn > 0 {
-            let zone = &mut ZONES[ZoneType::Dma as usize];
+            let mut zone = get_zone(ZoneType::Dma);
             zone.init(ZoneType::Dma, 0, dma_end_pfn);
         }
         
         // ZONE_DMA32: 16MB - 4GB (32位 PCI 设备)
         if dma32_end_pfn > dma_end_pfn {
-            let zone = &mut ZONES[ZoneType::Dma32 as usize];
+            let mut zone = get_zone(ZoneType::Dma32);
             zone.init(ZoneType::Dma32, dma_end_pfn, dma32_end_pfn - dma_end_pfn);
         }
         
         // ZONE_NORMAL: 4GB+ (普通内存)
         if max_pfn > dma32_end_pfn {
-            let zone = &mut ZONES[ZoneType::Normal as usize];
+            let mut zone = get_zone(ZoneType::Normal);
             zone.init(ZoneType::Normal, dma32_end_pfn, max_pfn - dma32_end_pfn);
         }
         
@@ -223,8 +235,8 @@ pub unsafe fn init_buddy_system(
                 let zone_start = start_pfn;
                 let zone_end = end_pfn.min(dma_end_pfn);
                 if zone_end > zone_start {
-                    let zone = &mut ZONES[ZoneType::Dma as usize];
-                    init_zone_buddy_filtered(zone, zone_start, zone_end, max_pfn);
+                    let mut zone = get_zone(ZoneType::Dma);
+                    init_zone_buddy_filtered(&mut zone, zone_start, zone_end, max_pfn);
                 }
             }
             
@@ -233,8 +245,8 @@ pub unsafe fn init_buddy_system(
                 let zone_start = start_pfn.max(dma_end_pfn);
                 let zone_end = end_pfn.min(dma32_end_pfn);
                 if zone_end > zone_start {
-                    let zone = &mut ZONES[ZoneType::Dma32 as usize];
-                    init_zone_buddy_filtered(zone, zone_start, zone_end, max_pfn);
+                    let mut zone = get_zone(ZoneType::Dma32);
+                    init_zone_buddy_filtered(&mut zone, zone_start, zone_end, max_pfn);
                 }
             }
             
@@ -243,8 +255,8 @@ pub unsafe fn init_buddy_system(
                 let zone_start = start_pfn.max(dma32_end_pfn);
                 let zone_end = end_pfn.min(max_pfn);
                 if zone_end > zone_start {
-                    let zone = &mut ZONES[ZoneType::Normal as usize];
-                    init_zone_buddy_filtered(zone, zone_start, zone_end, max_pfn);
+                    let mut zone = get_zone(ZoneType::Normal);
+                    init_zone_buddy_filtered(&mut zone, zone_start, zone_end, max_pfn);
                 }
             }
             
@@ -265,7 +277,7 @@ pub unsafe fn init_buddy_system(
 /// 初始化 SLUB 分配器
 pub unsafe fn init_slub() -> KernelResult<()> {
     unsafe {
-        if INIT_STAGE != MmInitStage::Buddy {
+        if init_stage() != MmInitStage::Buddy {
             return Err(KernelError::InvalidParam);
         }
         
@@ -279,7 +291,7 @@ pub unsafe fn init_slub() -> KernelResult<()> {
 /// 完成内存管理初始化
 pub unsafe fn finish_mm_init() {
     unsafe {
-        if INIT_STAGE == MmInitStage::Slub {
+        if init_stage() == MmInitStage::Slub {
             set_stage(MmInitStage::Complete);
         }
     }

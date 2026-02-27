@@ -4,6 +4,7 @@
 // 多节点内存架构支持，为大型服务器优化内存访问
 // ============================================================================
 
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use crate::sync::Once;
 use crate::interrupt::apic::local_apic_id;
@@ -126,7 +127,7 @@ impl PgData {
         if self.node_id == 0 {
             let mut total = 0u64;
             for zone_type in [ZoneType::Dma, ZoneType::Dma32, ZoneType::Normal] {
-                let zone = unsafe { get_zone(zone_type) };
+                let zone = get_zone(zone_type);
                 if zone.initialized {
                     total += zone.nr_free_pages();
                 }
@@ -167,10 +168,22 @@ impl PgData {
 // ============================================================================
 
 /// 所有节点数据
-static mut NODE_DATA: [PgData; MAX_NUMNODES] = {
-    const UNINIT: PgData = PgData::uninit();
-    [UNINIT; MAX_NUMNODES]
-};
+struct NodeDataState {
+    inner: UnsafeCell<[PgData; MAX_NUMNODES]>,
+}
+
+unsafe impl Sync for NodeDataState {}
+
+impl NodeDataState {
+    const fn new() -> Self {
+        const UNINIT: PgData = PgData::uninit();
+        Self {
+            inner: UnsafeCell::new([UNINIT; MAX_NUMNODES]),
+        }
+    }
+}
+
+static NODE_DATA: NodeDataState = NodeDataState::new();
 
 /// 在线节点数
 static NR_ONLINE_NODES: AtomicU32 = AtomicU32::new(0);
@@ -183,7 +196,43 @@ static IS_NUMA: AtomicBool = AtomicBool::new(false);
 
 /// APIC ID 到 NUMA 节点的映射
 /// 假设最大 APIC ID 为 255
-static mut APIC_TO_NODE: [u32; 256] = [0; 256];
+struct ApicToNodeState {
+    inner: UnsafeCell<[u32; 256]>,
+}
+
+unsafe impl Sync for ApicToNodeState {}
+
+impl ApicToNodeState {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new([0; 256]),
+        }
+    }
+}
+
+static APIC_TO_NODE: ApicToNodeState = ApicToNodeState::new();
+
+#[inline]
+fn node_data_ref(node_id: usize) -> &'static PgData {
+    unsafe { &(*NODE_DATA.inner.get())[node_id] }
+}
+
+#[inline]
+unsafe fn node_data_mut(node_id: usize) -> &'static mut PgData {
+    unsafe { &mut (*NODE_DATA.inner.get())[node_id] }
+}
+
+#[inline]
+fn apic_to_node(apic_id: usize) -> u32 {
+    unsafe { (*APIC_TO_NODE.inner.get())[apic_id] }
+}
+
+#[inline]
+fn set_apic_to_node(apic_id: usize, node_id: u32) {
+    unsafe {
+        (*APIC_TO_NODE.inner.get())[apic_id] = node_id;
+    }
+}
 
 // ============================================================================
 // 节点访问
@@ -196,7 +245,7 @@ static mut APIC_TO_NODE: [u32; 256] = [0; 256];
 /// node_id 必须有效
 pub unsafe fn get_node_data(node_id: u32) -> &'static mut PgData {
     debug_assert!((node_id as usize) < MAX_NUMNODES);
-    &mut NODE_DATA[node_id as usize]
+    unsafe { node_data_mut(node_id as usize) }
 }
 
 /// 获取当前 CPU 的本地节点
@@ -204,7 +253,7 @@ pub unsafe fn get_node_data(node_id: u32) -> &'static mut PgData {
 pub fn numa_node_id() -> u32 {
     let apic_id = local_apic_id() as usize;
     if apic_id < 256 {
-        unsafe { APIC_TO_NODE[apic_id] }
+        apic_to_node(apic_id)
     } else {
         0
     }
@@ -225,7 +274,7 @@ pub fn node_online(node_id: u32) -> bool {
     if (node_id as usize) >= MAX_NUMNODES {
         return false;
     }
-    unsafe { NODE_DATA[node_id as usize].online.load(Ordering::Relaxed) }
+    node_data_ref(node_id as usize).online.load(Ordering::Relaxed)
 }
 
 // ============================================================================
@@ -299,14 +348,14 @@ pub unsafe fn init_numa(nodes: &[NumaNodeInfo]) {
         while mask > 0 {
             if mask & 1 != 0 {
                 if apic_id < 256 {
-                    APIC_TO_NODE[apic_id] = info.node_id;
+                    set_apic_to_node(apic_id, info.node_id);
                 }
             }
             mask >>= 1;
             apic_id += 1;
         }
         
-        let node = &mut NODE_DATA[info.node_id as usize];
+        let node = node_data_mut(info.node_id as usize);
         let start_pfn = info.start_addr / PAGE_SIZE;
         let nr_pages = info.size / PAGE_SIZE;
         
@@ -327,7 +376,7 @@ pub fn init_uma() {
     IS_NUMA.store(false, Ordering::SeqCst);
     
     unsafe {
-        let node = &mut NODE_DATA[0];
+        let node = node_data_mut(0);
         node.node_id = 0;
         node.online.store(true, Ordering::SeqCst);
         
@@ -436,9 +485,33 @@ pub fn get_fallback_nodes(node_id: u32) -> &'static [u32] {
 // ============================================================================
 
 /// NUMA 距离表 (节点间访问延迟)
-static mut NUMA_DISTANCE: [[u8; MAX_NUMNODES]; MAX_NUMNODES] = {
-    [[10u8; MAX_NUMNODES]; MAX_NUMNODES]
-};
+struct NumaDistanceState {
+    inner: UnsafeCell<[[u8; MAX_NUMNODES]; MAX_NUMNODES]>,
+}
+
+unsafe impl Sync for NumaDistanceState {}
+
+impl NumaDistanceState {
+    const fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new([[10u8; MAX_NUMNODES]; MAX_NUMNODES]),
+        }
+    }
+}
+
+static NUMA_DISTANCE: NumaDistanceState = NumaDistanceState::new();
+
+#[inline]
+fn numa_distance_ref(from: usize, to: usize) -> u8 {
+    unsafe { (*NUMA_DISTANCE.inner.get())[from][to] }
+}
+
+#[inline]
+unsafe fn numa_distance_mut(from: usize, to: usize, distance: u8) {
+    unsafe {
+        (*NUMA_DISTANCE.inner.get())[from][to] = distance;
+    }
+}
 
 /// 本地访问距离
 pub const LOCAL_DISTANCE: u8 = 10;
@@ -453,7 +526,7 @@ pub const REMOTE_DISTANCE: u8 = 20;
 /// 节点 ID 必须有效
 pub unsafe fn set_numa_distance(from: u32, to: u32, distance: u8) {
     if (from as usize) < MAX_NUMNODES && (to as usize) < MAX_NUMNODES {
-        NUMA_DISTANCE[from as usize][to as usize] = distance;
+        unsafe { numa_distance_mut(from as usize, to as usize, distance) };
     }
 }
 
@@ -462,7 +535,7 @@ pub fn numa_distance(from: u32, to: u32) -> u8 {
     if (from as usize) >= MAX_NUMNODES || (to as usize) >= MAX_NUMNODES {
         return REMOTE_DISTANCE;
     }
-    unsafe { NUMA_DISTANCE[from as usize][to as usize] }
+    numa_distance_ref(from as usize, to as usize)
 }
 
 // ============================================================================
@@ -502,7 +575,7 @@ pub fn numa_stats() -> NumaStats {
     
     unsafe {
         for i in 0..MAX_NUMNODES {
-            let node = &NODE_DATA[i];
+            let node = node_data_ref(i);
             stats.nodes[i] = NodeStats {
                 node_id: node.node_id,
                 online: node.online.load(Ordering::Relaxed),

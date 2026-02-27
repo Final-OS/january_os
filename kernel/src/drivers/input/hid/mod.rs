@@ -26,7 +26,7 @@ pub mod keyboard;
 pub mod mouse;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::sync::Once;
+use crate::sync::{IrqSpinLock, Once};
 
 pub use usb::{UsbDevice, UsbEndpoint, UsbTransferType, UsbDirection};
 pub use hid::{HidDevice, HidReport, HidReportType, HidDescriptor};
@@ -132,7 +132,7 @@ impl HidManager {
 // 全局 HID 管理器
 // ============================================================================
 
-static mut HID_MANAGER: HidManager = HidManager::new();
+static HID_MANAGER: IrqSpinLock<HidManager> = IrqSpinLock::new(HidManager::new());
 
 /// 初始化 HID 子系统
 pub fn init() -> Result<(), &'static str> {
@@ -175,12 +175,12 @@ pub fn poll() {
 
 /// 注册 HID 设备
 pub fn register_device(device_type: HidDeviceType, usb_address: u8, interface: u8) -> Option<usize> {
-    let mgr = unsafe { &mut *core::ptr::addr_of_mut!(HID_MANAGER) };
+    let mut mgr = HID_MANAGER.lock();
     mgr.register_device(device_type, usb_address, interface)
 }
 
 /// 注销 HID 设备
 pub fn unregister_device(index: usize) {
-    let mgr = unsafe { &mut *core::ptr::addr_of_mut!(HID_MANAGER) };
+    let mut mgr = HID_MANAGER.lock();
     mgr.unregister_device(index);
 }

@@ -10,6 +10,7 @@ const KERNEL_STACK_SIZE: usize = 32 * 1024; // 32KB
 pub enum TaskStatus {
     Ready,
     Running,
+    Switching,
     Blocked,
     Exited,
 }
