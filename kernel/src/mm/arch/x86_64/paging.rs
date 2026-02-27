@@ -311,11 +311,44 @@ static TLB_SHOOTDOWN_ACKED: AtomicU32 = AtomicU32::new(0);
 /// TLB shootdown 是否可用（超时后自动熔断）
 static TLB_SHOOTDOWN_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// 参与 TLB shootdown 的 CPU（按 APIC ID 跟踪）
+struct TlbShootdownTargets {
+    apic_ids: [u32; 256],
+    count: usize,
+}
+
+impl TlbShootdownTargets {
+    const fn new() -> Self {
+        Self {
+            apic_ids: [0; 256],
+            count: 0,
+        }
+    }
+
+    fn register_apic_id(&mut self, apic_id: u32) -> bool {
+        for idx in 0..self.count {
+            if self.apic_ids[idx] == apic_id {
+                return false;
+            }
+        }
+        if self.count >= self.apic_ids.len() {
+            return false;
+        }
+        self.apic_ids[self.count] = apic_id;
+        self.count += 1;
+        true
+    }
+}
+
+static TLB_SHOOTDOWN_TARGETS: SpinLock<TlbShootdownTargets> =
+    SpinLock::with_name(TlbShootdownTargets::new(), "TlbShootdownTargets");
+
 /// 一次性诊断日志开关
 static TLB_SHOOTDOWN_SKIP_NOT_READY_LOGGED: AtomicBool = AtomicBool::new(false);
 static TLB_SHOOTDOWN_SKIP_IRQ_OFF_LOGGED: AtomicBool = AtomicBool::new(false);
 static TLB_SHOOTDOWN_IPI_RECEIVED_LOGGED: AtomicBool = AtomicBool::new(false);
 static TLB_SHOOTDOWN_FIRST_SENT_LOGGED: AtomicBool = AtomicBool::new(false);
+static TLB_SHOOTDOWN_REGISTERED_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// 等待远端 CPU shootdown 的最大自旋次数
 const TLB_SHOOTDOWN_TIMEOUT_SPINS: usize = 2_000_000;
@@ -341,6 +374,48 @@ fn flush_tlb_all_local_only() {
             options(nostack, preserves_flags)
         );
     }
+}
+
+/// 注册当前 CPU 为可参与 TLB shootdown 的目标。
+///
+/// 仅在 APIC 已初始化后生效；重复调用会自动去重。
+pub fn register_tlb_shootdown_cpu() {
+    if !interrupt::apic_initialized() {
+        return;
+    }
+
+    let apic_id = interrupt::local_apic_id();
+    let added = {
+        let mut targets = TLB_SHOOTDOWN_TARGETS.lock();
+        targets.register_apic_id(apic_id)
+    };
+
+    if added && TLB_SHOOTDOWN_REGISTERED_LOGGED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::kprintln!(
+            "[diag][tlb] register shootdown cpu apic_id={}",
+            apic_id,
+        );
+    }
+}
+
+fn collect_tlb_shootdown_targets(exclude_apic_id: u32, out: &mut [u32; 256]) -> usize {
+    let targets = TLB_SHOOTDOWN_TARGETS.lock();
+    let mut count = 0usize;
+    for idx in 0..targets.count {
+        let apic_id = targets.apic_ids[idx];
+        if apic_id == exclude_apic_id {
+            continue;
+        }
+        if count >= out.len() {
+            break;
+        }
+        out[count] = apic_id;
+        count += 1;
+    }
+    count
 }
 
 fn shootdown_other_cpus() {
@@ -376,7 +451,9 @@ fn shootdown_other_cpus() {
         return;
     }
 
-    let target_count = smp::cpu_count().saturating_sub(1);
+    let self_apic_id = interrupt::local_apic_id();
+    let mut target_apic_ids = [0u32; 256];
+    let target_count = collect_tlb_shootdown_targets(self_apic_id, &mut target_apic_ids);
     if target_count == 0 {
         return;
     }
@@ -389,20 +466,23 @@ fn shootdown_other_cpus() {
         .is_ok()
     {
         crate::kprintln!(
-            "[diag][tlb] send shootdown ipi vector={:#x} targets={}",
+            "[diag][tlb] send shootdown ipi vector={:#x} targets={} from_apic_id={}",
             interrupt::IPI_TLB_SHOOTDOWN,
             target_count,
+            self_apic_id,
         );
     }
 
-    interrupt::send_ipi(
-        0,
-        interrupt::IPI_TLB_SHOOTDOWN,
-        interrupt::ICR_DELIVERY_FIXED,
-        interrupt::ICR_SHORTHAND_ALL_BUT_SELF,
-        interrupt::ICR_LEVEL_ASSERT,
-        interrupt::ICR_TRIGGER_EDGE,
-    );
+    for idx in 0..(target_count as usize) {
+        interrupt::send_ipi(
+            target_apic_ids[idx],
+            interrupt::IPI_TLB_SHOOTDOWN,
+            interrupt::ICR_DELIVERY_FIXED,
+            interrupt::ICR_SHORTHAND_NONE,
+            interrupt::ICR_LEVEL_ASSERT,
+            interrupt::ICR_TRIGGER_EDGE,
+        );
+    }
 
     let mut spins = 0usize;
     while TLB_SHOOTDOWN_ACKED.load(Ordering::Acquire) < target_count {

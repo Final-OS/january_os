@@ -487,6 +487,7 @@ fn init_timer_and_enable_interrupts() {
     let if_step11c = interrupt::interrupts_enabled();
 
     kprintln!("[diag][boot] step11c: IF(after sti)={}", if_step11c);
+    mm::paging::register_tlb_shootdown_cpu();
 
     ok!(
         "Timer: {} MHz | Tick: {} Hz | Interrupts: ENABLED",

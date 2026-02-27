@@ -229,11 +229,14 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
     unsafe {
         interrupt::init_ap(cpu_id, kernel_stack_top, local_apic_base, direct_map_base).unwrap();
     }
+    interrupt::enable_interrupts();
+    crate::mm::paging::register_tlb_shootdown_cpu();
 
     crate::kprintln!(
-        "[diag][smp] ap_entry cpu_id={} local_apic_id={}",
+        "[diag][smp] ap_entry cpu_id={} local_apic_id={} if={}",
         cpu_id,
         interrupt::local_apic_id(),
+        interrupt::interrupts_enabled(),
     );
     
     crate::kprintln!("      [SMP] AP Started (CPU {})", cpu_id);

@@ -1,8 +1,62 @@
 use super::{fail, mm_step, pass};
-use crate::kprintln;
+use crate::{kprintln, warn};
 use crate::mm;
 use crate::syscall;
 use crate::syscall::handlers::{sys_mmap, sys_munmap};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+const TLB_PHASE_IDLE: usize = 0;
+const TLB_PHASE_READ_OLD: usize = 1;
+const TLB_PHASE_PAUSE: usize = 2;
+const TLB_PHASE_READ_NEW: usize = 3;
+const TLB_PHASE_STOP: usize = 4;
+const TLB_OLD_VALUE: u64 = 0x1111_2222_3333_4444;
+const TLB_NEW_VALUE: u64 = 0xaaaa_bbbb_cccc_dddd;
+
+static TLB_TEST_ADDR: AtomicU64 = AtomicU64::new(0);
+static TLB_TEST_PHASE: AtomicUsize = AtomicUsize::new(TLB_PHASE_IDLE);
+static TLB_TEST_OWNER_APIC: AtomicUsize = AtomicUsize::new(usize::MAX);
+static TLB_TEST_REMOTE_SEEN: AtomicBool = AtomicBool::new(false);
+static TLB_TEST_PAUSE_ACK: AtomicUsize = AtomicUsize::new(0);
+static TLB_TEST_OLD_READS: AtomicUsize = AtomicUsize::new(0);
+static TLB_TEST_NEW_READS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn mmap_tlb_worker() {
+    loop {
+        let phase = TLB_TEST_PHASE.load(Ordering::Acquire);
+        if phase == TLB_PHASE_STOP {
+            crate::task::exit_current_task(0);
+            loop {
+                crate::task::scheduler::schedule();
+            }
+        }
+
+        let local_apic = crate::interrupt::local_apic_id() as usize;
+        let owner_apic = TLB_TEST_OWNER_APIC.load(Ordering::Acquire);
+        if owner_apic != usize::MAX && local_apic != owner_apic {
+            TLB_TEST_REMOTE_SEEN.store(true, Ordering::Release);
+        }
+
+        let addr = TLB_TEST_ADDR.load(Ordering::Acquire);
+        if addr != 0 {
+            if phase == TLB_PHASE_READ_OLD {
+                let value = unsafe { core::ptr::read_volatile(addr as *const u64) };
+                if value == TLB_OLD_VALUE {
+                    TLB_TEST_OLD_READS.fetch_add(1, Ordering::AcqRel);
+                }
+            } else if phase == TLB_PHASE_PAUSE {
+                TLB_TEST_PAUSE_ACK.fetch_add(1, Ordering::AcqRel);
+            } else if phase == TLB_PHASE_READ_NEW {
+                let value = unsafe { core::ptr::read_volatile(addr as *const u64) };
+                if value == TLB_NEW_VALUE {
+                    TLB_TEST_NEW_READS.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+        }
+
+        crate::task::scheduler::schedule();
+    }
+}
 
 #[inline]
 fn ret_is_err(ret: usize) -> bool {
@@ -263,6 +317,223 @@ pub(super) fn run() {
     );
     if result != mm::FaultResult::Sigbus {
         return fail("mmap", "file-backed fault fallback must return Sigbus without backend");
+    }
+
+    mm_step("mmap: case=munmap_cross_cpu_visibility");
+    if crate::smp::cpu_count() <= 1 {
+        warn!("mm/mmap: single-cpu environment, skip cross-cpu munmap visibility check");
+    } else {
+        let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
+        let mut pt_mgr = unsafe { mm::PageTableManager::new(cr3, mm::DIRECT_MAP_OFFSET) };
+
+        let mut probe = mm::page_align_down(mm::USER_STACK_TOP.saturating_sub(0x3000_0000));
+        let test_va = {
+            let mm_state = mm::get_init_mm();
+            let mut found = 0u64;
+            for _ in 0..8192 {
+                if probe <= mm::USER_SPACE_START.saturating_add(mm::PAGE_SIZE) {
+                    break;
+                }
+                let end = probe.saturating_add(mm::PAGE_SIZE);
+                let vma_free = mm_state.find_vma_intersection(probe, end).is_none();
+                let pte_free = pt_mgr.translate_addr(probe).is_none();
+                if vma_free && pte_free {
+                    found = probe;
+                    break;
+                }
+                probe = probe.saturating_sub(mm::PAGE_SIZE);
+            }
+            found
+        };
+        if test_va == 0 {
+            return fail(
+                "mmap",
+                "cross-cpu munmap visibility: unable to find free test VA",
+            );
+        }
+
+        let old_page_ptr = match mm::alloc_page(mm::GFP_KERNEL_ZERO) {
+            Some(page_ref) => page_ref as *mut mm::Page,
+            None => return fail("mmap", "cross-cpu munmap visibility: alloc old page failed"),
+        };
+        let new_page_ptr = match mm::alloc_page(mm::GFP_KERNEL_ZERO) {
+            Some(page_ref) => page_ref as *mut mm::Page,
+            None => {
+                unsafe { mm::free_page(&mut *old_page_ptr) };
+                return fail("mmap", "cross-cpu munmap visibility: alloc new page failed");
+            }
+        };
+
+        let old_phys = unsafe { mm::page_to_pfn(&*old_page_ptr) * mm::PAGE_SIZE };
+        let new_phys = unsafe { mm::page_to_pfn(&*new_page_ptr) * mm::PAGE_SIZE };
+        let pte_flags = mm::PTE_PRESENT | mm::PTE_USER | mm::PTE_WRITABLE | mm::PTE_NO_EXECUTE;
+
+        unsafe {
+            core::ptr::write_volatile(mm::phys_to_virt(old_phys) as *mut u64, TLB_OLD_VALUE);
+            core::ptr::write_volatile(mm::phys_to_virt(new_phys) as *mut u64, TLB_NEW_VALUE);
+        }
+
+        if unsafe { !pt_mgr.map_page(test_va, old_phys, pte_flags) } {
+            unsafe {
+                mm::free_page(&mut *new_page_ptr);
+                mm::free_page(&mut *old_page_ptr);
+            }
+            return fail("mmap", "cross-cpu munmap visibility: initial map_page failed");
+        }
+
+        let mut vma_flags = mm::VmFlags::empty();
+        vma_flags.set(mm::VmFlags::READ);
+        vma_flags.set(mm::VmFlags::WRITE);
+        vma_flags.set(mm::VmFlags::ANONYMOUS);
+        let vma_info = mm::VmaInfo::new(vma_flags);
+        if !mm::get_init_mm().insert_vma(test_va, test_va.saturating_add(mm::PAGE_SIZE), vma_info) {
+            unsafe {
+                let _ = pt_mgr.unmap_page(test_va);
+                mm::free_page(&mut *new_page_ptr);
+                mm::free_page(&mut *old_page_ptr);
+            }
+            return fail("mmap", "cross-cpu munmap visibility: insert_vma failed");
+        }
+
+        TLB_TEST_ADDR.store(test_va, Ordering::Release);
+        TLB_TEST_PHASE.store(TLB_PHASE_READ_OLD, Ordering::Release);
+        TLB_TEST_OWNER_APIC.store(crate::interrupt::local_apic_id() as usize, Ordering::Release);
+        TLB_TEST_REMOTE_SEEN.store(false, Ordering::Release);
+        TLB_TEST_PAUSE_ACK.store(0, Ordering::Release);
+        TLB_TEST_OLD_READS.store(0, Ordering::Release);
+        TLB_TEST_NEW_READS.store(0, Ordering::Release);
+
+        let worker = crate::task::spawn_kernel_thread("mm_mmap_tlb_worker", mmap_tlb_worker);
+        let worker_pid = worker.lock().pid;
+
+        let mut remote_ready = false;
+        for _ in 0..4096 {
+            if TLB_TEST_REMOTE_SEEN.load(Ordering::Acquire)
+                && TLB_TEST_OLD_READS.load(Ordering::Acquire) > 0
+            {
+                remote_ready = true;
+                break;
+            }
+            crate::task::scheduler::schedule();
+        }
+
+        let mut case_error: Option<&str> = None;
+        let mut munmap_done = false;
+        let mut old_extra_ref_held = false;
+        let mut vma_present = true;
+
+        if !remote_ready {
+            warn!(
+                "mm/mmap: cross-cpu munmap visibility skipped (no remote CPU observed old mapping)"
+            );
+        } else {
+            TLB_TEST_PHASE.store(TLB_PHASE_PAUSE, Ordering::Release);
+            for _ in 0..512 {
+                if TLB_TEST_PAUSE_ACK.load(Ordering::Acquire) > 0 {
+                    break;
+                }
+                crate::task::scheduler::schedule();
+            }
+            if TLB_TEST_PAUSE_ACK.load(Ordering::Acquire) == 0 {
+                case_error = Some("cross-cpu munmap visibility: worker pause handshake timeout");
+            }
+
+            if case_error.is_none() {
+                unsafe {
+                    (&*old_page_ptr).get();
+                }
+                old_extra_ref_held = true;
+
+                let munmap_ret = do_munmap(test_va as usize, page);
+                if ret_is_err(munmap_ret) {
+                    case_error = Some("cross-cpu munmap visibility: sys_munmap failed");
+                } else {
+                    munmap_done = true;
+                    vma_present = false;
+                }
+            }
+
+            if case_error.is_none() && unsafe { !pt_mgr.map_page(test_va, new_phys, pte_flags) } {
+                case_error = Some("cross-cpu munmap visibility: remap new page failed");
+            }
+
+            if case_error.is_none() {
+                let mut remap_vma_flags = mm::VmFlags::empty();
+                remap_vma_flags.set(mm::VmFlags::READ);
+                remap_vma_flags.set(mm::VmFlags::WRITE);
+                remap_vma_flags.set(mm::VmFlags::ANONYMOUS);
+                let remap_ok = mm::get_init_mm().insert_vma(
+                    test_va,
+                    test_va.saturating_add(mm::PAGE_SIZE),
+                    mm::VmaInfo::new(remap_vma_flags),
+                );
+                if !remap_ok {
+                    case_error = Some("cross-cpu munmap visibility: re-insert VMA failed");
+                } else {
+                    vma_present = true;
+                }
+            }
+
+            if case_error.is_none() {
+                TLB_TEST_PHASE.store(TLB_PHASE_READ_NEW, Ordering::Release);
+                let mut new_seen = false;
+                for _ in 0..4096 {
+                    if TLB_TEST_NEW_READS.load(Ordering::Acquire) > 0 {
+                        new_seen = true;
+                        break;
+                    }
+                    crate::task::scheduler::schedule();
+                }
+                kprintln!(
+                    "[test/mm][mmap][cross-cpu] va={:#x} old_reads={} new_reads={} remote_seen={}",
+                    test_va,
+                    TLB_TEST_OLD_READS.load(Ordering::Acquire),
+                    TLB_TEST_NEW_READS.load(Ordering::Acquire),
+                    TLB_TEST_REMOTE_SEEN.load(Ordering::Acquire),
+                );
+                if !new_seen {
+                    case_error = Some("cross-cpu munmap visibility: remote CPU did not observe new mapping");
+                }
+            }
+        }
+
+        TLB_TEST_PHASE.store(TLB_PHASE_STOP, Ordering::Release);
+        let mut reaped_worker = false;
+        for _ in 0..1024 {
+            if let Some((pid, _code)) = crate::task::wait_child(Some(worker_pid)) {
+                if pid == worker_pid {
+                    reaped_worker = true;
+                    break;
+                }
+            }
+            crate::task::scheduler::schedule();
+        }
+        if !reaped_worker {
+            warn!("mm/mmap: worker reap timeout in cross-cpu visibility case");
+        }
+
+        TLB_TEST_ADDR.store(0, Ordering::Release);
+        TLB_TEST_PHASE.store(TLB_PHASE_IDLE, Ordering::Release);
+        TLB_TEST_OWNER_APIC.store(usize::MAX, Ordering::Release);
+
+        unsafe {
+            let _ = pt_mgr.unmap_page(test_va);
+        }
+        if vma_present {
+            let _ = mm::get_init_mm().remove_vma(test_va);
+        }
+
+        unsafe {
+            mm::free_page(&mut *new_page_ptr);
+            if old_extra_ref_held && !munmap_done {
+                mm::free_page(&mut *old_page_ptr);
+            }
+            mm::free_page(&mut *old_page_ptr);
+        }
+
+        if let Some(msg) = case_error {
+            return fail("mmap", msg);
+        }
     }
 
     pass("mmap");
