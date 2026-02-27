@@ -100,6 +100,8 @@ pub const IRQ_COM1: u8 = IRQ_BASE + 4;
 pub const IRQ_XHCI: u8 = IRQ_BASE + 10;
 /// TLB shootdown IPI
 pub const IPI_TLB_SHOOTDOWN: u8 = 0xF0;
+/// TLB probe IPI (for cross-CPU visibility diagnostics/tests)
+pub const IPI_TLB_PROBE: u8 = 0xF1;
 /// Spurious interrupt
 pub const IRQ_SPURIOUS: u8 = 0xFF;
 
@@ -387,6 +389,9 @@ pub unsafe fn init() -> Result<(), &'static str> {
     ));
     idt.set_handler(IPI_TLB_SHOOTDOWN, IdtEntry::interrupt(
         handlers::tlb_shootdown_handler as *const () as u64
+    ));
+    idt.set_handler(IPI_TLB_PROBE, IdtEntry::interrupt(
+        handlers::tlb_probe_handler as *const () as u64
     ));
     idt.set_handler(IRQ_SPURIOUS, IdtEntry::interrupt(
         handlers::spurious_handler as *const () as u64

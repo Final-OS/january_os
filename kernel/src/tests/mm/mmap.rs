@@ -3,60 +3,8 @@ use crate::{kprintln, warn};
 use crate::mm;
 use crate::syscall;
 use crate::syscall::handlers::{sys_mmap, sys_munmap};
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-
-const TLB_PHASE_IDLE: usize = 0;
-const TLB_PHASE_READ_OLD: usize = 1;
-const TLB_PHASE_PAUSE: usize = 2;
-const TLB_PHASE_READ_NEW: usize = 3;
-const TLB_PHASE_STOP: usize = 4;
 const TLB_OLD_VALUE: u64 = 0x1111_2222_3333_4444;
 const TLB_NEW_VALUE: u64 = 0xaaaa_bbbb_cccc_dddd;
-
-static TLB_TEST_ADDR: AtomicU64 = AtomicU64::new(0);
-static TLB_TEST_PHASE: AtomicUsize = AtomicUsize::new(TLB_PHASE_IDLE);
-static TLB_TEST_OWNER_APIC: AtomicUsize = AtomicUsize::new(usize::MAX);
-static TLB_TEST_REMOTE_SEEN: AtomicBool = AtomicBool::new(false);
-static TLB_TEST_PAUSE_ACK: AtomicUsize = AtomicUsize::new(0);
-static TLB_TEST_OLD_READS: AtomicUsize = AtomicUsize::new(0);
-static TLB_TEST_NEW_READS: AtomicUsize = AtomicUsize::new(0);
-
-extern "C" fn mmap_tlb_worker() {
-    loop {
-        let phase = TLB_TEST_PHASE.load(Ordering::Acquire);
-        if phase == TLB_PHASE_STOP {
-            crate::task::exit_current_task(0);
-            loop {
-                crate::task::scheduler::schedule();
-            }
-        }
-
-        let local_apic = crate::interrupt::local_apic_id() as usize;
-        let owner_apic = TLB_TEST_OWNER_APIC.load(Ordering::Acquire);
-        if owner_apic != usize::MAX && local_apic != owner_apic {
-            TLB_TEST_REMOTE_SEEN.store(true, Ordering::Release);
-        }
-
-        let addr = TLB_TEST_ADDR.load(Ordering::Acquire);
-        if addr != 0 {
-            if phase == TLB_PHASE_READ_OLD {
-                let value = unsafe { core::ptr::read_volatile(addr as *const u64) };
-                if value == TLB_OLD_VALUE {
-                    TLB_TEST_OLD_READS.fetch_add(1, Ordering::AcqRel);
-                }
-            } else if phase == TLB_PHASE_PAUSE {
-                TLB_TEST_PAUSE_ACK.fetch_add(1, Ordering::AcqRel);
-            } else if phase == TLB_PHASE_READ_NEW {
-                let value = unsafe { core::ptr::read_volatile(addr as *const u64) };
-                if value == TLB_NEW_VALUE {
-                    TLB_TEST_NEW_READS.fetch_add(1, Ordering::AcqRel);
-                }
-            }
-        }
-
-        crate::task::scheduler::schedule();
-    }
-}
 
 #[inline]
 fn ret_is_err(ret: usize) -> bool {
@@ -395,60 +343,37 @@ pub(super) fn run() {
             return fail("mmap", "cross-cpu munmap visibility: insert_vma failed");
         }
 
-        TLB_TEST_ADDR.store(test_va, Ordering::Release);
-        TLB_TEST_PHASE.store(TLB_PHASE_READ_OLD, Ordering::Release);
-        TLB_TEST_OWNER_APIC.store(crate::interrupt::local_apic_id() as usize, Ordering::Release);
-        TLB_TEST_REMOTE_SEEN.store(false, Ordering::Release);
-        TLB_TEST_PAUSE_ACK.store(0, Ordering::Release);
-        TLB_TEST_OLD_READS.store(0, Ordering::Release);
-        TLB_TEST_NEW_READS.store(0, Ordering::Release);
-
-        let worker = crate::task::spawn_kernel_thread("mm_mmap_tlb_worker", mmap_tlb_worker);
-        let worker_pid = worker.lock().pid;
-
         let mut remote_ready = false;
-        for _ in 0..4096 {
-            if TLB_TEST_REMOTE_SEEN.load(Ordering::Acquire)
-                && TLB_TEST_OLD_READS.load(Ordering::Acquire) > 0
-            {
+        let (targets_old, handled_old, matched_old) =
+            mm::paging::run_tlb_probe_on_other_cpus(test_va, TLB_OLD_VALUE);
+        if targets_old == 0 {
+            warn!("mm/mmap: cross-cpu munmap visibility skipped (no remote probe targets)");
+        } else {
+            kprintln!(
+                "[test/mm][mmap][cross-cpu][pre] va={:#x} targets={} handled={} matched_old={}",
+                test_va,
+                targets_old,
+                handled_old,
+                matched_old,
+            );
+            if handled_old == targets_old && matched_old > 0 {
                 remote_ready = true;
-                break;
             }
-            crate::task::scheduler::schedule();
         }
 
         let mut case_error: Option<&str> = None;
-        let mut munmap_done = false;
-        let mut old_extra_ref_held = false;
         let mut vma_present = true;
 
         if !remote_ready {
             warn!(
-                "mm/mmap: cross-cpu munmap visibility skipped (no remote CPU observed old mapping)"
+                "mm/mmap: cross-cpu munmap visibility skipped (remote probe did not confirm old mapping)"
             );
         } else {
-            TLB_TEST_PHASE.store(TLB_PHASE_PAUSE, Ordering::Release);
-            for _ in 0..512 {
-                if TLB_TEST_PAUSE_ACK.load(Ordering::Acquire) > 0 {
-                    break;
-                }
-                crate::task::scheduler::schedule();
-            }
-            if TLB_TEST_PAUSE_ACK.load(Ordering::Acquire) == 0 {
-                case_error = Some("cross-cpu munmap visibility: worker pause handshake timeout");
-            }
-
             if case_error.is_none() {
-                unsafe {
-                    (&*old_page_ptr).get();
-                }
-                old_extra_ref_held = true;
-
                 let munmap_ret = do_munmap(test_va as usize, page);
                 if ret_is_err(munmap_ret) {
                     case_error = Some("cross-cpu munmap visibility: sys_munmap failed");
                 } else {
-                    munmap_done = true;
                     vma_present = false;
                 }
             }
@@ -475,46 +400,24 @@ pub(super) fn run() {
             }
 
             if case_error.is_none() {
-                TLB_TEST_PHASE.store(TLB_PHASE_READ_NEW, Ordering::Release);
-                let mut new_seen = false;
-                for _ in 0..4096 {
-                    if TLB_TEST_NEW_READS.load(Ordering::Acquire) > 0 {
-                        new_seen = true;
-                        break;
-                    }
-                    crate::task::scheduler::schedule();
-                }
+                let (targets_new, handled_new, matched_new) =
+                    mm::paging::run_tlb_probe_on_other_cpus(test_va, TLB_NEW_VALUE);
                 kprintln!(
-                    "[test/mm][mmap][cross-cpu] va={:#x} old_reads={} new_reads={} remote_seen={}",
+                    "[test/mm][mmap][cross-cpu][post] va={:#x} targets={} handled={} matched_new={}",
                     test_va,
-                    TLB_TEST_OLD_READS.load(Ordering::Acquire),
-                    TLB_TEST_NEW_READS.load(Ordering::Acquire),
-                    TLB_TEST_REMOTE_SEEN.load(Ordering::Acquire),
+                    targets_new,
+                    handled_new,
+                    matched_new,
                 );
-                if !new_seen {
-                    case_error = Some("cross-cpu munmap visibility: remote CPU did not observe new mapping");
+                if targets_new == 0 {
+                    case_error = Some("cross-cpu munmap visibility: no probe targets after remap");
+                } else if handled_new != targets_new {
+                    case_error = Some("cross-cpu munmap visibility: probe IPI not handled on all targets");
+                } else if matched_new != targets_new {
+                    case_error = Some("cross-cpu munmap visibility: remote CPUs did not observe new mapping");
                 }
             }
         }
-
-        TLB_TEST_PHASE.store(TLB_PHASE_STOP, Ordering::Release);
-        let mut reaped_worker = false;
-        for _ in 0..1024 {
-            if let Some((pid, _code)) = crate::task::wait_child(Some(worker_pid)) {
-                if pid == worker_pid {
-                    reaped_worker = true;
-                    break;
-                }
-            }
-            crate::task::scheduler::schedule();
-        }
-        if !reaped_worker {
-            warn!("mm/mmap: worker reap timeout in cross-cpu visibility case");
-        }
-
-        TLB_TEST_ADDR.store(0, Ordering::Release);
-        TLB_TEST_PHASE.store(TLB_PHASE_IDLE, Ordering::Release);
-        TLB_TEST_OWNER_APIC.store(usize::MAX, Ordering::Release);
 
         unsafe {
             let _ = pt_mgr.unmap_page(test_va);
@@ -525,9 +428,6 @@ pub(super) fn run() {
 
         unsafe {
             mm::free_page(&mut *new_page_ptr);
-            if old_extra_ref_held && !munmap_done {
-                mm::free_page(&mut *old_page_ptr);
-            }
             mm::free_page(&mut *old_page_ptr);
         }
 

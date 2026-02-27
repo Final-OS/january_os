@@ -11,7 +11,7 @@ use crate::mm::page::{page_to_pfn, pfn_to_page, MAX_PFN};
 use crate::mm::zone::GFP_KERNEL_ZERO;
 use crate::smp;
 use crate::sync::SpinLock;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 // ============================================================================
 // 页表条目标志位 (x86_64 特定)
@@ -352,6 +352,15 @@ static TLB_SHOOTDOWN_REGISTERED_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// 等待远端 CPU shootdown 的最大自旋次数
 const TLB_SHOOTDOWN_TIMEOUT_SPINS: usize = 2_000_000;
+/// 等待探测 IPI 响应的最大自旋次数
+const TLB_PROBE_TIMEOUT_SPINS: usize = 2_000_000;
+
+/// 远核 TLB 可见性探测状态
+static TLB_PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static TLB_PROBE_ADDR: AtomicU64 = AtomicU64::new(0);
+static TLB_PROBE_EXPECTED: AtomicU64 = AtomicU64::new(0);
+static TLB_PROBE_HANDLED: AtomicU32 = AtomicU32::new(0);
+static TLB_PROBE_MATCHED: AtomicU32 = AtomicU32::new(0);
 
 #[inline]
 fn flush_tlb_local_only(virt_addr: u64) {
@@ -418,6 +427,20 @@ fn collect_tlb_shootdown_targets(exclude_apic_id: u32, out: &mut [u32; 256]) -> 
     count
 }
 
+#[inline]
+fn send_vector_to_targets(targets: &[u32], vector: u8) {
+    for apic_id in targets.iter().copied() {
+        interrupt::send_ipi(
+            apic_id,
+            vector,
+            interrupt::ICR_DELIVERY_FIXED,
+            interrupt::ICR_SHORTHAND_NONE,
+            interrupt::ICR_LEVEL_ASSERT,
+            interrupt::ICR_TRIGGER_EDGE,
+        );
+    }
+}
+
 fn shootdown_other_cpus() {
     if !TLB_SHOOTDOWN_ENABLED.load(Ordering::Relaxed) {
         return;
@@ -473,16 +496,10 @@ fn shootdown_other_cpus() {
         );
     }
 
-    for idx in 0..(target_count as usize) {
-        interrupt::send_ipi(
-            target_apic_ids[idx],
-            interrupt::IPI_TLB_SHOOTDOWN,
-            interrupt::ICR_DELIVERY_FIXED,
-            interrupt::ICR_SHORTHAND_NONE,
-            interrupt::ICR_LEVEL_ASSERT,
-            interrupt::ICR_TRIGGER_EDGE,
-        );
-    }
+    send_vector_to_targets(
+        &target_apic_ids[..(target_count as usize)],
+        interrupt::IPI_TLB_SHOOTDOWN,
+    );
 
     let mut spins = 0usize;
     while TLB_SHOOTDOWN_ACKED.load(Ordering::Acquire) < target_count {
@@ -521,6 +538,72 @@ pub fn handle_tlb_shootdown_ipi() {
         );
     }
     TLB_SHOOTDOWN_ACKED.fetch_add(1, Ordering::AcqRel);
+}
+
+/// TLB probe IPI 处理（仅采样当前 CPU 对某个 VA 的可见值）
+pub fn handle_tlb_probe_ipi() {
+    if !TLB_PROBE_ACTIVE.load(Ordering::Acquire) {
+        return;
+    }
+
+    let addr = TLB_PROBE_ADDR.load(Ordering::Acquire);
+    let expect = TLB_PROBE_EXPECTED.load(Ordering::Acquire);
+    if addr != 0 {
+        let value = unsafe { core::ptr::read_volatile(addr as *const u64) };
+        if value == expect {
+            TLB_PROBE_MATCHED.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+    TLB_PROBE_HANDLED.fetch_add(1, Ordering::AcqRel);
+}
+
+/// 在其他 CPU 上探测某个 VA 的可见值。
+///
+/// 返回 `(targets, handled, matched)`：
+/// - `targets`: 发送 IPI 的目标 CPU 数
+/// - `handled`: 实际收到探测 IPI 并执行处理的 CPU 数
+/// - `matched`: 读取到期望值的 CPU 数
+pub fn run_tlb_probe_on_other_cpus(addr: u64, expected: u64) -> (u32, u32, u32) {
+    if !interrupt::initialized()
+        || !interrupt::apic_initialized()
+        || !interrupt::interrupts_enabled()
+        || !TLB_SHOOTDOWN_ENABLED.load(Ordering::Relaxed)
+    {
+        return (0, 0, 0);
+    }
+
+    let self_apic_id = interrupt::local_apic_id();
+    let mut target_apic_ids = [0u32; 256];
+    let target_count_usize = collect_tlb_shootdown_targets(self_apic_id, &mut target_apic_ids);
+    if target_count_usize == 0 {
+        return (0, 0, 0);
+    }
+    let target_count = target_count_usize.min(u32::MAX as usize) as u32;
+
+    TLB_PROBE_ADDR.store(addr, Ordering::Release);
+    TLB_PROBE_EXPECTED.store(expected, Ordering::Release);
+    TLB_PROBE_HANDLED.store(0, Ordering::Release);
+    TLB_PROBE_MATCHED.store(0, Ordering::Release);
+    TLB_PROBE_ACTIVE.store(true, Ordering::Release);
+
+    send_vector_to_targets(
+        &target_apic_ids[..target_count as usize],
+        interrupt::IPI_TLB_PROBE,
+    );
+
+    let mut spins = 0usize;
+    while TLB_PROBE_HANDLED.load(Ordering::Acquire) < target_count {
+        core::hint::spin_loop();
+        spins += 1;
+        if spins >= TLB_PROBE_TIMEOUT_SPINS {
+            break;
+        }
+    }
+
+    TLB_PROBE_ACTIVE.store(false, Ordering::Release);
+    let handled = TLB_PROBE_HANDLED.load(Ordering::Acquire);
+    let matched = TLB_PROBE_MATCHED.load(Ordering::Acquire);
+    (target_count, handled, matched)
 }
 
 impl PageTableManager {

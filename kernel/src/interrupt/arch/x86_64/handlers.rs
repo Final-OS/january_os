@@ -325,6 +325,15 @@ pub extern "x86-interrupt" fn tlb_shootdown_handler(frame: InterruptFrame) {
     super::apic::local_apic_eoi();
 }
 
+/// TLB probe IPI 处理程序（用于跨核可见性回归）
+pub extern "x86-interrupt" fn tlb_probe_handler(frame: InterruptFrame) {
+    let _ = frame;
+
+    crate::mm::paging::handle_tlb_probe_ipi();
+
+    super::apic::local_apic_eoi();
+}
+
 /// Spurious 中断处理程序
 pub extern "x86-interrupt" fn spurious_handler(frame: InterruptFrame) {
     // Spurious 中断不需要发送 EOI
