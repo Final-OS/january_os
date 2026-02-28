@@ -1,5 +1,5 @@
 use crate::syscall::{
-    E2BIG, ECHILD, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, EPERM, ESRCH,
+    E2BIG, ECHILD, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOMEM, EPERM, ESRCH,
     SyscallArgs, SyscallRet, err, ok,
 };
 use crate::task;
@@ -555,7 +555,8 @@ fn spawn_minimal_child(
     is_clone_child: bool,
     mm_mode: task::SpawnMmMode,
 ) -> Result<task::ProcessId, i32> {
-    let child_task = task::spawn_kernel_thread_with_mm_mode(name, syscall_child_stub, mm_mode);
+    let child_task = task::spawn_kernel_thread_with_mm_mode_checked(name, syscall_child_stub, mm_mode)
+        .ok_or(ENOMEM)?;
     let child_pid = child_task.lock().pid;
 
     let Some(child_process) = task::find_process_by_pid(child_pid) else {

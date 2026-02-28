@@ -181,14 +181,17 @@ pub fn init() {
 }
 
 #[inline]
-fn resolve_child_mm(parent_pid: Option<ProcessId>, mm_mode: SpawnMmMode) -> usize {
+fn resolve_child_mm(parent_pid: Option<ProcessId>, mm_mode: SpawnMmMode) -> Option<usize> {
     let parent_mm = parent_pid
         .and_then(|ppid| find_process_by_pid(ppid).map(|process| process.lock().mm as *mut crate::mm::Mm))
         .unwrap_or(crate::mm::init_mm_ptr());
 
     match mm_mode {
-        SpawnMmMode::InheritShared => crate::mm::mm_retain(parent_mm) as usize,
-        SpawnMmMode::InheritPrivate => crate::mm::mm_clone(parent_mm) as usize,
+        SpawnMmMode::InheritShared => Some(crate::mm::mm_retain(parent_mm) as usize),
+        SpawnMmMode::InheritPrivate => {
+            let cloned = crate::mm::mm_clone(parent_mm);
+            (!cloned.is_null()).then_some(cloned as usize)
+        }
     }
 }
 
@@ -606,12 +609,12 @@ pub fn spawn_kernel_thread(name: &str, entry: extern "C" fn()) -> Arc<Mutex<Task
     spawn_kernel_thread_with_mm_mode(name, entry, SpawnMmMode::InheritShared)
 }
 
-/// 创建内核线程并添加到调度器（可指定子进程地址空间继承策略）
-pub fn spawn_kernel_thread_with_mm_mode(
+/// 创建内核线程并添加到调度器（可失败版本，用于需要向上返回 ENOMEM 的调用方）
+pub fn spawn_kernel_thread_with_mm_mode_checked(
     name: &str,
     entry: extern "C" fn(),
     mm_mode: SpawnMmMode,
-) -> Arc<Mutex<Task>> {
+) -> Option<Arc<Mutex<Task>>> {
     let (parent_pid, parent_tid) = match super::processor::current_task() {
         Some(task) => {
             let task = task.lock();
@@ -624,7 +627,7 @@ pub fn spawn_kernel_thread_with_mm_mode(
     let pgid = parent_pid
         .and_then(|ppid| find_process_by_pid(ppid).map(|process| process.lock().pgid))
         .unwrap_or(pid);
-    let inherited_mm = resolve_child_mm(parent_pid, mm_mode);
+    let inherited_mm = resolve_child_mm(parent_pid, mm_mode)?;
 
     let task = Task::new_kernel_for_process(name, entry, pid, ppid);
     let task_ref = Arc::new(Mutex::new(task));
@@ -658,7 +661,22 @@ pub fn spawn_kernel_thread_with_mm_mode(
     // 添加到就绪队列
     SCHEDULER.add_task(task_ref.clone());
 
-    task_ref
+    Some(task_ref)
+}
+
+/// 创建内核线程并添加到调度器（可指定子进程地址空间继承策略）
+pub fn spawn_kernel_thread_with_mm_mode(
+    name: &str,
+    entry: extern "C" fn(),
+    mm_mode: SpawnMmMode,
+) -> Arc<Mutex<Task>> {
+    spawn_kernel_thread_with_mm_mode_checked(name, entry, mm_mode).unwrap_or_else(|| {
+        panic!(
+            "spawn_kernel_thread_with_mm_mode failed: mm clone OOM name={} mode={:?}",
+            name,
+            mm_mode
+        )
+    })
 }
 
 /// 退出当前任务

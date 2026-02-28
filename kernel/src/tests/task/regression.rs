@@ -1,7 +1,7 @@
 use super::{task_step, usermode};
 use crate::fs;
 use crate::mm;
-use crate::syscall::{EBADF, EPIPE};
+use crate::syscall::{EAGAIN, EBADF, EPIPE};
 use crate::{error, kprintln, ok};
 
 unsafe extern "C" {
@@ -320,6 +320,42 @@ pub(super) fn run() {
     }
     let _ = fs::close_for_pid(REGRESSION_PIPE_PID, wfd);
     fs::drop_process_fds(REGRESSION_PIPE_PID);
+
+    task_step("regression: verify pipe2 nonblock flag and EAGAIN");
+    const REGRESSION_PIPE_NB_PID: usize = 0xbeee;
+    const O_NONBLOCK: u32 = 0o4000;
+    let (rfd_nb, wfd_nb) = match fs::pipe2_for_pid(REGRESSION_PIPE_NB_PID, O_NONBLOCK) {
+        Ok(v) => v,
+        Err(errno) => {
+            error!("task: regression FAIL (pipe2_for_pid nonblock errno={})", errno);
+            return;
+        }
+    };
+
+    let mut nb_buf = [0u8; 1];
+    match fs::read_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb, &mut nb_buf) {
+        Ok(_) => {
+            error!("task: regression FAIL (nonblock pipe read should fail with EAGAIN)");
+            let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb);
+            let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, wfd_nb);
+            return;
+        }
+        Err(errno) if errno == EAGAIN => {}
+        Err(errno) => {
+            error!(
+                "task: regression FAIL (nonblock pipe read errno mismatch, got={}, want={})",
+                errno,
+                EAGAIN
+            );
+            let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb);
+            let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, wfd_nb);
+            return;
+        }
+    }
+
+    let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb);
+    let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, wfd_nb);
+    fs::drop_process_fds(REGRESSION_PIPE_NB_PID);
 
     task_step("regression: run usermode exec after reserve verification");
     if !usermode::run_with_label("usermode regression") {

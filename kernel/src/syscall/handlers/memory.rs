@@ -76,15 +76,6 @@ fn mmap_select_addr(
             return Err(EINVAL);
         }
         validate_user_mmap_range(start, len_aligned)?;
-        let end = start.checked_add(len_aligned).ok_or(ENOMEM)?;
-
-        // 当前最小实现不做 MAP_FIXED 覆盖替换，仅允许映射到空洞。
-        if mm_state.find_vma_intersection(start, end).is_some() {
-            return Err(EBUSY);
-        }
-        if !range_unmapped_in_page_table(&pt_mgr, start, end) {
-            return Err(EBUSY);
-        }
         return Ok(start);
     }
 
@@ -166,6 +157,36 @@ unsafe fn unmap_and_release_pages(start: u64, end: u64, pgd: u64) {
     }
 }
 
+fn collect_unmap_ranges_for_mm(
+    mm_state: &mut mm::Mm,
+    addr: u64,
+    end: u64,
+) -> Result<Vec<(u64, u64)>, i32> {
+    let mut unmap_ranges: Vec<(u64, u64)> = Vec::new();
+
+    while let Some(vma) = mm_state.find_vma_intersection(addr, end) {
+        let vma_start = vma.vm_start;
+        let vma_end = vma.vm_end;
+        let cut_start = cmp::max(vma_start, addr);
+        let cut_end = cmp::min(vma_end, end);
+
+        let Some((_old_end, info)) = mm_state.remove_vma(vma_start) else {
+            return Err(EBUSY);
+        };
+
+        if vma_start < cut_start {
+            let _ = mm_state.insert_vma(vma_start, cut_start, info.clone());
+        }
+        if cut_end < vma_end {
+            let _ = mm_state.insert_vma(cut_end, vma_end, info.clone());
+        }
+
+        unmap_ranges.push((cut_start, cut_end));
+    }
+
+    Ok(unmap_ranges)
+}
+
 pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
     let req_addr = args.arg0;
     let length = args.arg1;
@@ -203,6 +224,7 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
     }
 
     let vm_flags = mm::mmap_flags_to_vm_flags(prot, flags);
+    let map_fixed = (flags & mm::mmap_flags::MAP_FIXED) != 0;
     let start = match mmap_select_addr(req_addr, length_aligned, flags, vm_flags) {
         Ok(addr) => addr,
         Err(errno) => return err(errno),
@@ -211,6 +233,24 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
         Some(value) => value,
         None => return err(ENOMEM),
     };
+
+    let mm_ptr = task::current_mm_ptr();
+    let mm_pgd = unsafe { (*mm_ptr).pgd };
+    if map_fixed {
+        let unmap_ranges = {
+            let mm_state = unsafe { &mut *mm_ptr };
+            match collect_unmap_ranges_for_mm(mm_state, start, end) {
+                Ok(ranges) => ranges,
+                Err(errno) => return err(errno),
+            }
+        };
+
+        for (range_start, range_end) in unmap_ranges.into_iter() {
+            unsafe {
+                unmap_and_release_pages(range_start, range_end, mm_pgd);
+            }
+        }
+    }
 
     let mut info = mm::VmaInfo::new(vm_flags);
     info.pgoff = offset / mm::PAGE_SIZE;
@@ -231,7 +271,6 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
         info.private_data = file_data.len() as *mut ();
     }
 
-    let mm_ptr = task::current_mm_ptr();
     let mm_state = unsafe { &mut *mm_ptr };
     if mm_state.find_vma_intersection(start, end).is_some() {
         return err(EBUSY);
@@ -266,31 +305,15 @@ pub(crate) fn sys_munmap(args: &SyscallArgs) -> SyscallRet {
         return err(EINVAL);
     }
 
-    let mut unmap_ranges: Vec<(u64, u64)> = Vec::new();
     let mm_ptr = task::current_mm_ptr();
     let mm_pgd = unsafe { (*mm_ptr).pgd };
-    {
+    let unmap_ranges = {
         let mm_state = unsafe { &mut *mm_ptr };
-        while let Some(vma) = mm_state.find_vma_intersection(addr, end) {
-            let vma_start = vma.vm_start;
-            let vma_end = vma.vm_end;
-            let cut_start = cmp::max(vma_start, addr);
-            let cut_end = cmp::min(vma_end, end);
-
-            let Some((_old_end, info)) = mm_state.remove_vma(vma_start) else {
-                return err(EBUSY);
-            };
-
-            if vma_start < cut_start {
-                let _ = mm_state.insert_vma(vma_start, cut_start, info.clone());
-            }
-            if cut_end < vma_end {
-                let _ = mm_state.insert_vma(cut_end, vma_end, info.clone());
-            }
-
-            unmap_ranges.push((cut_start, cut_end));
+        match collect_unmap_ranges_for_mm(mm_state, addr, end) {
+            Ok(ranges) => ranges,
+            Err(errno) => return err(errno),
         }
-    }
+    };
 
     for (range_start, range_end) in unmap_ranges.into_iter() {
         unsafe {

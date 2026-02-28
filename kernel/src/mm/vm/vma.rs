@@ -6,6 +6,8 @@
 // ============================================================================
 
 use super::layout::{
+    DIRECT_MAP_OFFSET,
+    KERNEL_BASE,
     PAGE_SIZE,
     USER_MMAP_BASE,
     USER_SPACE_END,
@@ -14,7 +16,12 @@ use super::layout::{
     USER_STACK_TOP,
 };
 use alloc::boxed::Box;
+use core::ptr;
 use crate::libs::mptree::MapleTree;
+use crate::mm::arch::{PageTable, PageTableEntry, PageTableManager, pml4_index};
+use crate::mm::page::buddy::{alloc_page, free_page};
+use crate::mm::page::page::{PageFlags, max_pfn, page_to_pfn, pfn_to_page};
+use crate::mm::page::zone::{GFP_KERNEL_ZERO, GFP_USER};
 use crate::sync::IrqSpinLock;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -682,6 +689,179 @@ pub fn mmap_flags_to_vm_flags(prot: u32, flags: u32) -> VmFlags {
 // 初始化
 // ============================================================================
 
+const USER_PML4_ENTRY_COUNT: usize = pml4_index(KERNEL_BASE);
+
+#[inline]
+unsafe fn phys_to_table_mut(phys: u64) -> *mut PageTable {
+    (DIRECT_MAP_OFFSET + (phys & crate::mm::PTE_ADDR_MASK)) as *mut PageTable
+}
+
+#[inline]
+unsafe fn release_user_mapped_phys(phys: u64) {
+    let pfn = phys / PAGE_SIZE;
+    if pfn >= max_pfn() {
+        return;
+    }
+
+    let page = &mut *pfn_to_page(pfn);
+    if page.mapcount() >= 0 {
+        page.dec_mapcount();
+    }
+    if !page.is_reserved() && page.refcount() > 0 {
+        free_page(page);
+    }
+}
+
+#[inline]
+unsafe fn free_page_table_page(phys: u64) {
+    let pfn = phys / PAGE_SIZE;
+    if pfn >= max_pfn() {
+        return;
+    }
+
+    let page = &mut *pfn_to_page(pfn);
+    if !page.is_reserved() && page.refcount() > 0 {
+        free_page(page);
+    }
+}
+
+unsafe fn teardown_user_page_tables(pgd_phys: u64) {
+    let pml4 = &mut *phys_to_table_mut(pgd_phys);
+
+    for pml4_idx in 0..USER_PML4_ENTRY_COUNT {
+        let pml4e = pml4.entry_mut(pml4_idx);
+        if !pml4e.is_present() {
+            continue;
+        }
+
+        let pdpt_phys = pml4e.phys_addr();
+        let pdpt = &mut *phys_to_table_mut(pdpt_phys);
+        for pdpt_idx in 0..512 {
+            let pdpte = pdpt.entry_mut(pdpt_idx);
+            if !pdpte.is_present() {
+                continue;
+            }
+            if pdpte.is_huge() {
+                *pdpte = PageTableEntry::empty();
+                continue;
+            }
+
+            let pd_phys = pdpte.phys_addr();
+            let pd = &mut *phys_to_table_mut(pd_phys);
+            for pd_idx in 0..512 {
+                let pde = pd.entry_mut(pd_idx);
+                if !pde.is_present() {
+                    continue;
+                }
+                if pde.is_huge() {
+                    *pde = PageTableEntry::empty();
+                    continue;
+                }
+
+                let pt_phys = pde.phys_addr();
+                let pt = &mut *phys_to_table_mut(pt_phys);
+                for pt_idx in 0..512 {
+                    let pte = pt.entry_mut(pt_idx);
+                    if !pte.is_present() {
+                        continue;
+                    }
+
+                    release_user_mapped_phys(pte.phys_addr());
+                    *pte = PageTableEntry::empty();
+                }
+
+                *pde = PageTableEntry::empty();
+                free_page_table_page(pt_phys);
+            }
+
+            *pdpte = PageTableEntry::empty();
+            free_page_table_page(pd_phys);
+        }
+
+        *pml4e = PageTableEntry::empty();
+        free_page_table_page(pdpt_phys);
+    }
+}
+
+unsafe fn teardown_private_mm(mm: &mut Mm) {
+    teardown_user_page_tables(mm.pgd);
+    free_page_table_page(mm.pgd);
+}
+
+#[inline]
+fn init_mm_pgd_phys() -> u64 {
+    let mm = get_init_mm();
+    mm.pgd
+}
+
+unsafe fn clone_kernel_pml4_entries(src_pgd: u64, dst_pgd: u64) {
+    let src = &*phys_to_table_mut(src_pgd);
+    let dst = &mut *phys_to_table_mut(dst_pgd);
+
+    for idx in USER_PML4_ENTRY_COUNT..512 {
+        *dst.entry_mut(idx) = *src.entry(idx);
+    }
+}
+
+unsafe fn clone_user_present_pages(src: &Mm, dst: &mut Mm) -> bool {
+    let src_pt = PageTableManager::new(src.pgd, DIRECT_MAP_OFFSET);
+    let dst_pt = PageTableManager::new(dst.pgd, DIRECT_MAP_OFFSET);
+
+    for (start, end, info) in src.vma_tree.iter() {
+        let mut va = start as u64;
+        let end_va = end as u64;
+        let pte_flags = info.flags.to_user_pte_flags();
+
+        while va < end_va {
+            let Some(old_phys_raw) = src_pt.translate_addr(va) else {
+                va = va.saturating_add(PAGE_SIZE);
+                continue;
+            };
+            let old_phys = old_phys_raw & !(PAGE_SIZE - 1);
+
+            if info.flags.is_shared() {
+                if !dst_pt.map_page(va, old_phys, pte_flags) {
+                    return false;
+                }
+
+                let pfn = old_phys / PAGE_SIZE;
+                if pfn < max_pfn() {
+                    let page = &*pfn_to_page(pfn);
+                    page.get();
+                    page.inc_mapcount();
+                }
+            } else {
+                let new_page = match alloc_page(GFP_USER) {
+                    Some(p) => p,
+                    None => return false,
+                };
+                new_page.set_flag(PageFlags::UPTODATE);
+                if info.flags.is_anonymous() {
+                    new_page.set_flag(PageFlags::ANON);
+                }
+
+                let new_phys = page_to_pfn(new_page) * PAGE_SIZE;
+                ptr::copy_nonoverlapping(
+                    (DIRECT_MAP_OFFSET + old_phys) as *const u8,
+                    (DIRECT_MAP_OFFSET + new_phys) as *mut u8,
+                    PAGE_SIZE as usize,
+                );
+
+                if !dst_pt.map_page(va, new_phys, pte_flags) {
+                    free_page(new_page);
+                    return false;
+                }
+
+                new_page.inc_mapcount();
+            }
+
+            va = va.saturating_add(PAGE_SIZE);
+        }
+    }
+
+    true
+}
+
 /// 内核 mm (共享内核页表)
 static INIT_MM: crate::sync::OnceCell<IrqSpinLock<Mm>> = crate::sync::OnceCell::new();
 
@@ -715,17 +895,27 @@ pub fn mm_retain(mm: *mut Mm) -> *mut Mm {
     target
 }
 
-/// 克隆地址空间元数据（VMA/布局统计），用于 fork 私有 mm。
+/// 克隆地址空间（VMA 元数据 + 用户页映射）用于 fork 私有 mm。
 ///
-/// 当前阶段页表 `pgd` 仍复用父进程值；后续可在此接入真正页表复制。
+/// - 为子进程分配独立 PML4 页；
+/// - 复制内核高半区 PML4 条目；
+/// - 复制用户空间 VMA 元数据与已存在页映射。
+///
+/// 失败时返回空指针，调用方应将其视为 `ENOMEM`。
 pub fn mm_clone(mm: *mut Mm) -> *mut Mm {
     let init_ptr = init_mm_ptr();
     let src_ptr = if mm.is_null() { init_ptr } else { mm };
     let src = unsafe { &mut *src_ptr };
     let _src_guard = src.lock.lock();
 
+    let new_pgd_page = match alloc_page(GFP_KERNEL_ZERO) {
+        Some(p) => p,
+        None => return ptr::null_mut(),
+    };
+    let new_pgd_phys = page_to_pfn(new_pgd_page) * PAGE_SIZE;
+
     let mut dst = Mm::uninit();
-    dst.init(src.pgd);
+    dst.init(new_pgd_phys);
 
     dst.start_code = src.start_code;
     dst.end_code = src.end_code;
@@ -747,13 +937,28 @@ pub fn mm_clone(mm: *mut Mm) -> *mut Mm {
     dst.stack_vm = src.stack_vm;
     dst.data_vm = src.data_vm;
 
+    unsafe {
+        clone_kernel_pml4_entries(src.pgd, new_pgd_phys);
+    }
+
     let mut inserted = 0u32;
     for (start, end, info) in src.vma_tree.iter() {
-        if dst.vma_tree.insert(start, end, info.clone()).is_ok() {
-            inserted = inserted.saturating_add(1);
+        if dst.vma_tree.insert(start, end, info.clone()).is_err() {
+            unsafe {
+                teardown_private_mm(&mut dst);
+            }
+            return ptr::null_mut();
         }
+        inserted = inserted.saturating_add(1);
     }
     dst.vma_count = inserted;
+
+    if unsafe { !clone_user_present_pages(src, &mut dst) } {
+        unsafe {
+            teardown_private_mm(&mut dst);
+        }
+        return ptr::null_mut();
+    }
 
     Box::into_raw(Box::new(dst))
 }
@@ -781,6 +986,15 @@ pub unsafe fn mm_release(mm: *mut Mm) {
     });
 
     if prev <= 1 {
+        let init_pgd = init_mm_pgd_phys();
+        if (*mm).pgd != init_pgd {
+            let current_cr3 = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
+            if current_cr3 == (*mm).pgd {
+                crate::mm::arch::write_cr3(init_pgd);
+            }
+            let _guard = (*mm).lock.lock();
+            teardown_private_mm(&mut *mm);
+        }
         drop(Box::from_raw(mm));
     }
 }

@@ -4,10 +4,14 @@ use crate::fs;
 use crate::mm;
 use crate::syscall;
 use crate::syscall::handlers::{sys_mmap, sys_munmap};
+use core::sync::atomic::{AtomicBool, Ordering};
+
 const TLB_OLD_VALUE: u64 = 0x1111_2222_3333_4444;
 const TLB_NEW_VALUE: u64 = 0xaaaa_bbbb_cccc_dddd;
 const MMAP_FILE_PATH: &str = "/tests/mm/mmap_file.bin";
 const MMAP_FILE_DATA: &[u8] = b"file-backed-mmap-ok";
+
+static MMAP_ASYNC_DONE: AtomicBool = AtomicBool::new(false);
 
 #[inline]
 fn ret_is_err(ret: usize) -> bool {
@@ -55,7 +59,32 @@ fn do_munmap(addr: usize, len: usize) -> usize {
     sys_munmap(&args)
 }
 
+extern "C" fn mmap_run_in_task_thread() {
+    run_in_task_context();
+    MMAP_ASYNC_DONE.store(true, Ordering::Release);
+}
+
 pub(super) fn run() {
+    if crate::task::current_pid().is_some() {
+        run_in_task_context();
+        return;
+    }
+
+    mm_step("mmap: no current pid, spawn task-context runner");
+    MMAP_ASYNC_DONE.store(false, Ordering::Release);
+    crate::task::spawn_kernel_thread("mm_mmap_runner", mmap_run_in_task_thread);
+
+    for _ in 0..512 {
+        crate::task::scheduler::schedule();
+        if MMAP_ASYNC_DONE.load(Ordering::Acquire) {
+            return;
+        }
+    }
+
+    fail("mmap", "task-context runner timeout");
+}
+
+fn run_in_task_context() {
     let page = crate::mm::PAGE_SIZE as usize;
     let map_flags = crate::mm::mmap_flags::MAP_PRIVATE | crate::mm::mmap_flags::MAP_ANONYMOUS;
     let prot_rw = crate::mm::prot_flags::PROT_READ | crate::mm::prot_flags::PROT_WRITE;
@@ -445,6 +474,28 @@ pub(super) fn run() {
             let _ = do_munmap(map_addr as usize, page * 2);
             return fail("mmap", "mapped memory readback mismatch");
         }
+    }
+
+    mm_step("mmap: case=map_fixed_replace_existing_mapping");
+    let replace_ret = do_mmap(
+        map_addr as usize,
+        page,
+        prot_rw,
+        map_flags | crate::mm::mmap_flags::MAP_FIXED,
+        usize::MAX,
+        0,
+    );
+    if ret_is_err(replace_ret) {
+        kprintln!(
+            "[test/mm][mmap][map-fixed-replace] errno={}",
+            ret_errno(replace_ret)
+        );
+        let _ = do_munmap(map_addr as usize, page * 2);
+        return fail("mmap", "MAP_FIXED should replace existing mapping");
+    }
+    if replace_ret as u64 != map_addr {
+        let _ = do_munmap(map_addr as usize, page * 2);
+        return fail("mmap", "MAP_FIXED replace returned unexpected address");
     }
 
     mm_step("mmap: case=munmap_partial_second_page");

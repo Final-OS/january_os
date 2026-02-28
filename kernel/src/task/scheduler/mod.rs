@@ -102,6 +102,46 @@ fn idle_context_slot() -> &'static AtomicUsize {
 }
 
 #[inline]
+fn current_cr3_pgd() -> u64 {
+    crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK
+}
+
+#[inline]
+fn init_mm_pgd() -> u64 {
+    unsafe { (*crate::mm::init_mm_ptr()).pgd }
+}
+
+fn task_mm_pgd(task: &Arc<Mutex<Task>>) -> u64 {
+    let pid = {
+        let guard = task.lock();
+        guard.pid
+    };
+
+    let mm_ptr = super::manager::find_process_by_pid(pid)
+        .map(|process| process.lock().mm as *mut crate::mm::Mm)
+        .unwrap_or(crate::mm::init_mm_ptr());
+
+    if mm_ptr.is_null() {
+        init_mm_pgd()
+    } else {
+        unsafe { (*mm_ptr).pgd }
+    }
+}
+
+#[inline]
+fn switch_to_mm_pgd_if_needed(target_pgd: u64) {
+    if target_pgd == 0 {
+        return;
+    }
+
+    if current_cr3_pgd() != target_pgd {
+        unsafe {
+            crate::mm::arch::write_cr3(target_pgd);
+        }
+    }
+}
+
+#[inline]
 fn mark_task_ready_if_schedulable(task: &Arc<Mutex<Task>>) -> bool {
     let mut task_guard = task.lock();
     if task_guard.status == TaskStatus::Exited || task_guard.status == TaskStatus::Running {
@@ -314,6 +354,8 @@ pub fn schedule() {
                         enqueue_deferred_requeue(prev);
                     }
 
+                    switch_to_mm_pgd_if_needed(init_mm_pgd());
+
                     unsafe {
                         let idle_ptr = idle_slot.as_ptr();
                         do_switch(prev_ctx_ptr, idle_ptr as *const usize);
@@ -352,10 +394,13 @@ pub fn schedule() {
             enqueue_deferred_requeue(prev);
         }
 
+        switch_to_mm_pgd_if_needed(task_mm_pgd(&next_task));
+
         // 5. 所有锁已释放，执行切换
         unsafe { do_switch(prev_ctx_ptr, next_ctx_ptr) };
     } else {
         // 首次调度，没有 prev：保存调用者上下文到当前 CPU 的 idle 槽位
+        switch_to_mm_pgd_if_needed(task_mm_pgd(&next_task));
         unsafe {
             let idle_ptr = idle_context_slot().as_ptr();
             do_switch(idle_ptr, next_ctx_ptr);

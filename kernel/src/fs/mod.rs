@@ -10,9 +10,11 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::sync::Mutex;
-use crate::syscall::{EBADF, EINVAL, ENOENT, EPIPE};
+use crate::syscall::{EAGAIN, EBADF, EINVAL, ENOENT, EPIPE};
 
 const FIRST_USER_FD: i32 = 3;
+const O_CLOEXEC: u32 = 0o2000000;
+const O_NONBLOCK: u32 = 0o4000;
 
 #[derive(Clone, Copy)]
 struct StaticFile {
@@ -29,8 +31,16 @@ struct StaticOpenFile {
 #[derive(Clone, Copy)]
 enum OpenFile {
     Static(StaticOpenFile),
-    PipeRead { pipe_id: u64 },
-    PipeWrite { pipe_id: u64 },
+    PipeRead {
+        pipe_id: u64,
+        nonblocking: bool,
+        cloexec: bool,
+    },
+    PipeWrite {
+        pipe_id: u64,
+        nonblocking: bool,
+        cloexec: bool,
+    },
 }
 
 struct PipeState {
@@ -120,10 +130,12 @@ impl FsState {
     }
 
     fn pipe2_for_pid(&mut self, pid: usize, flags: u32) -> Result<(i32, i32), i32> {
-        // 当前最小实现不支持额外 flags（如 O_NONBLOCK/O_CLOEXEC）。
-        if flags != 0 {
+        let allowed = O_NONBLOCK | O_CLOEXEC;
+        if (flags & !allowed) != 0 {
             return Err(EINVAL);
         }
+        let nonblocking = (flags & O_NONBLOCK) != 0;
+        let cloexec = (flags & O_CLOEXEC) != 0;
 
         let pipe_id = self.next_pipe_id;
         self.next_pipe_id = self.next_pipe_id.saturating_add(1);
@@ -132,8 +144,22 @@ impl FsState {
         let write_fd = self.alloc_fd(pid);
 
         let table = self.open_files.entry(pid).or_insert_with(BTreeMap::new);
-        table.insert(read_fd, OpenFile::PipeRead { pipe_id });
-        table.insert(write_fd, OpenFile::PipeWrite { pipe_id });
+        table.insert(
+            read_fd,
+            OpenFile::PipeRead {
+                pipe_id,
+                nonblocking,
+                cloexec,
+            },
+        );
+        table.insert(
+            write_fd,
+            OpenFile::PipeWrite {
+                pipe_id,
+                nonblocking,
+                cloexec,
+            },
+        );
         self.pipes.insert(pipe_id, PipeState::new());
 
         Ok((read_fd, write_fd))
@@ -167,7 +193,11 @@ impl FsState {
                 open_file.offset = end;
                 Ok(read_len)
             }
-            OpenFile::PipeRead { pipe_id } => {
+            OpenFile::PipeRead {
+                pipe_id,
+                nonblocking,
+                ..
+            } => {
                 let Some(pipe) = self.pipes.get_mut(&pipe_id) else {
                     return Err(EBADF);
                 };
@@ -181,11 +211,17 @@ impl FsState {
                     read_len += 1;
                 }
 
-                if read_len == 0 && pipe.writers == 0 {
-                    Ok(0)
-                } else {
-                    Ok(read_len)
+                if read_len > 0 {
+                    return Ok(read_len);
                 }
+
+                if pipe.writers == 0 {
+                    return Ok(0);
+                }
+                if nonblocking {
+                    return Err(EAGAIN);
+                }
+                Err(EAGAIN)
             }
             OpenFile::PipeWrite { .. } => Err(EBADF),
         }
@@ -204,7 +240,7 @@ impl FsState {
         }
 
         match open_file {
-            OpenFile::PipeWrite { pipe_id } => {
+            OpenFile::PipeWrite { pipe_id, .. } => {
                 let Some(pipe) = self.pipes.get_mut(&pipe_id) else {
                     return Err(EBADF);
                 };
@@ -229,7 +265,7 @@ impl FsState {
         };
 
         match open_file {
-            OpenFile::PipeRead { pipe_id } => {
+            OpenFile::PipeRead { pipe_id, .. } => {
                 if let Some(pipe) = self.pipes.get_mut(&pipe_id) {
                     pipe.readers = pipe.readers.saturating_sub(1);
                     if pipe.readers == 0 && pipe.writers == 0 {
@@ -237,7 +273,7 @@ impl FsState {
                     }
                 }
             }
-            OpenFile::PipeWrite { pipe_id } => {
+            OpenFile::PipeWrite { pipe_id, .. } => {
                 if let Some(pipe) = self.pipes.get_mut(&pipe_id) {
                     pipe.writers = pipe.writers.saturating_sub(1);
                     if pipe.readers == 0 && pipe.writers == 0 {
@@ -294,11 +330,26 @@ impl FsState {
         Ok(open_file.data)
     }
 
+    fn fd_is_nonblocking_for_pid(&self, pid: usize, fd: i32) -> Result<bool, i32> {
+        let Some(table) = self.open_files.get(&pid) else {
+            return Err(EBADF);
+        };
+        let Some(open_file) = table.get(&fd) else {
+            return Err(EBADF);
+        };
+
+        match open_file {
+            OpenFile::Static(_) => Ok(false),
+            OpenFile::PipeRead { nonblocking, .. } => Ok(*nonblocking),
+            OpenFile::PipeWrite { nonblocking, .. } => Ok(*nonblocking),
+        }
+    }
+
     fn drop_process_fds(&mut self, pid: usize) {
         if let Some(table) = self.open_files.remove(&pid) {
             for (_fd, file) in table {
                 match file {
-                    OpenFile::PipeRead { pipe_id } => {
+                    OpenFile::PipeRead { pipe_id, .. } => {
                         if let Some(pipe) = self.pipes.get_mut(&pipe_id) {
                             pipe.readers = pipe.readers.saturating_sub(1);
                             if pipe.readers == 0 && pipe.writers == 0 {
@@ -306,7 +357,7 @@ impl FsState {
                             }
                         }
                     }
-                    OpenFile::PipeWrite { pipe_id } => {
+                    OpenFile::PipeWrite { pipe_id, .. } => {
                         if let Some(pipe) = self.pipes.get_mut(&pipe_id) {
                             pipe.writers = pipe.writers.saturating_sub(1);
                             if pipe.readers == 0 && pipe.writers == 0 {
@@ -362,6 +413,10 @@ pub fn read_at_for_pid(pid: usize, fd: i32, offset: usize, out: &mut [u8]) -> Re
 
 pub fn mmap_file_for_pid(pid: usize, fd: i32) -> Result<&'static [u8], i32> {
     FS_STATE.lock().mmap_file_for_pid(pid, fd)
+}
+
+pub fn fd_is_nonblocking_for_pid(pid: usize, fd: i32) -> Result<bool, i32> {
+    FS_STATE.lock().fd_is_nonblocking_for_pid(pid, fd)
 }
 
 pub fn drop_process_fds(pid: usize) {

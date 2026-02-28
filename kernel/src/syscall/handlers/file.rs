@@ -1,6 +1,6 @@
 use crate::fs;
 use crate::syscall::{
-    EBADF, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ESRCH, SyscallArgs, SyscallRet, err, ok,
+    EAGAIN, EBADF, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ESRCH, SyscallArgs, SyscallRet, err, ok,
 };
 use crate::task;
 use alloc::string::String;
@@ -117,9 +117,23 @@ pub(crate) fn sys_read(args: &SyscallArgs) -> SyscallRet {
 
     let io_len = count.min(READ_IO_MAX);
     let mut tmp = vec![0u8; io_len];
-    let read_len = match fs::read_for_pid(pid, fd, &mut tmp) {
-        Ok(n) => n,
+    let nonblocking = match fs::fd_is_nonblocking_for_pid(pid, fd) {
+        Ok(v) => v,
         Err(errno) => return err(errno),
+    };
+
+    let read_len = loop {
+        match fs::read_for_pid(pid, fd, &mut tmp) {
+            Ok(n) => break n,
+            Err(EAGAIN) if !nonblocking => {
+                if crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some() {
+                    crate::task::scheduler::schedule();
+                    continue;
+                }
+                return err(EAGAIN);
+            }
+            Err(errno) => return err(errno),
+        }
     };
 
     unsafe {

@@ -31,6 +31,7 @@ pub use manager::lookup_current_exec_mapping;
 pub use manager::record_current_exec_request;
 pub use manager::set_current_exec_mappings;
 pub use manager::spawn_kernel_thread_with_mm_mode;
+pub use manager::spawn_kernel_thread_with_mm_mode_checked;
 pub use manager::spawn_kernel_thread;
 pub use manager::SpawnMmMode;
 pub use manager::WaitChildConsumeEvent;
