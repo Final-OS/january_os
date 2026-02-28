@@ -41,6 +41,8 @@ pub use manager::WaitCloneFilter;
 pub use manager::WaitRusageSnapshot;
 pub use manager::WaitTarget;
 pub use processor::current_task;
+pub use scheduler::snapshot_stats as scheduler_snapshot_stats;
+pub use scheduler::SchedulerStats;
 pub use task::{Task, TaskStatus};
 
 /// 初始化任务子系统

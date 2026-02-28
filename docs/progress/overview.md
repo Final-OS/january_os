@@ -6,6 +6,13 @@ january_os 当前开发状态与功能完成情况。
 
 ## 最近更新 🆕
 
+**2026-02-28 - v0.2 收口（Batch 5/6/7/8/9）**
+- ✅ syscall 扩展：补齐 `pipe/pipe2` 分发与最小实现，`write` 接入普通 fd 路径（文件后端/pipe）
+- ✅ IPC 最小闭环：补齐 `pipe` 读写与 `EBADF/EPIPE` 错误路径回归
+- ✅ sync 演进：新增 `CondVar`，`Mutex/Semaphore` 增加可调度等待接口（非纯忙等）
+- ✅ 调度器可观测：新增调度统计（local pick/steal/idle fallback）与 `test smp sched_stats`
+- ✅ 文档与回归同步：更新 v0.2 执行状态与测试入口说明
+
 **2026-02-27 - Batch 6 推进（SMP 调度安全与基础负载均衡）**
 - ✅ 将 `task::Processor` 从全局单例改为 per-CPU 槽位，消除多核 `current` 覆盖风险
 - ✅ 将 `IDLE_CONTEXT_SP` 改为 per-CPU 槽位，消除多核共享 idle 栈指针风险
@@ -96,7 +103,7 @@ january_os 当前开发状态与功能完成情况。
 | 版本 | 状态 | 说明 |
 |------|------|------|
 | v0.1.0 | ✅ 已完成 | 内核基础、内存管理、中断、基础驱动、数据结构 |
-| v0.2.0 | 🚧 开发中 | 进程管理、调度器、系统调用 |
+| v0.2.0 | ✅ 已完成 | 进程管理、调度器、系统调用、IPC/Sync 最小闭环 |
 | v0.3.0 | 📋 计划中 | 文件系统、用户空间基础 |
 | v0.4.0 | 📋 计划中 | 虚拟化支持（KVM 兼容）、EEVDF 调度器落地 |
 | v0.5.0 | 📋 计划中 | 图形栈、桌面系统 |
@@ -144,7 +151,7 @@ january_os 当前开发状态与功能完成情况。
 
 ### 同步原语
 - SpinLock / Mutex / RwLock
-- Semaphore / Once / Barrier
+- Semaphore / Once / Barrier / CondVar
 - RCU (Read-Copy-Update) - 无锁读取同步
 
 ### SMP 多核支持
@@ -199,20 +206,21 @@ january_os 当前开发状态与功能完成情况。
 - **参数传递** - SyscallArgs 结构体
 - **已实现的系统调用**:
   - read/open/close - 最小只读文件 I/O（静态后端）
-  - mmap/munmap - 匿名映射最小路径（VMA + 缺页 + 回收）
+  - mmap/munmap - 匿名 + file-backed 最小路径（静态后端）
+  - pipe/pipe2 - 最小管道语义（读写/关闭/错误路径）
   - getpid/getppid/gettid - 进程/线程 ID 查询
   - exit/exit_group - 进程退出
   - execve - ELF 加载、PT_LOAD 映射、ring3 切换（最小镜像后端）
   - wait4 - 等待子进程（支持 PID/PGRP 过滤、WNOHANG/WUNTRACED/WCONTINUED、__WNOTHREAD/__WCLONE/__WALL、rusage 运行时统计）
-  - write - 输出到控制台（桩实现）
+  - write - 控制台输出 + pipe/fd 写路径
 
 ---
 
 ## 开发中 🚧
 
 ### IPC 进程间通信
-- [ ] 信号机制（Signal）
-- [ ] 管道（Pipe）
+- [x] 信号机制（Signal，最小闭环）
+- [x] 管道（Pipe，最小闭环）
 - [ ] 共享内存
 - [ ] 消息队列
 
@@ -220,7 +228,7 @@ january_os 当前开发状态与功能完成情况。
 - [ ] EEVDF 算法实现（目标版本：`v0.4.0`）
 - [ ] 实时调度策略
 - [ ] 负载均衡（当前已具备基础 work-stealing，待策略优化）
-- [ ] 调度可观测性（每 CPU 队列长度、窃取成功率、迁移统计）
+- [x] 调度可观测性（local pick/steal/idle fallback 统计）
 - [ ] CPU 亲和性与拓扑感知（NUMA/缓存局部性）
 
 ### 系统调用扩展

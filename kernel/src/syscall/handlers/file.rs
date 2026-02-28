@@ -13,6 +13,7 @@ const READ_IO_MAX: usize = 64 * 1024;
 const WRITE_IO_MAX: usize = 64 * 1024;
 const O_ACCMODE: u32 = 0o3;
 const O_RDONLY: u32 = 0;
+const PIPE_FD_COUNT: usize = 2;
 
 #[inline]
 fn validate_user_range(ptr: usize, size: usize) -> Result<(), i32> {
@@ -150,7 +151,7 @@ pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet {
     let buf_ptr = args.arg1;
     let count = args.arg2;
 
-    if fd != 1 && fd != 2 {
+    if fd < 0 {
         return err(EBADF);
     }
     if count == 0 {
@@ -169,12 +170,77 @@ pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet {
         core::ptr::copy_nonoverlapping(buf_ptr as *const u8, tmp.as_mut_ptr(), write_len);
     }
 
-    {
+    if fd == 1 || fd == 2 {
         let mut console = crate::drivers::tty::console::CONSOLE.lock();
         for byte in tmp {
             let _ = console.write_char(byte as char);
         }
+        return ok(write_len);
     }
 
-    ok(write_len)
+    let pid = match current_pid_raw() {
+        Ok(pid) => pid,
+        Err(errno) => return err(errno),
+    };
+
+    match fs::write_for_pid(pid, fd, &tmp) {
+        Ok(n) => ok(n),
+        Err(errno) => err(errno),
+    }
+}
+
+#[inline]
+fn write_pipe_fds_user(ptr: usize, read_fd: i32, write_fd: i32) -> Result<(), i32> {
+    validate_user_range(
+        ptr,
+        core::mem::size_of::<i32>() * PIPE_FD_COUNT,
+    )?;
+
+    unsafe {
+        core::ptr::write(ptr as *mut i32, read_fd);
+        core::ptr::write(
+            ptr.saturating_add(core::mem::size_of::<i32>()) as *mut i32,
+            write_fd,
+        );
+    }
+
+    Ok(())
+}
+
+#[inline]
+fn sys_pipe_impl(pipefd_ptr: usize, flags: u32) -> SyscallRet {
+    if pipefd_ptr == 0 {
+        return err(EFAULT);
+    }
+    if let Err(errno) = validate_user_range(
+        pipefd_ptr,
+        core::mem::size_of::<i32>() * PIPE_FD_COUNT,
+    ) {
+        return err(errno);
+    }
+
+    let pid = match current_pid_raw() {
+        Ok(pid) => pid,
+        Err(errno) => return err(errno),
+    };
+    let (read_fd, write_fd) = match fs::pipe2_for_pid(pid, flags) {
+        Ok(fds) => fds,
+        Err(errno) => return err(errno),
+    };
+
+    if let Err(errno) = write_pipe_fds_user(pipefd_ptr, read_fd, write_fd) {
+        let _ = fs::close_for_pid(pid, read_fd);
+        let _ = fs::close_for_pid(pid, write_fd);
+        return err(errno);
+    }
+
+    ok(0)
+}
+
+pub(crate) fn sys_pipe(args: &SyscallArgs) -> SyscallRet {
+    sys_pipe_impl(args.arg0, 0)
+}
+
+pub(crate) fn sys_pipe2(args: &SyscallArgs) -> SyscallRet {
+    sys_pipe_impl(args.arg0, args.arg1 as u32)
 }

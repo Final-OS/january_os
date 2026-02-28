@@ -75,6 +75,19 @@ impl<T> Mutex<T> {
         self.lock_slow(me)
     }
 
+    /// 获取锁（可调度等待路径）
+    ///
+    /// 与 `lock()` 不同，竞争时优先通过调度器让出 CPU，避免纯忙等。
+    /// 若当前不在可调度上下文，会回退到自旋等待。
+    pub fn lock_blocking(&self) -> MutexGuard<T> {
+        loop {
+            if let Some(guard) = self.try_lock() {
+                return guard;
+            }
+            wait_for_lock_event();
+        }
+    }
+
     #[cold]
     fn lock_slow(&self, me: u32) -> MutexGuard<T> {
         let mut count = 0;
@@ -316,4 +329,13 @@ fn disable_interrupts() {
 #[inline]
 fn enable_interrupts() {
     crate::interrupt::enable_interrupts();
+}
+
+#[inline]
+fn wait_for_lock_event() {
+    if interrupts_enabled() && crate::task::current_task().is_some() {
+        crate::task::scheduler::schedule();
+    } else {
+        core::hint::spin_loop();
+    }
 }

@@ -29,6 +29,10 @@ pub(super) fn run_sync_once() {
     test_sync_once();
 }
 
+pub(super) fn run_sync_blocking() {
+    test_sync_blocking();
+}
+
 fn test_ring_buffer() {
     use crate::libs::ring_buffer::RingBuffer;
 
@@ -459,4 +463,38 @@ fn test_sync_once() {
     }
 
     pass("sync_once");
+}
+
+fn test_sync_blocking() {
+    use crate::sync::{CondVar, Mutex, Semaphore};
+
+    let m = Mutex::new(7usize);
+    {
+        let mut g = m.lock_blocking();
+        *g = g.saturating_add(1);
+    }
+    {
+        let g = m.lock_blocking();
+        if *g != 8 {
+            return fail("sync_blocking", "mutex lock_blocking unexpected value");
+        }
+    }
+
+    let sem = Semaphore::new(1);
+    sem.acquire_blocking();
+    sem.release();
+    sem.acquire_many_blocking(1);
+    sem.release_many(1);
+
+    let cv = CondVar::new();
+    cv.notify_one();
+    cv.notify_all();
+
+    let guard = m.lock_blocking();
+    let guard = cv.wait_while(&m, guard, |_v| false);
+    if *guard != 8 {
+        return fail("sync_blocking", "condvar wait_while changed guarded value");
+    }
+
+    pass("sync_blocking");
 }

@@ -51,6 +51,15 @@ impl Semaphore {
         }
     }
 
+    /// 获取信号量（可调度等待路径）
+    ///
+    /// 在可调度上下文优先让出 CPU，避免纯忙等。
+    pub fn acquire_blocking(&self) {
+        while !self.try_acquire() {
+            wait_for_permit();
+        }
+    }
+
     /// 尝试获取信号量（非阻塞）
     pub fn try_acquire(&self) -> bool {
         let count = self.count.load(Ordering::Relaxed);
@@ -91,6 +100,32 @@ impl Semaphore {
             }
             
             core::hint::spin_loop();
+        }
+    }
+
+    /// 获取多个许可（可调度等待路径）
+    pub fn acquire_many_blocking(&self, permits: u32) {
+        let permits = permits as i32;
+
+        loop {
+            let count = self.count.load(Ordering::Relaxed);
+
+            if count >= permits {
+                if self
+                    .count
+                    .compare_exchange_weak(
+                        count,
+                        count - permits,
+                        Ordering::Acquire,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    return;
+                }
+            } else {
+                wait_for_permit();
+            }
         }
     }
 
@@ -276,5 +311,14 @@ impl core::fmt::Debug for BoundedSemaphore {
             .field("count", &self.available())
             .field("max", &self.max)
             .finish()
+    }
+}
+
+#[inline]
+fn wait_for_permit() {
+    if crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some() {
+        crate::task::scheduler::schedule();
+    } else {
+        core::hint::spin_loop();
     }
 }

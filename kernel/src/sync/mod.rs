@@ -15,6 +15,7 @@
 //! | `OnceCell` | 懒初始化单元 | 全局单例 |
 //! | `Semaphore` | 信号量 | 资源计数 |
 //! | `Barrier` | 屏障 | 多线程同步点 |
+//! | `CondVar` | 条件变量 | 条件等待与通知 |
 
 mod spinlock;
 mod mutex;
@@ -22,6 +23,7 @@ mod rwlock;
 mod once;
 mod semaphore;
 mod barrier;
+mod condvar;
 
 // SpinLock
 pub use spinlock::{IrqSpinLock, IrqSpinLockGuard, SpinLock, SpinLockGuard};
@@ -40,3 +42,6 @@ pub use semaphore::{Semaphore, SemaphorePermit, BoundedSemaphore};
 
 // Barrier
 pub use barrier::{Barrier, BarrierWaitResult, ResettableBarrier, CountDownLatch};
+
+// CondVar
+pub use condvar::CondVar;

@@ -13,6 +13,7 @@ pub const NR_OPEN: usize = 2;
 pub const NR_CLOSE: usize = 3;
 pub const NR_MMAP: usize = 9;
 pub const NR_MUNMAP: usize = 11;
+pub const NR_PIPE: usize = 22;
 pub const NR_GETPID: usize = 39;
 pub const NR_CLONE: usize = 56;
 pub const NR_FORK: usize = 57;
@@ -30,6 +31,7 @@ pub const NR_GETTID: usize = 186;
 pub const NR_TKILL: usize = 200;
 pub const NR_EXIT_GROUP: usize = 231;
 pub const NR_TGKILL: usize = 234;
+pub const NR_PIPE2: usize = 293;
 
 pub struct X86_64SyscallArch;
 
@@ -44,6 +46,7 @@ impl SyscallArch for X86_64SyscallArch {
             NR_CLOSE => handlers::sys_close(args),
             NR_MMAP => handlers::sys_mmap(args),
             NR_MUNMAP => handlers::sys_munmap(args),
+            NR_PIPE => handlers::sys_pipe(args),
             NR_GETPID => handlers::sys_getpid(args),
             NR_CLONE => handlers::sys_clone(args),
             NR_FORK => handlers::sys_fork(args),
@@ -61,6 +64,7 @@ impl SyscallArch for X86_64SyscallArch {
             NR_TKILL => handlers::sys_tkill(args),
             NR_EXIT_GROUP => handlers::sys_exit_group(args),
             NR_TGKILL => handlers::sys_tgkill(args),
+            NR_PIPE2 => handlers::sys_pipe2(args),
             _ => handlers::sys_ni(args),
         }
     }

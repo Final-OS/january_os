@@ -1,7 +1,7 @@
 use super::{task_step, usermode};
 use crate::fs;
 use crate::mm;
-use crate::syscall::EBADF;
+use crate::syscall::{EBADF, EPIPE};
 use crate::{error, kprintln, ok};
 
 unsafe extern "C" {
@@ -241,6 +241,85 @@ pub(super) fn run() {
     }
 
     fs::drop_process_fds(REGRESSION_FS_PID);
+
+    task_step("regression: verify syscall pipe2 dispatch wiring");
+    let pipe2_ret = crate::syscall::dispatch(293, 0, 0, 0, 0, 0, 0);
+    let pipe2_errno = (-(pipe2_ret as isize)) as i32;
+    kprintln!(
+        "[test/task][regression][syscall-pipe2] ret={:#x} errno={}",
+        pipe2_ret,
+        pipe2_errno
+    );
+    if pipe2_errno != crate::syscall::EFAULT {
+        error!(
+            "task: regression FAIL (sys_pipe2 dispatch mismatch, got errno={}, expect={})",
+            pipe2_errno,
+            crate::syscall::EFAULT
+        );
+        return;
+    }
+
+    task_step("regression: verify fs pipe read/write and EPIPE");
+    const REGRESSION_PIPE_PID: usize = 0xbeef;
+    let (rfd, wfd) = match fs::pipe2_for_pid(REGRESSION_PIPE_PID, 0) {
+        Ok(v) => v,
+        Err(errno) => {
+            error!("task: regression FAIL (pipe2_for_pid errno={})", errno);
+            return;
+        }
+    };
+    let payload = b"pipe-regression";
+    let wrote = match fs::write_for_pid(REGRESSION_PIPE_PID, wfd, payload) {
+        Ok(n) => n,
+        Err(errno) => {
+            error!("task: regression FAIL (pipe write errno={})", errno);
+            return;
+        }
+    };
+    if wrote != payload.len() {
+        error!(
+            "task: regression FAIL (pipe write short, wrote={}, expect={})",
+            wrote,
+            payload.len()
+        );
+        return;
+    }
+
+    let mut pipe_buf = [0u8; 32];
+    let read_n = match fs::read_for_pid(REGRESSION_PIPE_PID, rfd, &mut pipe_buf) {
+        Ok(n) => n,
+        Err(errno) => {
+            error!("task: regression FAIL (pipe read errno={})", errno);
+            return;
+        }
+    };
+    if &pipe_buf[..read_n] != payload {
+        error!("task: regression FAIL (pipe read content mismatch)");
+        return;
+    }
+
+    if let Err(errno) = fs::close_for_pid(REGRESSION_PIPE_PID, rfd) {
+        error!("task: regression FAIL (pipe close read end errno={})", errno);
+        return;
+    }
+
+    match fs::write_for_pid(REGRESSION_PIPE_PID, wfd, b"x") {
+        Ok(_) => {
+            error!("task: regression FAIL (pipe write should fail with EPIPE)");
+            return;
+        }
+        Err(errno) if errno == EPIPE => {}
+        Err(errno) => {
+            error!(
+                "task: regression FAIL (pipe write errno mismatch, got={}, want={})",
+                errno,
+                EPIPE
+            );
+            return;
+        }
+    }
+    let _ = fs::close_for_pid(REGRESSION_PIPE_PID, wfd);
+    fs::drop_process_fds(REGRESSION_PIPE_PID);
 
     task_step("regression: run usermode exec after reserve verification");
     if !usermode::run_with_label("usermode regression") {

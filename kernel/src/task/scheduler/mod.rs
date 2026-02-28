@@ -2,7 +2,7 @@
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::interrupt;
 use crate::sync::Mutex;
@@ -49,6 +49,19 @@ struct DeferredRequeue {
 }
 
 static DEFERRED_REQUEUE: Mutex<VecDeque<DeferredRequeue>> = Mutex::new(VecDeque::new());
+
+static SCHED_LOCAL_PICKS: AtomicU64 = AtomicU64::new(0);
+static SCHED_STEAL_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+static SCHED_STEAL_SUCCESSES: AtomicU64 = AtomicU64::new(0);
+static SCHED_IDLE_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SchedulerStats {
+    pub local_picks: u64,
+    pub steal_attempts: u64,
+    pub steal_successes: u64,
+    pub idle_fallbacks: u64,
+}
 
 /// 调度器实例（无内部状态，状态都在静态队列里）。
 pub struct Scheduler;
@@ -226,13 +239,16 @@ impl Scheduler {
         let local_slot = runqueue_slot_index(current_cpu_id());
 
         if let Some(task) = self.pick_next_from_slot(local_slot, now_ticks) {
+            SCHED_LOCAL_PICKS.fetch_add(1, Ordering::Relaxed);
             return Some(task);
         }
 
         let slots = active_cpu_slots();
         for offset in 1..slots {
             let victim = (local_slot + offset) % slots;
+            SCHED_STEAL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
             if let Some(task) = self.steal_from_slot(victim, now_ticks) {
+                SCHED_STEAL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
                 return Some(task);
             }
         }
@@ -255,6 +271,15 @@ impl Scheduler {
     }
 }
 
+pub fn snapshot_stats() -> SchedulerStats {
+    SchedulerStats {
+        local_picks: SCHED_LOCAL_PICKS.load(Ordering::Relaxed),
+        steal_attempts: SCHED_STEAL_ATTEMPTS.load(Ordering::Relaxed),
+        steal_successes: SCHED_STEAL_SUCCESSES.load(Ordering::Relaxed),
+        idle_fallbacks: SCHED_IDLE_FALLBACKS.load(Ordering::Relaxed),
+    }
+}
+
 /// 调度：从就绪队列取下一个任务并切换
 ///
 /// 关键：所有锁必须在 `__switch` 之前释放。
@@ -266,6 +291,7 @@ pub fn schedule() {
     let next_task = match next {
         Some(t) => t,
         None => {
+            SCHED_IDLE_FALLBACKS.fetch_add(1, Ordering::Relaxed);
             // 没有就绪任务
             // 如果当前在任务上下文中且有保存的空闲上下文，切换回去
             let idle_slot = idle_context_slot();

@@ -215,12 +215,12 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
     let mut info = mm::VmaInfo::new(vm_flags);
     info.pgoff = offset / mm::PAGE_SIZE;
     if (flags & mm::mmap_flags::MAP_ANONYMOUS) == 0 {
-        let pid = match current_pid_raw() {
-            Ok(pid) => pid,
-            Err(errno) => return err(errno),
-        };
         let fd = match parse_fd(fd_raw) {
             Ok(fd) => fd,
+            Err(errno) => return err(errno),
+        };
+        let pid = match current_pid_raw() {
+            Ok(pid) => pid,
             Err(errno) => return err(errno),
         };
         let file_data = match fs::mmap_file_for_pid(pid, fd) {

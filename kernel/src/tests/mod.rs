@@ -53,11 +53,11 @@ pub fn run(name: &str) {
             kprintln!("                   Default (`test task`) runs all");
             kprintln!("  libs [name]    - Data structure tests");
             kprintln!("                   Available: rbtree, lru, rdtree, btree, mptree, rcu");
-            kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once");
+            kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once, sync_blocking");
             kprintln!("  mm [name]      - Memory management tests");
             kprintln!("                   Available: swiotlb, slub, buddy, pcp, mmap");
             kprintln!("  smp [name]     - SMP/IPI tests");
-            kprintln!("                   Available: topology, cpu_id, ipi, irq_route, all");
+            kprintln!("                   Available: topology, cpu_id, ipi, irq_route, sched_stats, all");
             kprintln!("  timer          - Timer tick test");
             kprintln!("  all            - Run all tests");
         }

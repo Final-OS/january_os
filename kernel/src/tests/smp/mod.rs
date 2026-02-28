@@ -305,6 +305,57 @@ fn run_irq_route_case() -> bool {
     true
 }
 
+fn run_scheduler_stats_case() -> bool {
+    smp_step("sched_stats: read scheduler stats before probe");
+    let before = crate::task::scheduler_snapshot_stats();
+    kprintln!(
+        "[test/smp][sched_stats][before] local={} steal_attempts={} steal_successes={} idle={}",
+        before.local_picks,
+        before.steal_attempts,
+        before.steal_successes,
+        before.idle_fallbacks
+    );
+
+    smp_step("sched_stats: trigger scheduler probe cycles");
+    for _ in 0..8 {
+        crate::task::scheduler::schedule();
+    }
+
+    smp_step("sched_stats: read scheduler stats after probe");
+    let after = crate::task::scheduler_snapshot_stats();
+    kprintln!(
+        "[test/smp][sched_stats][after] local={} steal_attempts={} steal_successes={} idle={}",
+        after.local_picks,
+        after.steal_attempts,
+        after.steal_successes,
+        after.idle_fallbacks
+    );
+
+    if after.local_picks < before.local_picks {
+        fail("sched_stats", "local picks counter regressed");
+        return false;
+    }
+    if after.steal_attempts < before.steal_attempts {
+        fail("sched_stats", "steal attempts counter regressed");
+        return false;
+    }
+    if after.steal_successes < before.steal_successes {
+        fail("sched_stats", "steal successes counter regressed");
+        return false;
+    }
+    if after.idle_fallbacks < before.idle_fallbacks {
+        fail("sched_stats", "idle fallback counter regressed");
+        return false;
+    }
+    if after.steal_successes > after.steal_attempts {
+        fail("sched_stats", "steal successes exceeds attempts");
+        return false;
+    }
+
+    pass("sched_stats");
+    true
+}
+
 pub fn run() {
     run_with_filter(None);
 }
@@ -325,6 +376,8 @@ pub fn run_with_filter(filter: Option<&str>) {
             let _ = run_ipi_case();
             smp_step("run case=irq_route");
             let _ = run_irq_route_case();
+            smp_step("run case=sched_stats");
+            let _ = run_scheduler_stats_case();
         }
         Some("topology") => {
             smp_step("run case=topology");
@@ -342,6 +395,10 @@ pub fn run_with_filter(filter: Option<&str>) {
             smp_step("run case=irq_route");
             let _ = run_irq_route_case();
         }
+        Some("sched_stats") => {
+            smp_step("run case=sched_stats");
+            let _ = run_scheduler_stats_case();
+        }
         Some("help") | _ => {
             smp_step("show help");
             kprintln!("Usage: test smp [name]");
@@ -350,6 +407,7 @@ pub fn run_with_filter(filter: Option<&str>) {
             kprintln!("  cpu_id    - current CPU ID range/stability checks");
             kprintln!("  ipi       - cross-CPU TLB probe IPI checks");
             kprintln!("  irq_route - IOAPIC route consistency with MADT overrides");
+            kprintln!("  sched_stats - scheduler observability counters");
             kprintln!("  all       - run all smp tests");
             kprintln!("Note: `test smp` defaults to `all`.");
             kprintln!();
