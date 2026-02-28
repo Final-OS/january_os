@@ -124,10 +124,9 @@ pub extern "x86-interrupt" fn page_fault_handler(
     }
 
     // 调用 mm 模块的页错误处理。
-    // 当前尚未引入 per-process mm，上下文先绑定到 init_mm，避免空指针路径。
+    // 优先解析当前任务的地址空间，缺失时回退到 init_mm。
     let direct_map = crate::config::DIRECT_MAP_OFFSET;
-    let mut init_mm = crate::mm::get_init_mm();
-    let mm_ptr: *mut crate::mm::Mm = &mut *init_mm;
+    let mm_ptr: *mut crate::mm::Mm = crate::task::current_mm_ptr();
     let mut ctx = FaultContext::new(fault_addr, error_code, mm_ptr, direct_map);
     let result = handle_page_fault(&mut ctx);
 
@@ -216,6 +215,8 @@ static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// 是否启用 Timer 调试输出
 static TIMER_DEBUG: AtomicBool = AtomicBool::new(false);
+/// Timer 调试心跳计数（每秒累加一次）
+static TIMER_DEBUG_HEARTBEATS: AtomicU64 = AtomicU64::new(0);
 
 /// 获取 Timer tick 计数
 pub fn timer_ticks() -> u64 {
@@ -227,6 +228,11 @@ pub fn set_timer_debug(enable: bool) {
     TIMER_DEBUG.store(enable, Ordering::Relaxed);
 }
 
+/// 获取 Timer 调试心跳计数
+pub fn timer_debug_heartbeats() -> u64 {
+    TIMER_DEBUG_HEARTBEATS.load(Ordering::Relaxed)
+}
+
 /// Timer 中断处理程序
 pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
     let ticks = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
@@ -235,17 +241,9 @@ pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
     // 每秒打印一次 (假设 100Hz)
     #[cfg(debug_assertions)]
     if TIMER_DEBUG.load(Ordering::Relaxed) && ticks % 100 == 0 {
-        // 简单的串口输出 (避免在中断中使用复杂的 kprintln)
-        unsafe {
-            let seconds = ticks / 100;
-            // 输出 '.' 表示活动
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") 0x3F8u16,
-                in("al") b'.',
-                options(nostack, preserves_flags)
-            );
-        }
+        // 不在中断上下文直接访问串口端口，避免与串口驱动路径竞争。
+        let _seconds = ticks / 100;
+        TIMER_DEBUG_HEARTBEATS.fetch_add(1, Ordering::Relaxed);
     }
     
     // 发送 EOI

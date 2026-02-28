@@ -1,10 +1,13 @@
 use super::{fail, mm_step, pass};
 use crate::{kprintln, warn};
+use crate::fs;
 use crate::mm;
 use crate::syscall;
 use crate::syscall::handlers::{sys_mmap, sys_munmap};
 const TLB_OLD_VALUE: u64 = 0x1111_2222_3333_4444;
 const TLB_NEW_VALUE: u64 = 0xaaaa_bbbb_cccc_dddd;
+const MMAP_FILE_PATH: &str = "/tests/mm/mmap_file.bin";
+const MMAP_FILE_DATA: &[u8] = b"file-backed-mmap-ok";
 
 #[inline]
 fn ret_is_err(ret: usize) -> bool {
@@ -87,15 +90,80 @@ pub(super) fn run() {
         return fail("mmap", "mmap without MAP_SHARED/MAP_PRIVATE must fail");
     }
 
-    mm_step("mmap: case=unsupported_file_backed");
+    mm_step("mmap: case=invalid_file_backed_fd");
     if expect_errno(
-        "file-backed",
+        "file-backed-bad-fd",
         do_mmap(0, page, prot_rw, crate::mm::mmap_flags::MAP_PRIVATE, 3, 0),
-        syscall::ENOSYS,
+        syscall::EBADF,
     )
     .is_err()
     {
-        return fail("mmap", "file-backed mmap should return ENOSYS in current stage");
+        return fail("mmap", "file-backed mmap with invalid fd must fail with EBADF");
+    }
+
+    mm_step("mmap: case=file_backed_private_read_map_and_access");
+    {
+        let pid = match crate::task::current_pid() {
+            Some(pid) => pid.0,
+            None => return fail("mmap", "file-backed mmap setup missing current pid"),
+        };
+        if let Err(errno) = fs::register_static_file(MMAP_FILE_PATH, MMAP_FILE_DATA) {
+            kprintln!("[test/mm][mmap][file-backed] register errno={}", errno);
+            return fail("mmap", "file-backed mmap setup register_static_file failed");
+        }
+        let fd = match fs::open_for_pid(pid, MMAP_FILE_PATH, 0, 0) {
+            Ok(fd) => fd,
+            Err(errno) => {
+                kprintln!("[test/mm][mmap][file-backed] open errno={}", errno);
+                return fail("mmap", "file-backed mmap setup open_for_pid failed");
+            }
+        };
+
+        let map_ret = do_mmap(
+            0,
+            page,
+            crate::mm::prot_flags::PROT_READ,
+            crate::mm::mmap_flags::MAP_PRIVATE,
+            fd as usize,
+            0,
+        );
+        if ret_is_err(map_ret) {
+            kprintln!(
+                "[test/mm][mmap][file-backed] map errno={}",
+                ret_errno(map_ret)
+            );
+            let _ = fs::close_for_pid(pid, fd);
+            return fail("mmap", "file-backed mmap should succeed with valid fd");
+        }
+
+        let map_addr = map_ret as u64;
+        unsafe {
+            let p = map_addr as *const u8;
+            let b0 = core::ptr::read(p);
+            let b1 = core::ptr::read(p.add(1));
+            kprintln!(
+                "[test/mm][mmap][file-backed] addr={:#x} first_bytes=[{:#x}, {:#x}]",
+                map_addr,
+                b0,
+                b1
+            );
+            if b0 != MMAP_FILE_DATA[0] || b1 != MMAP_FILE_DATA[1] {
+                let _ = do_munmap(map_addr as usize, page);
+                let _ = fs::close_for_pid(pid, fd);
+                return fail("mmap", "file-backed mmap readback mismatch");
+            }
+        }
+
+        let unmap_ret = do_munmap(map_addr as usize, page);
+        if ret_is_err(unmap_ret) {
+            kprintln!(
+                "[test/mm][mmap][file-backed] munmap errno={}",
+                ret_errno(unmap_ret)
+            );
+            let _ = fs::close_for_pid(pid, fd);
+            return fail("mmap", "file-backed mmap munmap failed");
+        }
+        let _ = fs::close_for_pid(pid, fd);
     }
 
     mm_step("mmap: case=invalid_unaligned_fixed_addr");
@@ -215,6 +283,113 @@ pub(super) fn run() {
     }
 
     mm_step("mmap: case=anon_private_rw_map_and_access");
+    mm_step("mmap: case=current_mm_routing_for_mmap_and_munmap");
+    {
+        let Some(current_pid) = crate::task::current_pid() else {
+            return fail("mmap", "current-mm routing: missing current pid");
+        };
+        let Some(process_ref) = crate::task::find_process_by_pid(current_pid) else {
+            return fail("mmap", "current-mm routing: current process not found");
+        };
+
+        let original_mm = { process_ref.lock().mm };
+        let mut local_mm = mm::Mm::uninit();
+        let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
+        local_mm.init(cr3);
+        let mut pt_mgr = unsafe { mm::PageTableManager::new(cr3, mm::DIRECT_MAP_OFFSET) };
+
+        let candidate_va = {
+            let init_mm = mm::get_init_mm();
+            let mut probe = mm::page_align_down(mm::USER_STACK_TOP.saturating_sub(0x5000_0000));
+            let mut found = 0u64;
+            for _ in 0..8192 {
+                if probe <= mm::USER_SPACE_START.saturating_add(mm::PAGE_SIZE) {
+                    break;
+                }
+
+                let end = probe.saturating_add(mm::PAGE_SIZE);
+                let init_vma_free = init_mm.find_vma_intersection(probe, end).is_none();
+                let pte_free = pt_mgr.translate_addr(probe).is_none();
+                if init_vma_free && pte_free {
+                    found = probe;
+                    break;
+                }
+                probe = probe.saturating_sub(mm::PAGE_SIZE);
+            }
+            found
+        };
+
+        if candidate_va == 0 {
+            return fail("mmap", "current-mm routing: unable to find free MAP_FIXED address");
+        }
+
+        let local_mm_ptr = (&mut local_mm as *mut mm::Mm) as usize;
+        let case_result = (|| -> Result<(), &'static str> {
+            {
+                let mut process = process_ref.lock();
+                process.mm = local_mm_ptr;
+            }
+
+            if crate::task::current_mm_ptr() as usize != local_mm_ptr {
+                return Err("current-mm routing: task::current_mm_ptr did not follow process.mm override");
+            }
+
+            let map_ret = do_mmap(
+                candidate_va as usize,
+                page,
+                prot_rw,
+                map_flags | mm::mmap_flags::MAP_FIXED,
+                usize::MAX,
+                0,
+            );
+            if ret_is_err(map_ret) {
+                kprintln!(
+                    "[test/mm][mmap][current-mm] mmap errno={} va={:#x}",
+                    ret_errno(map_ret),
+                    candidate_va
+                );
+                return Err("current-mm routing: mmap failed after mm switch");
+            }
+
+            if map_ret as u64 != candidate_va {
+                return Err("current-mm routing: MAP_FIXED returned unexpected address");
+            }
+            if local_mm.find_vma(candidate_va).is_none() {
+                return Err("current-mm routing: local mm missing mapped VMA");
+            }
+            if mm::get_init_mm()
+                .find_vma_intersection(candidate_va, candidate_va.saturating_add(mm::PAGE_SIZE))
+                .is_some()
+            {
+                return Err("current-mm routing: init_mm unexpectedly received mapped VMA");
+            }
+
+            let unmap_ret = do_munmap(candidate_va as usize, page);
+            if ret_is_err(unmap_ret) {
+                kprintln!(
+                    "[test/mm][mmap][current-mm] munmap errno={} va={:#x}",
+                    ret_errno(unmap_ret),
+                    candidate_va
+                );
+                return Err("current-mm routing: munmap failed after mm switch");
+            }
+            if local_mm.find_vma(candidate_va).is_some() {
+                return Err("current-mm routing: local mm VMA still present after munmap");
+            }
+
+            Ok(())
+        })();
+
+        {
+            let mut process = process_ref.lock();
+            process.mm = original_mm;
+        }
+
+        if let Err(msg) = case_result {
+            return fail("mmap", msg);
+        }
+    }
+
     let low_hint_mapped_before = {
         let cr3 = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
         let pt_mgr = unsafe { crate::mm::PageTableManager::new(cr3, crate::mm::DIRECT_MAP_OFFSET) };

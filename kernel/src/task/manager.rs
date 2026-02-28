@@ -91,6 +91,12 @@ pub struct TaskManager {
     processes: RadixTree<Arc<Mutex<Process>>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnMmMode {
+    InheritShared,
+    InheritPrivate,
+}
+
 impl TaskManager {
     pub const fn new() -> Self {
         Self {
@@ -172,6 +178,47 @@ impl TaskManager {
 
 pub fn init() {
     // 可以在这里做一些初始化工作
+}
+
+#[inline]
+fn resolve_child_mm(parent_pid: Option<ProcessId>, mm_mode: SpawnMmMode) -> usize {
+    let parent_mm = parent_pid
+        .and_then(|ppid| find_process_by_pid(ppid).map(|process| process.lock().mm as *mut crate::mm::Mm))
+        .unwrap_or(crate::mm::init_mm_ptr());
+
+    match mm_mode {
+        SpawnMmMode::InheritShared => crate::mm::mm_retain(parent_mm) as usize,
+        SpawnMmMode::InheritPrivate => crate::mm::mm_clone(parent_mm) as usize,
+    }
+}
+
+/// 获取当前执行上下文对应的地址空间指针
+///
+/// 当前阶段仍可能回退到 `init_mm`，后续可平滑切换到真正的 per-process mm。
+pub fn current_mm_ptr() -> *mut crate::mm::Mm {
+    let Some(task_ref) = super::processor::current_task() else {
+        return crate::mm::init_mm_ptr();
+    };
+
+    let pid = {
+        let task = task_ref.lock();
+        task.pid
+    };
+
+    let Some(process_ref) = find_process_by_pid(pid) else {
+        return crate::mm::init_mm_ptr();
+    };
+
+    let mm_ptr = {
+        let process = process_ref.lock();
+        process.mm as *mut crate::mm::Mm
+    };
+
+    if mm_ptr.is_null() {
+        crate::mm::init_mm_ptr()
+    } else {
+        mm_ptr
+    }
 }
 
 /// 根据 PID 查找任务
@@ -286,14 +333,20 @@ fn reap_orphan_zombie_process(pid: ProcessId) {
         return;
     }
 
-    let removed_tasks = {
+    let (removed_process, removed_tasks) = {
         let mut manager = TASK_MANAGER.lock();
-        if manager.remove_process_by_pid(pid).is_none() {
+        let Some(removed_process) = manager.remove_process_by_pid(pid) else {
             return;
-        }
-        manager.remove_tasks_by_process(pid)
+        };
+        let removed_tasks = manager.remove_tasks_by_process(pid);
+        (removed_process, removed_tasks)
     };
     fs::drop_process_fds(pid.0);
+    let mm_ptr = {
+        let process = removed_process.lock();
+        process.mm as *mut crate::mm::Mm
+    };
+    unsafe { crate::mm::mm_release(mm_ptr) };
 
     let removed_ready = SCHEDULER.remove_tasks_by_pid(pid);
     crate::kprintln!(
@@ -462,12 +515,18 @@ pub fn reap_observed_child(child_pid: ProcessId) -> Option<(ProcessId, i32)> {
         parent.remove_child(child_pid);
     }
 
-    {
+    let removed_process = {
         let mut manager = TASK_MANAGER.lock();
-        let _ = manager.remove_process_by_pid(child_pid)?;
+        let removed_process = manager.remove_process_by_pid(child_pid)?;
         let _ = manager.remove_tasks_by_process(child_pid);
-    }
+        removed_process
+    };
     fs::drop_process_fds(child_pid.0);
+    let mm_ptr = {
+        let process = removed_process.lock();
+        process.mm as *mut crate::mm::Mm
+    };
+    unsafe { crate::mm::mm_release(mm_ptr) };
 
     let removed_ready = SCHEDULER.remove_tasks_by_pid(child_pid);
 
@@ -544,6 +603,15 @@ pub fn snapshot_observed_child_rusage(child_pid: ProcessId) -> Option<WaitRusage
 
 /// 创建内核线程并添加到调度器
 pub fn spawn_kernel_thread(name: &str, entry: extern "C" fn()) -> Arc<Mutex<Task>> {
+    spawn_kernel_thread_with_mm_mode(name, entry, SpawnMmMode::InheritShared)
+}
+
+/// 创建内核线程并添加到调度器（可指定子进程地址空间继承策略）
+pub fn spawn_kernel_thread_with_mm_mode(
+    name: &str,
+    entry: extern "C" fn(),
+    mm_mode: SpawnMmMode,
+) -> Arc<Mutex<Task>> {
     let (parent_pid, parent_tid) = match super::processor::current_task() {
         Some(task) => {
             let task = task.lock();
@@ -556,11 +624,13 @@ pub fn spawn_kernel_thread(name: &str, entry: extern "C" fn()) -> Arc<Mutex<Task
     let pgid = parent_pid
         .and_then(|ppid| find_process_by_pid(ppid).map(|process| process.lock().pgid))
         .unwrap_or(pid);
+    let inherited_mm = resolve_child_mm(parent_pid, mm_mode);
 
     let task = Task::new_kernel_for_process(name, entry, pid, ppid);
     let task_ref = Arc::new(Mutex::new(task));
 
     let mut process = Process::new_kernel_with_pid(name, pid, pgid, parent_pid, parent_tid);
+    process.mm = inherited_mm;
     process.add_task(task_ref.clone());
     let process_ref = Arc::new(Mutex::new(process));
 
@@ -577,11 +647,12 @@ pub fn spawn_kernel_thread(name: &str, entry: extern "C" fn()) -> Arc<Mutex<Task
     }
 
     crate::kprintln!(
-        "[diag][task] spawn kernel thread: pid={} pgid={} ppid={} name={}",
+        "[diag][task] spawn kernel thread: pid={} pgid={} ppid={} name={} mm_mode={:?}",
         pid.0,
         pgid.0,
         ppid.0,
-        name
+        name,
+        mm_mode
     );
 
     // 添加到就绪队列

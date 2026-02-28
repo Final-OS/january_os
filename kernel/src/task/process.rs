@@ -23,6 +23,7 @@ pub enum ProcessStatus {
 pub struct Process {
     pub pid: ProcessId,
     pub pgid: ProcessId,
+    pub mm: usize,
     pub is_clone_child: bool,
     pub name: String,
     pub last_exec_path: String,
@@ -57,6 +58,7 @@ impl Process {
         Self {
             pid,
             pgid,
+            mm: crate::mm::init_mm_ptr() as usize,
             is_clone_child: false,
             name: String::from(name),
             last_exec_path: String::from(name),

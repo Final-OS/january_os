@@ -150,8 +150,18 @@ fn read_cr3_phys() -> u64 {
 }
 
 #[inline]
+fn current_mm_pgd() -> u64 {
+    let mm_ptr = crate::task::current_mm_ptr();
+    if mm_ptr.is_null() {
+        read_cr3_phys()
+    } else {
+        unsafe { (*mm_ptr).pgd }
+    }
+}
+
+#[inline]
 fn current_page_table_manager() -> mm::PageTableManager {
-    let pml4_phys = read_cr3_phys();
+    let pml4_phys = current_mm_pgd();
     unsafe { mm::PageTableManager::new(pml4_phys, mm::DIRECT_MAP_OFFSET) }
 }
 

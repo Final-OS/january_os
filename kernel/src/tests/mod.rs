@@ -5,6 +5,7 @@
 mod task;
 mod libs;
 mod mm;
+mod smp;
 
 use crate::kprintln;
 use alloc::vec::Vec;
@@ -31,11 +32,17 @@ pub fn run(name: &str) {
             kprintln!("[test] dispatch module=mm filter={:?}", filter);
             mm::run_with_filter(filter);
         }
+        Some("smp") => {
+            let filter = parts.get(1).copied();
+            kprintln!("[test] dispatch module=smp filter={:?}", filter);
+            smp::run_with_filter(filter);
+        }
         Some("all") => {
-            kprintln!("[test] dispatch module=all (task+libs+mm)");
+            kprintln!("[test] dispatch module=all (task+libs+mm+smp)");
             task::run();
             libs::run();
             mm::run();
+            smp::run();
         }
         Some("help") | _ => {
             kprintln!("[test] dispatch module=help");
@@ -49,6 +56,8 @@ pub fn run(name: &str) {
             kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once");
             kprintln!("  mm [name]      - Memory management tests");
             kprintln!("                   Available: swiotlb, slub, buddy, pcp, mmap");
+            kprintln!("  smp [name]     - SMP/IPI tests");
+            kprintln!("                   Available: topology, cpu_id, ipi, irq_route, all");
             kprintln!("  timer          - Timer tick test");
             kprintln!("  all            - Run all tests");
         }

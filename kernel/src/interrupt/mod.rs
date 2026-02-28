@@ -30,7 +30,7 @@ pub mod arch;
 pub const TIMER_TICK_HZ: u64 = 100;
 
 // Re-export common types and functions from arch
-pub use arch::{init, init_ap, init_bsp, initialized, InterruptInitInfo};
+pub use arch::{init, init_ap, init_bsp, initialized, InterruptInitInfo, IrqRouteOverride};
 
 // Re-export arch modules
 pub use arch::{apic, gdt, handlers, idt, tsc};
@@ -57,7 +57,9 @@ pub use apic::{
     init_apic_timer,
     init_ioapic,
     init_local_apic,
+    IoApicIrqRoute,
     ioapic_mask_irq,
+    ioapic_read_irq_route,
     ioapic_set_irq,
     ioapic_unmask_irq,
     local_apic_eoi,
@@ -88,7 +90,7 @@ pub use apic::{
 
 pub use tsc::{calibrate_tsc, rdtsc, rdtscp, tsc_frequency};
 
-pub use handlers::{set_timer_debug, timer_ticks};
+pub use handlers::{set_timer_debug, timer_debug_heartbeats, timer_ticks};
 
 // 从 drivers::input 重新导出键盘接口
 pub use crate::drivers::input::{

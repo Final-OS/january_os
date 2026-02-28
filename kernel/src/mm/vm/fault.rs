@@ -116,6 +116,12 @@ pub struct FaultContext {
     pub vma_end: u64,
     /// VMA 标志
     pub vma_flags: VmFlags,
+    /// 文件偏移（页单位）
+    pub vma_pgoff: u64,
+    /// 文件数据基址（最小静态文件后端）
+    pub vma_file: *mut (),
+    /// 文件数据长度（字节，编码在指针宽度中）
+    pub vma_private_data: *mut (),
     /// 直接映射偏移
     pub direct_map_offset: u64,
 }
@@ -129,6 +135,9 @@ impl FaultContext {
             vma_start: 0,
             vma_end: 0,
             vma_flags: VmFlags::empty(),
+            vma_pgoff: 0,
+            vma_file: core::ptr::null_mut(),
+            vma_private_data: core::ptr::null_mut(),
             direct_map_offset: direct_map,
         }
     }
@@ -183,6 +192,9 @@ pub fn handle_page_fault(ctx: &mut FaultContext) -> FaultResult {
         ctx.vma_start = vma.vm_start;
         ctx.vma_end = vma.vm_end;
         ctx.vma_flags = vma.vm_flags;
+        ctx.vma_pgoff = vma.vm_pgoff;
+        ctx.vma_file = vma.vm_file;
+        ctx.vma_private_data = vma.vm_private_data;
 
         // 4. 检查权限
         if !check_access_permissions(&vma.vm_flags, &error) {
@@ -305,6 +317,55 @@ fn map_zero_page(ctx: &FaultContext, mark_anon: bool) -> FaultResult {
 /// 处理文件映射页错误
 fn handle_file_fault(ctx: &FaultContext) -> FaultResult {
     let address = ctx.address & !(PAGE_SIZE - 1);
+
+    if !ctx.vma_file.is_null() {
+        let file_len = ctx.vma_private_data as usize;
+        if file_len == 0 {
+            return FaultResult::Sigbus;
+        }
+
+        let page_in_vma = match address.checked_sub(ctx.vma_start) {
+            Some(delta) => delta / PAGE_SIZE,
+            None => return FaultResult::Sigbus,
+        };
+        let file_offset = match ctx
+            .vma_pgoff
+            .checked_add(page_in_vma)
+            .and_then(|p| p.checked_mul(PAGE_SIZE))
+            .map(|off| off as usize)
+        {
+            Some(off) => off,
+            None => return FaultResult::Sigbus,
+        };
+
+        if file_offset >= file_len {
+            return FaultResult::Sigbus;
+        }
+
+        let page = match alloc_page(GfpFlags::new(GfpFlags::USER | GfpFlags::ZERO)) {
+            Some(p) => p,
+            None => return FaultResult::Oom,
+        };
+        page.set_flag(PageFlags::UPTODATE);
+
+        let phys = page_to_pfn(page) * PAGE_SIZE;
+        let copy_len = core::cmp::min(file_len.saturating_sub(file_offset), PAGE_SIZE as usize);
+        unsafe {
+            let src = (ctx.vma_file as *const u8).add(file_offset);
+            let dst = (ctx.direct_map_offset + phys) as *mut u8;
+            core::ptr::copy_nonoverlapping(src, dst, copy_len);
+
+            let mut pt_mgr = PageTableManager::new((*ctx.mm).pgd, ctx.direct_map_offset);
+            if !pt_mgr.map_page(address, phys, ctx.vma_flags.to_user_pte_flags()) {
+                free_page(page);
+                return FaultResult::Oom;
+            }
+        }
+
+        page.inc_mapcount();
+        FAULT_STATS.minor_faults.fetch_add(1, Ordering::Relaxed);
+        return FaultResult::Retry;
+    }
 
     // 过渡实现：若当前进程记录了该虚拟页的 exec 映射，优先复用其物理页重建 PTE。
     // 这可以覆盖“已知文件后备页”的缺页场景；完整的 VFS/page cache 路径后续再接入。

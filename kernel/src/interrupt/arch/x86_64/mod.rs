@@ -18,6 +18,14 @@ use idt::{IRQ_MOUSE, IRQ_COM1};
 /// 中断子系统是否已初始化
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy)]
+pub struct IrqRouteOverride {
+    pub source: u8,
+    pub gsi: u32,
+    pub level_triggered: bool,
+    pub active_low: bool,
+}
+
 /// 中断子系统初始化信息
 #[derive(Debug, Clone)]
 pub struct InterruptInitInfo {
@@ -29,8 +37,54 @@ pub struct InterruptInitInfo {
     pub ioapic_addr: u64,
     /// I/O APIC GSI 基址
     pub ioapic_gsi_base: u32,
+    /// MADT Interrupt Source Override 条目数量
+    pub irq_override_count: usize,
+    /// MADT Interrupt Source Override 列表（仅 ISA IRQ）
+    pub irq_overrides: [IrqRouteOverride; 16],
     /// 直接映射区基地址 (用于计算 IST 栈虚拟地址)
     pub direct_map_base: u64,
+}
+
+fn resolve_isa_irq_route(info: &InterruptInitInfo, isa_irq: u8) -> Option<(u8, bool, bool)> {
+    for idx in 0..info.irq_override_count {
+        let ov = info.irq_overrides[idx];
+        if ov.source != isa_irq {
+            continue;
+        }
+
+        if ov.gsi > u8::MAX as u32 {
+            crate::warn!(
+                "SMP/IOAPIC: ignore IRQ override source={} gsi={} (out of range)",
+                isa_irq,
+                ov.gsi
+            );
+            return None;
+        }
+
+        return Some((ov.gsi as u8, ov.level_triggered, ov.active_low));
+    }
+
+    // ISA 默认：IRQx -> GSI x, edge/high.
+    Some((isa_irq, false, false))
+}
+
+fn setup_isa_irq(
+    info: &InterruptInitInfo,
+    isa_irq: u8,
+    vector: u8,
+    name: &str,
+) {
+    let Some((gsi, level_triggered, active_low)) = resolve_isa_irq_route(info, isa_irq) else {
+        crate::warn!(
+            "SMP/IOAPIC: skip {} route due to invalid override source={}",
+            name,
+            isa_irq
+        );
+        return;
+    };
+
+    ioapic_set_irq(gsi, vector, 0, level_triggered, active_low);
+    ioapic_unmask_irq(gsi);
 }
 
 /// 初始化中断子系统 (BSP)
@@ -71,19 +125,11 @@ pub unsafe fn init_bsp(info: &InterruptInitInfo) -> Result<(), &'static str> {
     // 4. 初始化 I/O APIC
     if info.ioapic_addr != 0 {
         init_ioapic(info.ioapic_addr, info.ioapic_gsi_base);
-        
-        // 设置键盘中断 (IRQ 1 -> vector 0x21)
-        // 键盘是边沿触发、高电平有效
-        ioapic_set_irq(1, IRQ_KEYBOARD, 0, false, false);
-        ioapic_unmask_irq(1);
 
-        // 设置鼠标中断 (IRQ 12 -> vector 0x2C)
-        ioapic_set_irq(12, IRQ_MOUSE, 0, false, false);
-        ioapic_unmask_irq(12);
-        
-        // 设置串口中断 (IRQ 4 -> vector 0x24)
-        ioapic_set_irq(4, IRQ_COM1, 0, false, false);
-        ioapic_unmask_irq(4);
+        // ISA 中断路由：优先按 MADT Interrupt Source Override，未命中则回退默认 edge/high。
+        setup_isa_irq(info, 1, IRQ_KEYBOARD, "keyboard");
+        setup_isa_irq(info, 12, IRQ_MOUSE, "mouse");
+        setup_isa_irq(info, 4, IRQ_COM1, "serial");
     }
 
     INITIALIZED.store(true, Ordering::SeqCst);

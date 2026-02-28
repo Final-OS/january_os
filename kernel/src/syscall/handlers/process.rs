@@ -550,8 +550,12 @@ fn parse_signal(raw_sig: usize) -> Result<i32, i32> {
     Ok(sig)
 }
 
-fn spawn_minimal_child(name: &str, is_clone_child: bool) -> Result<task::ProcessId, i32> {
-    let child_task = task::spawn_kernel_thread(name, syscall_child_stub);
+fn spawn_minimal_child(
+    name: &str,
+    is_clone_child: bool,
+    mm_mode: task::SpawnMmMode,
+) -> Result<task::ProcessId, i32> {
+    let child_task = task::spawn_kernel_thread_with_mm_mode(name, syscall_child_stub, mm_mode);
     let child_pid = child_task.lock().pid;
 
     let Some(child_process) = task::find_process_by_pid(child_pid) else {
@@ -669,7 +673,13 @@ fn clone_impl(
         "fork_child"
     };
 
-    let child_pid = spawn_minimal_child(child_name, is_clone_child)?;
+    let mm_mode = if (flags & CLONE_VM) != 0 {
+        task::SpawnMmMode::InheritShared
+    } else {
+        task::SpawnMmMode::InheritPrivate
+    };
+
+    let child_pid = spawn_minimal_child(child_name, is_clone_child, mm_mode)?;
 
     if (flags & CLONE_VFORK) != 0 {
         wait_for_vfork_release(child_pid);

@@ -424,39 +424,3 @@ pub fn zones_initialized() -> bool {
 pub fn mark_zones_initialized() {
     ZONES_INITIALIZED.store(true, Ordering::Release);
 }
-
-// ============================================================================
-// IOMMU 相关 (未来实现)
-// ============================================================================
-//
-// IOMMU (I/O Memory Management Unit) 允许设备通过虚拟地址访问内存，
-// 解决以下问题：
-// 
-// 1. 32位设备访问高地址内存
-//    - 无 IOMMU: 必须分配 ZONE_DMA32 内存
-//    - 有 IOMMU: 可分配 ZONE_NORMAL，通过 IOMMU 映射
-//
-// 2. 设备隔离和安全
-//    - 防止恶意设备访问任意内存
-//    - 每个设备有独立的 IOMMU 页表
-//
-// 3. DMA 地址连续性
-//    - 物理不连续的页可映射为设备看到的连续 DMA 地址
-//
-// 相关 API:
-// ```rust
-// /// 分配 DMA 内存（考虑 IOMMU）
-// pub fn dma_alloc_coherent(dev: &Device, size: usize) -> DmaAddr;
-// 
-// /// 映射已有内存为 DMA 地址
-// pub fn dma_map_single(dev: &Device, virt: VirtAddr, size: usize) -> DmaAddr;
-// 
-// /// 解除 DMA 映射
-// pub fn dma_unmap_single(dev: &Device, dma: DmaAddr, size: usize);
-// ```
-//
-// 实现计划:
-// - 检测 IOMMU 硬件 (Intel VT-d / AMD-Vi)
-// - 实现 IOMMU 页表管理
-// - 实现 DMA API
-// - 与设备驱动集成

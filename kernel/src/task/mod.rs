@@ -11,6 +11,7 @@ pub mod task;
 
 pub use id::{ProcessId, TaskId};
 pub use manager::find_process_by_pid;
+pub use manager::current_mm_ptr;
 pub use exec::{
     build_elf_load_plan,
     clear_exec_image_provider,
@@ -29,7 +30,9 @@ pub use manager::find_task_by_pid;
 pub use manager::lookup_current_exec_mapping;
 pub use manager::record_current_exec_request;
 pub use manager::set_current_exec_mappings;
+pub use manager::spawn_kernel_thread_with_mm_mode;
 pub use manager::spawn_kernel_thread;
+pub use manager::SpawnMmMode;
 pub use manager::WaitChildConsumeEvent;
 pub use manager::WaitChildOptions;
 pub use manager::WaitChildObserveResult;

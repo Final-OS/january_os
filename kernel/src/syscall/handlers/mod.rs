@@ -6,7 +6,7 @@ mod memory;
 mod process;
 
 pub(crate) use common::sys_ni;
-pub(crate) use file::{sys_close, sys_open, sys_read};
+pub(crate) use file::{sys_close, sys_open, sys_read, sys_write};
 pub(crate) use memory::{sys_mmap, sys_munmap};
 pub(crate) use process::{
     sys_clone,

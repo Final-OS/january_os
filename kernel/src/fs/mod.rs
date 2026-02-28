@@ -110,6 +110,44 @@ impl FsState {
         Ok(())
     }
 
+    fn read_at_for_pid(
+        &self,
+        pid: usize,
+        fd: i32,
+        offset: usize,
+        out: &mut [u8],
+    ) -> Result<usize, i32> {
+        let Some(table) = self.open_files.get(&pid) else {
+            return Err(EBADF);
+        };
+        let Some(open_file) = table.get(&fd) else {
+            return Err(EBADF);
+        };
+
+        if out.is_empty() {
+            return Ok(0);
+        }
+
+        if offset >= open_file.data.len() {
+            return Ok(0);
+        }
+
+        let remain = open_file.data.len().saturating_sub(offset);
+        let read_len = remain.min(out.len());
+        out[..read_len].copy_from_slice(&open_file.data[offset..offset.saturating_add(read_len)]);
+        Ok(read_len)
+    }
+
+    fn mmap_file_for_pid(&self, pid: usize, fd: i32) -> Result<&'static [u8], i32> {
+        let Some(table) = self.open_files.get(&pid) else {
+            return Err(EBADF);
+        };
+        let Some(open_file) = table.get(&fd) else {
+            return Err(EBADF);
+        };
+        Ok(open_file.data)
+    }
+
     fn drop_process_fds(&mut self, pid: usize) {
         self.open_files.remove(&pid);
         self.next_fd.remove(&pid);
@@ -140,6 +178,14 @@ pub fn read_for_pid(pid: usize, fd: i32, out: &mut [u8]) -> Result<usize, i32> {
 
 pub fn close_for_pid(pid: usize, fd: i32) -> Result<(), i32> {
     FS_STATE.lock().close_for_pid(pid, fd)
+}
+
+pub fn read_at_for_pid(pid: usize, fd: i32, offset: usize, out: &mut [u8]) -> Result<usize, i32> {
+    FS_STATE.lock().read_at_for_pid(pid, fd, offset, out)
+}
+
+pub fn mmap_file_for_pid(pid: usize, fd: i32) -> Result<&'static [u8], i32> {
+    FS_STATE.lock().mmap_file_for_pid(pid, fd)
 }
 
 pub fn drop_process_fds(pid: usize) {

@@ -483,6 +483,15 @@ struct IoApicState {
 
 static IO_APIC: OnceCell<IoApicState> = OnceCell::new();
 
+#[derive(Debug, Clone, Copy)]
+pub struct IoApicIrqRoute {
+    pub vector: u8,
+    pub dest: u8,
+    pub masked: bool,
+    pub level_triggered: bool,
+    pub active_low: bool,
+}
+
 pub fn init_ioapic(addr: u64, gsi_base: u32) {
      let addr_virt = addr + crate::config::DIRECT_MAP_OFFSET;
      let _ = IO_APIC.set(IoApicState {
@@ -553,4 +562,19 @@ pub fn ioapic_mask_irq(irq: u8) {
         let low = ioapic_read(reg);
         ioapic_write(reg, low | (1 << 16));
     }
+}
+
+pub fn ioapic_read_irq_route(irq: u8) -> Option<IoApicIrqRoute> {
+    IO_APIC.get()?;
+
+    let reg = IOREDTBL + 2 * (irq as u32);
+    let (low, high) = unsafe { (ioapic_read(reg), ioapic_read(reg + 1)) };
+
+    Some(IoApicIrqRoute {
+        vector: (low & 0xff) as u8,
+        dest: ((high >> 24) & 0xff) as u8,
+        masked: (low & (1 << 16)) != 0,
+        level_triggered: (low & (1 << 15)) != 0,
+        active_low: (low & (1 << 13)) != 0,
+    })
 }

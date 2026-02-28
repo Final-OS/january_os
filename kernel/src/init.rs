@@ -392,11 +392,33 @@ fn init_acpi(info: &BootInfo) -> acpi::AcpiConfig {
 fn init_interrupts(acpi_config: &acpi::AcpiConfig, kernel_stack_top: u64, direct_map: u64) {
     info!("Initializing Interrupt Controller...");
 
+    let mut irq_overrides = [interrupt::IrqRouteOverride {
+        source: 0,
+        gsi: 0,
+        level_triggered: false,
+        active_low: false,
+    }; 16];
+    let irq_override_count = core::cmp::min(acpi_config.irq_override_count, irq_overrides.len());
+    for (dst, src) in irq_overrides
+        .iter_mut()
+        .zip(acpi_config.irq_overrides.iter())
+        .take(irq_override_count)
+    {
+        *dst = interrupt::IrqRouteOverride {
+            source: src.source,
+            gsi: src.gsi,
+            level_triggered: src.level_triggered,
+            active_low: src.active_low,
+        };
+    }
+
     let int_info = interrupt::InterruptInitInfo {
         kernel_stack_top,
         local_apic_addr: acpi_config.local_apic_addr,
         ioapic_addr: acpi_config.ioapic_addr,
         ioapic_gsi_base: acpi_config.ioapic_gsi_base,
+        irq_override_count,
+        irq_overrides,
         direct_map_base: direct_map,
     };
 

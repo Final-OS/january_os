@@ -39,6 +39,23 @@ fn find_reserved_region_covering(addr: u64) -> Option<(u64, u64)> {
 }
 
 pub(super) fn run() {
+    task_step("regression: verify syscall write dispatch wiring");
+    let write_ret = crate::syscall::dispatch(1, 1, 0, 1, 0, 0, 0);
+    let write_errno = (-(write_ret as isize)) as i32;
+    kprintln!(
+        "[test/task][regression][syscall-write] ret={:#x} errno={}",
+        write_ret,
+        write_errno
+    );
+    if write_errno != crate::syscall::EFAULT {
+        error!(
+            "task: regression FAIL (sys_write dispatch mismatch, got errno={}, expect={})",
+            write_errno,
+            crate::syscall::EFAULT
+        );
+        return;
+    }
+
     task_step("regression: verify kernel reserve covers bss symbols");
 
     let kernel_start = core::ptr::addr_of!(__kernel_start) as u64;

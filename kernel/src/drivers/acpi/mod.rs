@@ -443,6 +443,8 @@ pub struct AcpiConfig {
     pub local_apic_addr: u64,
     pub ioapic_addr: u64,
     pub ioapic_gsi_base: u32,
+    pub irq_override_count: usize,
+    pub irq_overrides: [IrqOverrideInfo; 16],
     pub has_iommu: bool,
 }
 
@@ -453,6 +455,13 @@ impl Default for AcpiConfig {
             local_apic_addr: 0xFEE00000, // 默认 x86 Local APIC 地址
             ioapic_addr: 0,
             ioapic_gsi_base: 0,
+            irq_override_count: 0,
+            irq_overrides: [IrqOverrideInfo {
+                source: 0,
+                gsi: 0,
+                level_triggered: false,
+                active_low: false,
+            }; 16],
             has_iommu: false,
         }
     }
@@ -477,6 +486,8 @@ pub fn detect_system_config() -> AcpiConfig {
             config.ioapic_addr = madt_info.ioapics[0].address as u64;
             config.ioapic_gsi_base = madt_info.ioapics[0].gsi_base;
         }
+        config.irq_override_count = madt_info.irq_override_count;
+        config.irq_overrides = madt_info.irq_overrides;
     }
 
     // 检测 DMAR/IVRS (IOMMU)

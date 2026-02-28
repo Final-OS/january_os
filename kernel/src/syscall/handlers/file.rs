@@ -6,9 +6,11 @@ use crate::task;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::fmt::Write;
 
 const PATH_MAX: usize = 4096;
 const READ_IO_MAX: usize = 64 * 1024;
+const WRITE_IO_MAX: usize = 64 * 1024;
 const O_ACCMODE: u32 = 0o3;
 const O_RDONLY: u32 = 0;
 
@@ -141,4 +143,38 @@ pub(crate) fn sys_close(args: &SyscallArgs) -> SyscallRet {
         Ok(()) => ok(0),
         Err(errno) => err(errno),
     }
+}
+
+pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet {
+    let fd = args.arg0 as i32;
+    let buf_ptr = args.arg1;
+    let count = args.arg2;
+
+    if fd != 1 && fd != 2 {
+        return err(EBADF);
+    }
+    if count == 0 {
+        return ok(0);
+    }
+    if buf_ptr == 0 {
+        return err(EFAULT);
+    }
+    if let Err(errno) = validate_user_range(buf_ptr, count) {
+        return err(errno);
+    }
+
+    let write_len = count.min(WRITE_IO_MAX);
+    let mut tmp = vec![0u8; write_len];
+    unsafe {
+        core::ptr::copy_nonoverlapping(buf_ptr as *const u8, tmp.as_mut_ptr(), write_len);
+    }
+
+    {
+        let mut console = crate::drivers::tty::console::CONSOLE.lock();
+        for byte in tmp {
+            let _ = console.write_char(byte as char);
+        }
+    }
+
+    ok(write_len)
 }

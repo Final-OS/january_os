@@ -8,6 +8,7 @@ use crate::syscall::{SyscallArch, SyscallArgs, SyscallDef, SyscallRet};
 pub use table::SYSCALL_TABLE;
 
 pub const NR_READ: usize = 0;
+pub const NR_WRITE: usize = 1;
 pub const NR_OPEN: usize = 2;
 pub const NR_CLOSE: usize = 3;
 pub const NR_MMAP: usize = 9;
@@ -38,6 +39,7 @@ impl SyscallArch for X86_64SyscallArch {
     fn dispatch(&self, args: &SyscallArgs) -> SyscallRet {
         match args.nr {
             NR_READ => handlers::sys_read(args),
+            NR_WRITE => handlers::sys_write(args),
             NR_OPEN => handlers::sys_open(args),
             NR_CLOSE => handlers::sys_close(args),
             NR_MMAP => handlers::sys_mmap(args),

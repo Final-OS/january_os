@@ -13,6 +13,7 @@ use super::layout::{
     USER_STACK_SIZE,
     USER_STACK_TOP,
 };
+use alloc::boxed::Box;
 use crate::libs::mptree::MapleTree;
 use crate::sync::IrqSpinLock;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -189,6 +190,10 @@ pub struct Vma {
     pub vm_flags: VmFlags,
     /// 文件偏移
     pub vm_pgoff: u64,
+    /// 文件数据基址（最小静态文件后端）
+    pub vm_file: *mut (),
+    /// 文件数据长度（字节，编码在指针宽度中）
+    pub vm_private_data: *mut (),
 }
 
 impl Vma {
@@ -199,6 +204,8 @@ impl Vma {
             vm_end: end as u64,
             vm_flags: info.flags,
             vm_pgoff: info.pgoff,
+            vm_file: info.file,
+            vm_private_data: info.private_data,
         }
     }
 
@@ -681,6 +688,101 @@ static INIT_MM: crate::sync::OnceCell<IrqSpinLock<Mm>> = crate::sync::OnceCell::
 /// 获取内核 mm (加锁)
 pub fn get_init_mm() -> crate::sync::IrqSpinLockGuard<'static, Mm> {
     INIT_MM.get_or_init(|| IrqSpinLock::new(Mm::uninit())).lock()
+}
+
+/// 获取内核初始化地址空间的裸指针
+///
+/// 该指针在整个内核生命周期内稳定有效。
+/// 调用方必须遵守 Mm 内部锁约束。
+pub fn init_mm_ptr() -> *mut Mm {
+    let mut mm = get_init_mm();
+    &mut *mm as *mut Mm
+}
+
+/// 引用一个现有地址空间（用于 CLONE_VM 等共享语义）。
+pub fn mm_retain(mm: *mut Mm) -> *mut Mm {
+    let init_ptr = init_mm_ptr();
+    let target = if mm.is_null() { init_ptr } else { mm };
+
+    if target == init_ptr {
+        return target;
+    }
+
+    unsafe {
+        (*target).mm_count.fetch_add(1, Ordering::AcqRel);
+        (*target).mm_users.fetch_add(1, Ordering::AcqRel);
+    }
+    target
+}
+
+/// 克隆地址空间元数据（VMA/布局统计），用于 fork 私有 mm。
+///
+/// 当前阶段页表 `pgd` 仍复用父进程值；后续可在此接入真正页表复制。
+pub fn mm_clone(mm: *mut Mm) -> *mut Mm {
+    let init_ptr = init_mm_ptr();
+    let src_ptr = if mm.is_null() { init_ptr } else { mm };
+    let src = unsafe { &mut *src_ptr };
+    let _src_guard = src.lock.lock();
+
+    let mut dst = Mm::uninit();
+    dst.init(src.pgd);
+
+    dst.start_code = src.start_code;
+    dst.end_code = src.end_code;
+    dst.start_data = src.start_data;
+    dst.end_data = src.end_data;
+    dst.start_brk = src.start_brk;
+    dst.brk = src.brk;
+    dst.start_stack = src.start_stack;
+    dst.arg_start = src.arg_start;
+    dst.arg_end = src.arg_end;
+    dst.env_start = src.env_start;
+    dst.env_end = src.env_end;
+    dst.mmap_base = src.mmap_base;
+    dst.mmap_legacy_base = src.mmap_legacy_base;
+    dst.total_vm = src.total_vm;
+    dst.locked_vm = src.locked_vm;
+    dst.shared_vm = src.shared_vm;
+    dst.exec_vm = src.exec_vm;
+    dst.stack_vm = src.stack_vm;
+    dst.data_vm = src.data_vm;
+
+    let mut inserted = 0u32;
+    for (start, end, info) in src.vma_tree.iter() {
+        if dst.vma_tree.insert(start, end, info.clone()).is_ok() {
+            inserted = inserted.saturating_add(1);
+        }
+    }
+    dst.vma_count = inserted;
+
+    Box::into_raw(Box::new(dst))
+}
+
+/// 释放地址空间引用；引用计数归零时回收 mm 对象。
+///
+/// `init_mm` 为全局常驻对象，不参与释放。
+pub unsafe fn mm_release(mm: *mut Mm) {
+    if mm.is_null() {
+        return;
+    }
+
+    let init_ptr = init_mm_ptr();
+    if mm == init_ptr {
+        return;
+    }
+
+    let prev = (*mm).mm_count.fetch_sub(1, Ordering::AcqRel);
+    let _ = (*mm).mm_users.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
+        if v > 0 {
+            Some(v - 1)
+        } else {
+            Some(0)
+        }
+    });
+
+    if prev <= 1 {
+        drop(Box::from_raw(mm));
+    }
 }
 
 /// 初始化 VMA 子系统

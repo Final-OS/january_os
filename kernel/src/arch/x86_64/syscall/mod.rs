@@ -7,6 +7,7 @@ const IA32_EFER: u32 = 0xC000_0080;
 const IA32_STAR: u32 = 0xC000_0081;
 const IA32_LSTAR: u32 = 0xC000_0082;
 const IA32_FMASK: u32 = 0xC000_0084;
+const IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
 const EFER_SCE: u64 = 1 << 0;
 const EFER_NXE: u64 = 1 << 11;
 
@@ -24,16 +25,33 @@ struct RawSyscallFrame {
     arg5: usize,
 }
 
-/// 每 CPU 的 syscall 内核栈槽位（按 APIC ID 索引）。
+/// 每 CPU 的 syscall 上下文槽位数量（按 APIC ID 索引）。
 const SYSCALL_RSP_SLOT_COUNT: usize = if crate::config::MAX_APIC_IDS > 0 {
     crate::config::MAX_APIC_IDS
 } else {
     1
 };
 
+#[repr(C)]
+struct SyscallCpuContext {
+    /// 当前 CPU 进入用户态前武装的内核栈顶
+    kernel_rsp: AtomicU64,
+    /// 入口切栈前暂存用户态 RSP（仅汇编入口使用）
+    user_rsp_scratch: AtomicU64,
+}
+
+impl SyscallCpuContext {
+    const fn new() -> Self {
+        Self {
+            kernel_rsp: AtomicU64::new(0),
+            user_rsp_scratch: AtomicU64::new(0),
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
-static SYSCALL_KERNEL_RSP_SLOTS: [AtomicU64; SYSCALL_RSP_SLOT_COUNT] =
-    [const { AtomicU64::new(0) }; SYSCALL_RSP_SLOT_COUNT];
+static SYSCALL_CPU_CONTEXTS: [SyscallCpuContext; SYSCALL_RSP_SLOT_COUNT] =
+    [const { SyscallCpuContext::new() }; SYSCALL_RSP_SLOT_COUNT];
 
 static SYSCALL_DIAG_SEQ: AtomicU64 = AtomicU64::new(0);
 static SYSCALL_INIT_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -71,13 +89,23 @@ unsafe fn wrmsr(msr: u32, value: u64) {
 #[inline]
 fn read_syscall_kernel_rsp() -> u64 {
     let idx = syscall_slot_index_current_cpu();
-    SYSCALL_KERNEL_RSP_SLOTS[idx].load(Ordering::Acquire)
+    SYSCALL_CPU_CONTEXTS[idx].kernel_rsp.load(Ordering::Acquire)
 }
 
 #[inline]
 pub fn set_syscall_kernel_rsp(rsp: u64) {
     let idx = syscall_slot_index_current_cpu();
-    SYSCALL_KERNEL_RSP_SLOTS[idx].store(rsp, Ordering::Release);
+    SYSCALL_CPU_CONTEXTS[idx].kernel_rsp.store(rsp, Ordering::Release);
+    SYSCALL_CPU_CONTEXTS[idx]
+        .user_rsp_scratch
+        .store(0, Ordering::Release);
+
+    // syscall 入口通过 swapgs + gs:[offset] 直接读取当前 CPU 上下文，
+    // 避免在用户栈上执行任何 push/call。
+    let ctx_ptr = core::ptr::addr_of!(SYSCALL_CPU_CONTEXTS[idx]) as u64;
+    unsafe {
+        wrmsr(IA32_KERNEL_GS_BASE, ctx_ptr);
+    }
 }
 
 #[inline]
@@ -91,11 +119,6 @@ fn syscall_slot_index_current_cpu() -> usize {
     } else {
         0
     }
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn syscall_kernel_rsp_slot_for_current_cpu() -> u64 {
-    read_syscall_kernel_rsp()
 }
 
 #[unsafe(no_mangle)]
@@ -215,8 +238,17 @@ global_asm!(
 syscall_entry:
     cld
 
-    // 在切换到内核栈之前，先把用户态关键信息保存在用户栈：
-    // [r11(flags), rcx(rip), r15, r14, r13, r12, rbp, rbx, r9, r8, r10, rdx, rsi, rdi, rax(nr)]
+    // 立即切换到当前 CPU 的内核 GS 基址，并在不触碰用户栈的前提下切栈。
+    // gs:[0] = kernel_rsp, gs:[8] = user_rsp_scratch
+    swapgs
+    mov qword ptr gs:[8], rsp
+    mov rsp, qword ptr gs:[0]
+    test rsp, rsp
+    jnz 1f
+    ud2
+1:
+    // 在内核栈保存用户态关键信息：
+    // [user_rsp, r11(flags), rcx(rip), r15, r14, r13, r12, rbp, rbx, r9, r8, r10, rdx, rsi, rdi, rax(nr)]
     push rax
     push rdi
     push rsi
@@ -232,71 +264,62 @@ syscall_entry:
     push r15
     push rcx
     push r11
+    push qword ptr gs:[8]
 
-    // r12: 用户保存帧基址
-    mov r12, rsp
-
-    // 切到当前 CPU 预先武装的内核栈（由 enter_user_mode_iret 写入）
-    // 这里仍在用户栈上，先按 SysV 对齐后调用 Rust 辅助函数读取 per-CPU 槽位。
-    and rsp, -16
-    call syscall_kernel_rsp_slot_for_current_cpu
-    mov rsp, rax
-    test rsp, rsp
-    jnz 1f
-    // 兜底：内核栈尚未武装时，继续使用当前栈，避免直接崩溃。
-    mov rsp, r12
-1:
-    // r13: 保留用户保存帧基址
-    mov r13, r12
+    // r13: 用户保存帧基址（位于当前内核栈）
+    mov r13, rsp
 
     // SysV 调用对齐：call 前 rsp 16-byte 对齐
     and rsp, -16
     sub rsp, 64
 
     // 组装 RawSyscallFrame
-    mov rax, [r13 + 112]
+    mov rax, [r13 + 120]
     mov [rsp + 0], rax
-    mov rax, [r13 + 104]
+    mov rax, [r13 + 112]
     mov [rsp + 8], rax
-    mov rax, [r13 + 96]
+    mov rax, [r13 + 104]
     mov [rsp + 16], rax
-    mov rax, [r13 + 88]
+    mov rax, [r13 + 96]
     mov [rsp + 24], rax
-    mov rax, [r13 + 80]
+    mov rax, [r13 + 88]
     mov [rsp + 32], rax
-    mov rax, [r13 + 72]
+    mov rax, [r13 + 80]
     mov [rsp + 40], rax
-    mov rax, [r13 + 64]
+    mov rax, [r13 + 72]
     mov [rsp + 48], rax
 
     lea rdi, [rsp]
     call syscall_dispatch_from_asm
 
     // 恢复用户寄存器（rax 保留 syscall 返回值）
-    mov r15, [r13 + 16]
-    mov r14, [r13 + 24]
-    mov r12, [r13 + 40]
-    mov rbp, [r13 + 48]
-    mov rbx, [r13 + 56]
-    mov r9,  [r13 + 64]
-    mov r8,  [r13 + 72]
-    mov r10, [r13 + 80]
-    mov rdx, [r13 + 88]
-    mov rsi, [r13 + 96]
-    mov rdi, [r13 + 104]
+    mov r15, [r13 + 24]
+    mov r14, [r13 + 32]
+    mov r12, [r13 + 48]
+    mov rbp, [r13 + 56]
+    mov rbx, [r13 + 64]
+    mov r9,  [r13 + 72]
+    mov r8,  [r13 + 80]
+    mov r10, [r13 + 88]
+    mov rdx, [r13 + 96]
+    mov rsi, [r13 + 104]
+    mov rdi, [r13 + 112]
 
     // iretq 返回帧：SS, RSP, RFLAGS, CS, RIP
-    mov rcx, [r13 + 8]
-    mov r11, [r13 + 0]
+    mov rcx, [r13 + 16]
+    mov r11, [r13 + 8]
+    mov rdx, [r13 + 0]
 
     push {user_data_sel}
-    push qword ptr [r13 + 120]
+    push rdx
     push r11
     push {user_code_sel}
     push rcx
 
     // r13 最后恢复
-    mov r13, [r13 + 32]
+    mov r13, [r13 + 40]
+    // 恢复用户 GS 基址并保留内核 GS 基址到 IA32_KERNEL_GS_BASE。
+    swapgs
 
     iretq
 "#,

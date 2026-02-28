@@ -189,12 +189,22 @@ pub struct IoApicInfo {
     pub gsi_base: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct IrqOverrideInfo {
+    pub source: u8,
+    pub gsi: u32,
+    pub level_triggered: bool,
+    pub active_low: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct MadtInfo {
     pub cpu_count: usize,
     pub local_apic_address: u64,
     pub ioapic_count: usize,
     pub ioapics: [IoApicInfo; 16], // Limit to 16 IOAPICs
+    pub irq_override_count: usize,
+    pub irq_overrides: [IrqOverrideInfo; 16], // Limit to 16 ISA IRQ overrides
 }
 
 pub fn parse_madt(madt: &Madt) -> MadtInfo {
@@ -203,6 +213,13 @@ pub fn parse_madt(madt: &Madt) -> MadtInfo {
         local_apic_address: madt.local_apic_addr(),
         ioapic_count: 0,
         ioapics: [IoApicInfo { id: 0, address: 0, gsi_base: 0 }; 16],
+        irq_override_count: 0,
+        irq_overrides: [IrqOverrideInfo {
+            source: 0,
+            gsi: 0,
+            level_triggered: false,
+            active_low: false,
+        }; 16],
     };
 
     for entry in madt.entries() {
@@ -222,6 +239,33 @@ pub fn parse_madt(madt: &Madt) -> MadtInfo {
                     info.ioapic_count += 1;
                 }
             },
+            MadtEntry::InterruptSourceOverride(iso) => {
+                if info.irq_override_count < 16 {
+                    // 仅处理 ISA 总线 override（bus=0）。
+                    if iso.bus != 0 {
+                        continue;
+                    }
+
+                    let flags = iso.flags;
+                    let polarity = flags & 0b11;
+                    let trigger = (flags >> 2) & 0b11;
+
+                    // ISA 默认：edge + active high.
+                    // ACPI flags:
+                    // polarity: 0=conform, 1=high, 3=low
+                    // trigger : 0=conform, 1=edge, 3=level
+                    let active_low = matches!(polarity, 0b11);
+                    let level_triggered = matches!(trigger, 0b11);
+
+                    info.irq_overrides[info.irq_override_count] = IrqOverrideInfo {
+                        source: iso.source,
+                        gsi: iso.global_system_interrupt,
+                        level_triggered,
+                        active_low,
+                    };
+                    info.irq_override_count += 1;
+                }
+            }
             _ => {}
         }
     }

@@ -1,8 +1,10 @@
 use alloc::vec::Vec;
 use core::cmp;
 
+use crate::fs;
 use crate::mm;
-use crate::syscall::{E2BIG, EBUSY, EINVAL, ENOMEM, ENOSYS, SyscallArgs, SyscallRet, err, ok};
+use crate::syscall::{E2BIG, EBADF, EBUSY, EINVAL, ENOMEM, ESRCH, SyscallArgs, SyscallRet, err, ok};
+use crate::task;
 
 const MMAP_PROT_ALLOWED: u32 =
     mm::prot_flags::PROT_READ | mm::prot_flags::PROT_WRITE | mm::prot_flags::PROT_EXEC;
@@ -18,6 +20,23 @@ const MMAP_FLAGS_ALLOWED: u32 = mm::mmap_flags::MAP_SHARED
 fn page_align_up_usize(value: usize) -> Result<usize, i32> {
     let page = mm::PAGE_SIZE as usize;
     value.checked_add(page.saturating_sub(1)).map(|v| v & !(page - 1)).ok_or(E2BIG)
+}
+
+#[inline]
+fn current_pid_raw() -> Result<usize, i32> {
+    task::current_pid().map(|pid| pid.0).ok_or(ESRCH)
+}
+
+#[inline]
+fn parse_fd(raw: usize) -> Result<i32, i32> {
+    if raw > i32::MAX as usize {
+        return Err(EBADF);
+    }
+    let fd = raw as i32;
+    if fd < 0 {
+        return Err(EBADF);
+    }
+    Ok(fd)
 }
 
 #[inline]
@@ -48,10 +67,9 @@ fn mmap_select_addr(
     vm_flags: mm::VmFlags,
 ) -> Result<u64, i32> {
     let map_fixed = (flags & mm::mmap_flags::MAP_FIXED) != 0;
-    let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
-    let pt_mgr = unsafe { mm::PageTableManager::new(cr3, mm::DIRECT_MAP_OFFSET) };
-
-    let mut mm_state = mm::get_init_mm();
+    let mm_ptr = task::current_mm_ptr();
+    let mm_state = unsafe { &mut *mm_ptr };
+    let pt_mgr = unsafe { mm::PageTableManager::new(mm_state.pgd, mm::DIRECT_MAP_OFFSET) };
     if map_fixed {
         let start = req_addr as u64;
         if (start & (mm::PAGE_SIZE - 1)) != 0 {
@@ -126,9 +144,8 @@ fn range_unmapped_in_page_table(pt_mgr: &mm::PageTableManager, start: u64, end: 
     true
 }
 
-unsafe fn unmap_and_release_pages(start: u64, end: u64) {
-    let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
-    let pt_mgr = mm::PageTableManager::new(cr3, mm::DIRECT_MAP_OFFSET);
+unsafe fn unmap_and_release_pages(start: u64, end: u64, pgd: u64) {
+    let pt_mgr = mm::PageTableManager::new(pgd, mm::DIRECT_MAP_OFFSET);
 
     let mut cursor = start;
     while cursor < end {
@@ -154,7 +171,7 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
     let length = args.arg1;
     let prot = args.arg2 as u32;
     let flags = args.arg3 as u32;
-    let _fd = args.arg4;
+    let fd_raw = args.arg4;
     let offset = args.arg5 as u64;
 
     if length == 0 {
@@ -173,9 +190,6 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
         return err(EINVAL);
     }
 
-    if (flags & mm::mmap_flags::MAP_ANONYMOUS) == 0 {
-        return err(ENOSYS);
-    }
     if offset != 0 || (offset & (mm::PAGE_SIZE - 1)) != 0 {
         return err(EINVAL);
     }
@@ -200,8 +214,25 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
 
     let mut info = mm::VmaInfo::new(vm_flags);
     info.pgoff = offset / mm::PAGE_SIZE;
+    if (flags & mm::mmap_flags::MAP_ANONYMOUS) == 0 {
+        let pid = match current_pid_raw() {
+            Ok(pid) => pid,
+            Err(errno) => return err(errno),
+        };
+        let fd = match parse_fd(fd_raw) {
+            Ok(fd) => fd,
+            Err(errno) => return err(errno),
+        };
+        let file_data = match fs::mmap_file_for_pid(pid, fd) {
+            Ok(data) => data,
+            Err(errno) => return err(errno),
+        };
+        info.file = file_data.as_ptr() as *mut ();
+        info.private_data = file_data.len() as *mut ();
+    }
 
-    let mut mm_state = mm::get_init_mm();
+    let mm_ptr = task::current_mm_ptr();
+    let mm_state = unsafe { &mut *mm_ptr };
     if mm_state.find_vma_intersection(start, end).is_some() {
         return err(EBUSY);
     }
@@ -236,8 +267,10 @@ pub(crate) fn sys_munmap(args: &SyscallArgs) -> SyscallRet {
     }
 
     let mut unmap_ranges: Vec<(u64, u64)> = Vec::new();
+    let mm_ptr = task::current_mm_ptr();
+    let mm_pgd = unsafe { (*mm_ptr).pgd };
     {
-        let mut mm_state = mm::get_init_mm();
+        let mm_state = unsafe { &mut *mm_ptr };
         while let Some(vma) = mm_state.find_vma_intersection(addr, end) {
             let vma_start = vma.vm_start;
             let vma_end = vma.vm_end;
@@ -261,7 +294,7 @@ pub(crate) fn sys_munmap(args: &SyscallArgs) -> SyscallRet {
 
     for (range_start, range_end) in unmap_ranges.into_iter() {
         unsafe {
-            unmap_and_release_pages(range_start, range_end);
+            unmap_and_release_pages(range_start, range_end, mm_pgd);
         }
     }
 
