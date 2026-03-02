@@ -236,15 +236,34 @@ impl<T> Rcu<T> {
         self.grace_period.fetch_add(1, Ordering::Release);
 
         // 等待所有活跃读者离开
+        let can_schedule = crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some();
+        let start_ticks = crate::interrupt::timer_ticks();
+        let deadline_ticks = start_ticks.saturating_add(crate::interrupt::TIMER_TICK_HZ * 5);
         let mut spins: u64 = 0;
         while self.active_readers.load(Ordering::Acquire) != 0 {
-            core::hint::spin_loop();
+            // 在可调度上下文让出 CPU，避免单核/虚拟化场景下写侧纯自旋饿死读侧。
+            if can_schedule && (spins & 0x3ff) == 0 {
+                crate::task::scheduler::schedule();
+            } else {
+                core::hint::spin_loop();
+            }
             spins += 1;
-            // 约 1-5 秒超时 (取决于 CPU 频率)
-            if spins > 100_000_000 {
+
+            // 优先使用时钟 tick 做真实时间超时；若当前上下文不可调度，回退到自旋阈值。
+            if can_schedule {
+                if crate::interrupt::timer_ticks() >= deadline_ticks {
+                    panic!(
+                        "RCU: synchronize_rcu timeout active_readers={} waited_ticks={} spins={}",
+                        self.active_readers.load(Ordering::Relaxed),
+                        crate::interrupt::timer_ticks().saturating_sub(start_ticks),
+                        spins
+                    );
+                }
+            } else if spins > 100_000_000 {
                 panic!(
-                    "RCU: synchronize_rcu deadlock detected! active_readers={}",
-                    self.active_readers.load(Ordering::Relaxed)
+                    "RCU: synchronize_rcu deadlock active_readers={} spins={}",
+                    self.active_readers.load(Ordering::Relaxed),
+                    spins
                 );
             }
         }
