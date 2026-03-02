@@ -71,6 +71,12 @@ pub fn calibrate_tsc() {
         let start_tsc = rdtsc();
         
         loop {
+            // 优化：减少 IO 端口读取频率，避免在虚拟机中产生过多 VM-Exit
+            // PM Timer 频率仅为 3.58MHz，不需要极其频繁的轮询
+            for _ in 0..200 {
+                core::hint::spin_loop();
+            }
+
             let current_pm = inl(pm_timer_port) & mask;
             
             // 处理溢出

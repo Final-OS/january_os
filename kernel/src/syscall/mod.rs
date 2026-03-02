@@ -17,6 +17,7 @@ pub const ENOMEM: i32 = 12;
 pub const EFAULT: i32 = 14;
 pub const EBUSY: i32 = 16;
 pub const EINVAL: i32 = 22;
+pub const ENOTTY: i32 = 25;
 pub const EPIPE: i32 = 32;
 pub const ENAMETOOLONG: i32 = 36;
 pub const ENOSYS: i32 = 38;

@@ -23,6 +23,78 @@ fn page_align_up_usize(value: usize) -> Result<usize, i32> {
 }
 
 #[inline]
+fn mprotect_flags_from_prot(old: mm::VmFlags, prot: u32) -> mm::VmFlags {
+    let mut flags = old;
+    flags.clear(mm::VmFlags::READ | mm::VmFlags::WRITE | mm::VmFlags::EXEC);
+
+    if (prot & mm::prot_flags::PROT_READ) != 0 {
+        flags.set(mm::VmFlags::READ);
+    }
+    if (prot & mm::prot_flags::PROT_WRITE) != 0 {
+        flags.set(mm::VmFlags::WRITE);
+    }
+    if (prot & mm::prot_flags::PROT_EXEC) != 0 {
+        flags.set(mm::VmFlags::EXEC);
+    }
+    if (prot & mm::prot_flags::PROT_WRITE) != 0 || old.contains(mm::VmFlags::MAYWRITE) {
+        flags.set(mm::VmFlags::MAYWRITE);
+    }
+
+    flags
+}
+
+fn apply_pte_flags_range(pgd: u64, start: u64, end: u64, pte_flags: u64) -> Result<(), i32> {
+    let pt_mgr = unsafe { mm::PageTableManager::new(pgd, mm::DIRECT_MAP_OFFSET) };
+    let mut cursor = start;
+    while cursor < end {
+        if let Some(phys) = pt_mgr.translate_addr(cursor) {
+            let phys_page = phys & !(mm::PAGE_SIZE - 1);
+            if unsafe { !pt_mgr.map_page(cursor, phys_page, pte_flags) } {
+                return Err(ENOMEM);
+            }
+        }
+        cursor = cursor.saturating_add(mm::PAGE_SIZE);
+    }
+    Ok(())
+}
+
+fn mprotect_range_for_mm(mm_state: &mut mm::Mm, start: u64, end: u64, prot: u32) -> Result<(), i32> {
+    let mut cursor = start;
+    while cursor < end {
+        let Some(vma) = mm_state.find_vma(cursor) else {
+            return Err(ENOMEM);
+        };
+        if vma.vm_start > cursor {
+            return Err(ENOMEM);
+        }
+
+        let seg_start = cursor;
+        let seg_end = cmp::min(vma.vm_end, end);
+        let Some((_old_end, info)) = mm_state.remove_vma(vma.vm_start) else {
+            return Err(EBUSY);
+        };
+
+        if vma.vm_start < seg_start {
+            let _ = mm_state.insert_vma(vma.vm_start, seg_start, info.clone());
+        }
+        if seg_end < vma.vm_end {
+            let _ = mm_state.insert_vma(seg_end, vma.vm_end, info.clone());
+        }
+
+        let mut protected_info = info.clone();
+        protected_info.flags = mprotect_flags_from_prot(info.flags, prot);
+        if !mm_state.insert_vma(seg_start, seg_end, protected_info.clone()) {
+            return Err(EBUSY);
+        }
+
+        apply_pte_flags_range(mm_state.pgd, seg_start, seg_end, protected_info.flags.to_user_pte_flags())?;
+        cursor = seg_end;
+    }
+
+    Ok(())
+}
+
+#[inline]
 fn current_pid_raw() -> Result<usize, i32> {
     task::current_pid().map(|pid| pid.0).ok_or(ESRCH)
 }
@@ -322,4 +394,72 @@ pub(crate) fn sys_munmap(args: &SyscallArgs) -> SyscallRet {
     }
 
     ok(0)
+}
+
+pub(crate) fn sys_brk(args: &SyscallArgs) -> SyscallRet {
+    let req = args.arg0 as u64;
+    let mm_ptr = task::current_mm_ptr();
+    if mm_ptr.is_null() {
+        return ok(0);
+    }
+    let mm_state = unsafe { &mut *mm_ptr };
+
+    if mm_state.start_brk == 0 {
+        let hint = mm::USER_SPACE_START.saturating_add(0x0100_0000);
+        let base = mm_state
+            .find_free_area(hint, mm::PAGE_SIZE, mm::VmFlags::empty())
+            .unwrap_or(hint);
+        mm_state.start_brk = base;
+        mm_state.brk = base;
+    }
+
+    if req == 0 {
+        return ok(mm_state.brk as usize);
+    }
+    if req < mm_state.start_brk || req >= mm::USER_SPACE_END {
+        return ok(mm_state.brk as usize);
+    }
+
+    match mm_state.do_brk(req) {
+        Ok(new_brk) => ok(new_brk as usize),
+        Err(_) => ok(mm_state.brk as usize),
+    }
+}
+
+pub(crate) fn sys_mprotect(args: &SyscallArgs) -> SyscallRet {
+    let addr = args.arg0 as u64;
+    let len = args.arg1;
+    let prot = args.arg2 as u32;
+
+    if len == 0 {
+        return err(EINVAL);
+    }
+    if (addr & (mm::PAGE_SIZE - 1)) != 0 {
+        return err(EINVAL);
+    }
+    if (prot & !MMAP_PROT_ALLOWED) != 0 {
+        return err(EINVAL);
+    }
+
+    let len_aligned = match page_align_up_usize(len) {
+        Ok(v) => v as u64,
+        Err(errno) => return err(errno),
+    };
+    let end = match addr.checked_add(len_aligned) {
+        Some(v) => v,
+        None => return err(ENOMEM),
+    };
+    if addr < mm::USER_SPACE_START || end > mm::USER_SPACE_END || end <= addr {
+        return err(ENOMEM);
+    }
+
+    let mm_ptr = task::current_mm_ptr();
+    if mm_ptr.is_null() {
+        return err(ENOMEM);
+    }
+    let mm_state = unsafe { &mut *mm_ptr };
+    match mprotect_range_for_mm(mm_state, addr, end, prot) {
+        Ok(()) => ok(0),
+        Err(errno) => err(errno),
+    }
 }

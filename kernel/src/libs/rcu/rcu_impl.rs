@@ -236,8 +236,17 @@ impl<T> Rcu<T> {
         self.grace_period.fetch_add(1, Ordering::Release);
 
         // 等待所有活跃读者离开
+        let mut spins: u64 = 0;
         while self.active_readers.load(Ordering::Acquire) != 0 {
             core::hint::spin_loop();
+            spins += 1;
+            // 约 1-5 秒超时 (取决于 CPU 频率)
+            if spins > 100_000_000 {
+                panic!(
+                    "RCU: synchronize_rcu deadlock detected! active_readers={}",
+                    self.active_readers.load(Ordering::Relaxed)
+                );
+            }
         }
 
         // 尝试回收待处理项

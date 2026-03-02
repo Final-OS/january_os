@@ -24,6 +24,7 @@ struct StaticFile {
 
 #[derive(Clone, Copy)]
 struct StaticOpenFile {
+    path: &'static str,
     data: &'static [u8],
     offset: usize,
 }
@@ -66,6 +67,28 @@ struct FsState {
     next_pipe_id: u64,
     pipes: BTreeMap<u64, PipeState>,
 }
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FsStat {
+    pub dev: u64,
+    pub ino: u64,
+    pub mode: u32,
+    pub nlink: u64,
+    pub rdev: u64,
+    pub size: i64,
+    pub blksize: i64,
+    pub blocks: i64,
+}
+
+const S_IFIFO: u32 = 0o010000;
+const S_IFCHR: u32 = 0o020000;
+const S_IFREG: u32 = 0o100000;
+
+const POLLIN: i16 = 0x0001;
+const POLLOUT: i16 = 0x0004;
+const POLLERR: i16 = 0x0008;
+const POLLHUP: i16 = 0x0010;
+const POLLNVAL: i16 = 0x0020;
 
 impl FsState {
     const fn new() -> Self {
@@ -112,7 +135,7 @@ impl FsState {
         _flags: u32,
         _mode: u16,
     ) -> Result<i32, i32> {
-        let Some(data) = self.read_static_file(path) else {
+        let Some(file) = self.files.iter().find(|file| file.path == path).copied() else {
             return Err(ENOENT);
         };
 
@@ -122,7 +145,8 @@ impl FsState {
         table.insert(
             fd,
             OpenFile::Static(StaticOpenFile {
-                data,
+                path: file.path,
+                data: file.data,
                 offset: 0,
             }),
         );
@@ -345,6 +369,151 @@ impl FsState {
         }
     }
 
+    fn hash_path(path: &str) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in path.as_bytes().iter().copied() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+        h
+    }
+
+    fn make_regular_stat(path: &'static str, data_len: usize) -> FsStat {
+        let size = data_len as i64;
+        FsStat {
+            dev: 1,
+            ino: Self::hash_path(path),
+            mode: S_IFREG | 0o644,
+            nlink: 1,
+            rdev: 0,
+            size,
+            blksize: 4096,
+            blocks: (size.saturating_add(511) / 512),
+        }
+    }
+
+    fn make_pipe_stat(pipe_id: u64, size: usize) -> FsStat {
+        let bytes = size as i64;
+        FsStat {
+            dev: 2,
+            ino: pipe_id,
+            mode: S_IFIFO | 0o600,
+            nlink: 1,
+            rdev: 0,
+            size: bytes,
+            blksize: 4096,
+            blocks: (bytes.saturating_add(511) / 512),
+        }
+    }
+
+    fn make_tty_stat() -> FsStat {
+        FsStat {
+            dev: 3,
+            ino: 1,
+            mode: S_IFCHR | 0o620,
+            nlink: 1,
+            rdev: 0,
+            size: 0,
+            blksize: 4096,
+            blocks: 0,
+        }
+    }
+
+    fn stat_path(&self, path: &str) -> Result<FsStat, i32> {
+        let Some(file) = self.files.iter().find(|file| file.path == path) else {
+            return Err(ENOENT);
+        };
+        Ok(Self::make_regular_stat(file.path, file.data.len()))
+    }
+
+    fn stat_fd(&self, pid: usize, fd: i32) -> Result<FsStat, i32> {
+        if (0..=2).contains(&fd) {
+            return Ok(Self::make_tty_stat());
+        }
+
+        let Some(table) = self.open_files.get(&pid) else {
+            return Err(EBADF);
+        };
+        let Some(open_file) = table.get(&fd) else {
+            return Err(EBADF);
+        };
+
+        match open_file {
+            OpenFile::Static(file) => Ok(Self::make_regular_stat(file.path, file.data.len())),
+            OpenFile::PipeRead { pipe_id, .. } | OpenFile::PipeWrite { pipe_id, .. } => {
+                let size = self
+                    .pipes
+                    .get(pipe_id)
+                    .map(|pipe| pipe.data.len())
+                    .unwrap_or(0);
+                Ok(Self::make_pipe_stat(*pipe_id, size))
+            }
+        }
+    }
+
+    fn poll_revents_for_pid(&self, pid: usize, fd: i32, events: i16) -> Result<i16, i32> {
+        if fd < 0 {
+            return Ok(POLLNVAL);
+        }
+
+        if (0..=2).contains(&fd) {
+            let mut revents = 0i16;
+            if (events & POLLIN) != 0 && fd == 0 && crate::drivers::tty::serial_has_input() {
+                revents |= POLLIN;
+            }
+            if (events & POLLOUT) != 0 && (fd == 1 || fd == 2) {
+                revents |= POLLOUT;
+            }
+            return Ok(revents);
+        }
+
+        let Some(table) = self.open_files.get(&pid) else {
+            return Err(EBADF);
+        };
+        let Some(open_file) = table.get(&fd) else {
+            return Err(EBADF);
+        };
+
+        let mut revents = 0i16;
+
+        match open_file {
+            OpenFile::Static(file) => {
+                if (events & POLLIN) != 0 {
+                    // 文件读到 EOF 也算可读（read 会返回 0）
+                    let eof = file.offset >= file.data.len();
+                    if !file.data.is_empty() || eof {
+                        revents |= POLLIN;
+                    }
+                }
+            }
+            OpenFile::PipeRead { pipe_id, .. } => {
+                if let Some(pipe) = self.pipes.get(pipe_id) {
+                    if (events & POLLIN) != 0 && (!pipe.data.is_empty() || pipe.writers == 0) {
+                        revents |= POLLIN;
+                    }
+                    if pipe.writers == 0 {
+                        revents |= POLLHUP;
+                    }
+                } else {
+                    revents |= POLLHUP;
+                }
+            }
+            OpenFile::PipeWrite { pipe_id, .. } => {
+                if let Some(pipe) = self.pipes.get(pipe_id) {
+                    if pipe.readers == 0 {
+                        revents |= POLLERR | POLLHUP;
+                    } else if (events & POLLOUT) != 0 {
+                        revents |= POLLOUT;
+                    }
+                } else {
+                    revents |= POLLERR | POLLHUP;
+                }
+            }
+        }
+
+        Ok(revents)
+    }
+
     fn drop_process_fds(&mut self, pid: usize) {
         if let Some(table) = self.open_files.remove(&pid) {
             for (_fd, file) in table {
@@ -417,6 +586,18 @@ pub fn mmap_file_for_pid(pid: usize, fd: i32) -> Result<&'static [u8], i32> {
 
 pub fn fd_is_nonblocking_for_pid(pid: usize, fd: i32) -> Result<bool, i32> {
     FS_STATE.lock().fd_is_nonblocking_for_pid(pid, fd)
+}
+
+pub fn stat_path(path: &str) -> Result<FsStat, i32> {
+    FS_STATE.lock().stat_path(path)
+}
+
+pub fn stat_fd(pid: usize, fd: i32) -> Result<FsStat, i32> {
+    FS_STATE.lock().stat_fd(pid, fd)
+}
+
+pub fn poll_revents_for_pid(pid: usize, fd: i32, events: i16) -> Result<i16, i32> {
+    FS_STATE.lock().poll_revents_for_pid(pid, fd, events)
 }
 
 pub fn drop_process_fds(pid: usize) {
