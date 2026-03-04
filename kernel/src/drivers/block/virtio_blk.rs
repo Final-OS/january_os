@@ -556,21 +556,6 @@ impl VirtioBlkDevice {
             );
             return Err(BlockError::IoError);
         }
-        if crate::config::DEBUG_VERBOSE {
-            if let Some((cur_root, init_root, cur_phys, init_phys)) =
-                crate::mm::vmalloc::vmalloc_mapping_state(self.queue_notify as u64)
-            {
-                diag!(
-                    "[virtio] queue_notify state after setup: notify={:#x} cur_root={:#x} init_root={:#x} cur_phys={:#x?} init_phys={:#x?}",
-                    self.queue_notify as u64,
-                    cur_root,
-                    init_root,
-                    cur_phys,
-                    init_phys
-                );
-            }
-        }
-
         unsafe {
             write_volatile(&mut (*self.common_cfg).queue_desc, desc_phys);
             write_volatile(&mut (*self.common_cfg).queue_driver, avail_phys);
