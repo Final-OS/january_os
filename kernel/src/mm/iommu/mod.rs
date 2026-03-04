@@ -345,7 +345,7 @@ fn try_probe_amdvi() -> bool {
     }
 
     crate::warn!(
-        "IOMMU: ACPI IVRS detected, but AMD-Vi backend is not implemented; falling back to SWIOTLB"
+        "[IOMMU] ACPI IVRS detected, but AMD-Vi backend is not implemented; falling back to SWIOTLB"
     );
     false
 }
@@ -368,7 +368,7 @@ fn vtd_map(mgr: &mut IommuManager, phys_addr: u64, size: usize) -> DmaAddr {
     let pages = match size_to_pages(size) {
         Some(p) => p,
         None => {
-            crate::warn!("IOMMU: invalid DMA map size {}", size);
+            crate::warn!("[IOMMU] invalid DMA map size {}", size);
             return DmaAddr::new(phys_addr);
         }
     };
@@ -396,7 +396,7 @@ fn vtd_unmap(mgr: &mut IommuManager, dma_addr: DmaAddr, size: usize) {
     let pages = match size_to_pages(size) {
         Some(p) => p,
         None => {
-            crate::warn!("IOMMU: invalid DMA unmap size {}", size);
+            crate::warn!("[IOMMU] invalid DMA unmap size {}", size);
             return;
         }
     };
@@ -418,7 +418,7 @@ fn vtd_unmap(mgr: &mut IommuManager, dma_addr: DmaAddr, size: usize) {
 pub const SWIOTLB_SIZE: u64 = config::SWIOTLB_SIZE;
 
 pub fn init_iommu() {
-    init(config::DIRECT_MAP_OFFSET);
+    init(crate::mm::direct_map_offset());
 }
 
 pub fn iommu_initialized() -> bool {
@@ -460,7 +460,7 @@ pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAdd
         Some(p) => p,
         None => {
             unsafe { crate::mm::page::buddy::free_pages(page, order) };
-            crate::warn!("IOMMU: dma_alloc_coherent phys overflow, order={}", order);
+            crate::warn!("[IOMMU] dma_alloc_coherent phys overflow, order={}", order);
             return None;
         }
     };
@@ -480,7 +480,7 @@ pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAdd
     let virt = match phys.checked_add(direct_map_offset) {
         Some(v) => v as *mut u8,
         None => {
-            crate::warn!("IOMMU: dma_alloc_coherent virt overflow");
+            crate::warn!("[IOMMU] dma_alloc_coherent virt overflow");
             unmap(dma_addr, size, DmaDirection::Bidirectional);
             unsafe { crate::mm::page::buddy::free_pages(page, order) };
             return None;
@@ -506,7 +506,7 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
     let virt_addr = virt as u64;
     if virt_addr < direct_map_offset {
         crate::warn!(
-            "IOMMU: dma_free_coherent invalid virt={:#x}, direct_map_offset={:#x}",
+            "[IOMMU] dma_free_coherent invalid virt={:#x}, direct_map_offset={:#x}",
             virt_addr,
             direct_map_offset
         );
@@ -519,7 +519,7 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
     let pages = match size_to_pages(size) {
         Some(p) => p,
         None => {
-            crate::warn!("IOMMU: dma_free_coherent invalid size {}", size);
+            crate::warn!("[IOMMU] dma_free_coherent invalid size {}", size);
             return;
         }
     };
@@ -527,7 +527,7 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
     let order = match pages_to_order(pages) {
         Some(o) => o,
         None => {
-            crate::warn!("IOMMU: dma_free_coherent order overflow for pages {}", pages);
+            crate::warn!("[IOMMU] dma_free_coherent order overflow for pages {}", pages);
             return;
         }
     };
@@ -551,7 +551,7 @@ pub fn dma_map_single(virt: *const u8, size: usize, dir: DmaDirection) -> DmaAdd
     let virt_addr = virt as u64;
     if virt_addr < direct_map_offset {
         crate::warn!(
-            "IOMMU: dma_map_single invalid virt={:#x}, direct_map_offset={:#x}",
+            "[IOMMU] dma_map_single invalid virt={:#x}, direct_map_offset={:#x}",
             virt_addr,
             direct_map_offset
         );

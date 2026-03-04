@@ -20,7 +20,7 @@ pub unsafe fn enable_msix(addr: PciAddress, table_base: *mut u8, vector: u8) -> 
         let table_offset = (table_reg & !0x7) as usize;
 
         if bir != 0 {
-            warn!("PCI: MSI-X Table in BAR {}, not supported (only BAR0 supported with provided base)", bir);
+            warn!("[PCI] MSI-X Table in BAR {}, not supported (only BAR0 supported with provided base)", bir);
             return false;
         }
 

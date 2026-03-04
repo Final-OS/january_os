@@ -8,7 +8,7 @@ use super::page::{max_pfn, page_to_pfn, pfn_to_page, vmemmap_base_ptr, Page, Pag
 use super::pcp::{pcp_alloc_page, pcp_free_page, pcp_initialized};
 use super::zone::{get_buddy_pfn, pages_per_order};
 use super::zone::{get_zone, gfp_to_zone_list, GfpFlags, Zone, MAX_ORDER};
-use crate::mm::vm::layout::{DIRECT_MAP_OFFSET, PAGE_SIZE};
+use crate::mm::vm::layout::PAGE_SIZE;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 // ============================================================================
@@ -36,7 +36,7 @@ fn mm_state_ready() -> bool {
     if !INVALID_MM_STATE_LOGGED.swap(true, Ordering::SeqCst) {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][buddy] mm state invalid: vmemmap_base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
+                "\x1b[90m[diag]\x1b[0m[buddy] mm state invalid: vmemmap_base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
                 base,
                 max,
                 core::ptr::addr_of!(super::page::VMEMMAP_BASE) as usize,
@@ -93,7 +93,7 @@ pub fn alloc_pages(order: usize, gfp: GfpFlags) -> Option<&'static mut Page> {
             if !is_page_ptr_in_vmemmap(page as *const Page) {
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "[diag][buddy] invalid page pointer from zone_alloc_pages: zone={:?} order={} page_ptr={:#x}",
+                        "\x1b[90m[diag]\x1b[0m[buddy] invalid page pointer from zone_alloc_pages: zone={:?} order={} page_ptr={:#x}",
                         zone_type,
                         order,
                         page as *mut Page as usize,
@@ -180,7 +180,7 @@ unsafe fn expand_and_alloc(
             let addr = pfn * PAGE_SIZE;
             let size = pages_per_order(low_order) * PAGE_SIZE;
             // 通过直接映射访问物理内存来清零
-            let virt = DIRECT_MAP_OFFSET + addr;
+            let virt = crate::mm::phys_to_virt(addr);
             core::ptr::write_bytes(virt as *mut u8, 0, size as usize);
         }
 
@@ -282,7 +282,7 @@ pub fn alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
             if !is_page_ptr_in_vmemmap(page as *const Page) {
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "[diag][buddy] invalid page pointer from pcp_alloc_page: page_ptr={:#x}",
+                        "\x1b[90m[diag]\x1b[0m[buddy] invalid page pointer from pcp_alloc_page: page_ptr={:#x}",
                         page as *mut Page as usize,
                     );
                 }
@@ -297,7 +297,7 @@ pub fn alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
 
             if gfp.test(GfpFlags::ZERO) {
                 let addr = page_to_pfn(page) * PAGE_SIZE;
-                let virt = DIRECT_MAP_OFFSET + addr;
+                let virt = crate::mm::phys_to_virt(addr);
                 unsafe {
                     core::ptr::write_bytes(virt as *mut u8, 0, PAGE_SIZE as usize);
                 }

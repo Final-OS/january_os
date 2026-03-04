@@ -23,7 +23,7 @@ pub fn init() {
         // Log all VirtIO devices for debugging
         if header.vendor_id == 0x1AF4 {
             crate::diag!(
-                "VirtIO [{:02x}:{:02x}.{:x}] {:04x}:{:04x}",
+                "[PCI][VirtIO] [{:02x}:{:02x}.{:x}] {:04x}:{:04x}",
                 addr.bus, addr.device, addr.function,
                 header.vendor_id, header.device_id
             );
@@ -34,5 +34,5 @@ pub fn init() {
         }
     });
     
-    crate::diag!("PCI: {} devices, {} claimed", device_count, claimed_count);
+    crate::diag!("[PCI] {} devices, {} claimed", device_count, claimed_count);
 }

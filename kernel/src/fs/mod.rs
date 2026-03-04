@@ -546,7 +546,7 @@ static FS_STATE: Mutex<FsState> = Mutex::new(FsState::new());
 
 pub fn init() {
     if crate::config::DEBUG_VERBOSE {
-        crate::kprintln!("[diag][fs] init minimal static backend");
+        crate::kprintln!("\x1b[90m[diag]\x1b[0m[fs] init minimal static backend");
     }
 }
 

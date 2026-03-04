@@ -2,9 +2,6 @@
 
 use core::fmt::Write;
 
-/// Debug mode - set to true to enable detailed output
-pub const DEBUG: bool = false;
-
 pub fn println_uefi(s: &str) {
     print_uefi(s);
     print_uefi("\r\n");
@@ -14,14 +11,6 @@ pub fn print_uefi(s: &str) {
     uefi::system::with_stdout(|stdout| {
         let _ = stdout.write_str(s);
     });
-}
-
-/// Diagnostic output - only shown in DEBUG mode
-pub fn print_diag(s: &str) {
-    if DEBUG {
-        print_uefi("      ");
-        println_uefi(s);
-    }
 }
 
 pub fn print_stage(step: u8, title: &str) {
@@ -49,5 +38,40 @@ pub fn print_dec(val: u64) {
 
     if let Ok(s) = core::str::from_utf8(&buf[i..20]) {
         print_uefi(s);
+    }
+}
+
+pub fn print_hex(mut val: u64) {
+    let mut buf = [0u8; 16];
+    let mut i = 16usize;
+
+    print_uefi("0x");
+
+    if val == 0 {
+        print_uefi("0");
+        return;
+    }
+
+    while val != 0 && i > 0 {
+        i -= 1;
+        let digit = (val & 0xF) as u8;
+        buf[i] = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' + (digit - 10)
+        };
+        val >>= 4;
+    }
+
+    if let Ok(s) = core::str::from_utf8(&buf[i..16]) {
+        print_uefi(s);
+    }
+}
+
+pub fn print_bool(v: bool) {
+    if v {
+        print_uefi("true");
+    } else {
+        print_uefi("false");
     }
 }

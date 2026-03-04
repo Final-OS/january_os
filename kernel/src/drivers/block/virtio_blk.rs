@@ -226,18 +226,18 @@ impl VirtioBlkDevice {
     fn find_capability(addr: PciAddress, cap_id: u8) -> Option<VirtioCap> {
         // PCI status bit 4 indicates capability list support.
         if (pci::read_header(addr).status & (1 << 4)) == 0 {
-            diag!("virtio: no PCI capabilities list");
+            diag!("[virtio] no PCI capabilities list");
             return None;
         }
 
         // Find PCI capabilities pointer
         let caps_ptr = (unsafe { pci::read_config_32(addr, 0x34) } as u8) & !0x3;
         if caps_ptr == 0 {
-            diag!("virtio: no PCI capabilities list");
+            diag!("[virtio] no PCI capabilities list");
             return None;
         }
 
-        diag!("virtio: scanning capabilities from {:#x}", caps_ptr);
+        diag!("[virtio] scanning capabilities from {:#x}", caps_ptr);
 
         let mut offset = caps_ptr;
         let mut count = 0u8;
@@ -247,13 +247,13 @@ impl VirtioBlkDevice {
             let cap_next = unsafe { Self::read_cap_byte(addr, offset.wrapping_add(1)) } & !0x3;
             let cap_len = unsafe { Self::read_cap_byte(addr, offset.wrapping_add(2)) };
 
-            diag!("virtio: cap at {:#x}: vndr={:#x} next={:#x} len={}", 
+            diag!("[virtio] cap at {:#x}: vndr={:#x} next={:#x} len={}", 
                   offset, cap_vndr, cap_next, cap_len);
 
             // Check if this is a Vendor-Specific capability (0x09)
             if cap_vndr == 0x09 {
                 let cfg_type = unsafe { Self::read_cap_byte(addr, offset.wrapping_add(3)) };
-                diag!("virtio: vendor cap type={}", cfg_type);
+                diag!("[virtio] vendor cap type={}", cfg_type);
 
                 if cfg_type == cap_id {
                     // Read BAR, offset, and length
@@ -267,7 +267,7 @@ impl VirtioBlkDevice {
                         0
                     };
 
-                    diag!("virtio: found cap {} at BAR{} offset {:#x} len {:#x}",
+                    diag!("[virtio] found cap {} at BAR{} offset {:#x} len {:#x}",
                           cap_id, bar, cap_offset, length);
 
                     return Some(VirtioCap {
@@ -280,14 +280,14 @@ impl VirtioBlkDevice {
             }
 
             if cap_next == offset {
-                warn!("virtio: broken capability chain at {:#x}", offset);
+                warn!("[virtio] broken capability chain at {:#x}", offset);
                 break;
             }
             offset = cap_next;
             count += 1;
         }
 
-        diag!("virtio: cap {} not found (scanned {} caps)", cap_id, count);
+        diag!("[virtio] cap {} not found (scanned {} caps)", cap_id, count);
         None
     }
 
@@ -295,24 +295,24 @@ impl VirtioBlkDevice {
         let bar_offset: u8 = (0x10 + (bar_index as u16 * 4)) as u8;
         let bar_lo = unsafe { pci::read_config_32(addr, bar_offset) };
 
-        diag!("virtio: BAR{} = {:#x}", bar_index, bar_lo);
+        diag!("[virtio] BAR{} = {:#x}", bar_index, bar_lo);
 
         // Check if it's I/O space (bit 0)
         if (bar_lo & 0x1) != 0 {
-            warn!("virtio: BAR{} is I/O space (legacy mode)", bar_index);
+            warn!("[virtio] BAR{} is I/O space (legacy mode)", bar_index);
             return Err(BlockError::Unsupported);
         }
 
         // Check if BAR is not implemented
         if bar_lo == 0 || bar_lo == 0xFFFFFFF0 {
-            warn!("virtio: BAR{} not implemented", bar_index);
+            warn!("[virtio] BAR{} not implemented", bar_index);
             return Err(BlockError::IoError);
         }
 
         // Parse memory BAR type
         let mem_type = (bar_lo >> 1) & 0x3;
         if mem_type == 1 || mem_type == 3 {
-            warn!("virtio: BAR{} unsupported type {}", bar_index, mem_type);
+            warn!("[virtio] BAR{} unsupported type {}", bar_index, mem_type);
             return Err(BlockError::Unsupported);
         }
 
@@ -320,13 +320,13 @@ impl VirtioBlkDevice {
         if mem_type == 2 {
             // 64-bit BAR
             if bar_index >= 5 {
-                warn!("virtio: BAR{} 64-bit pair is out of range", bar_index);
+                warn!("[virtio] BAR{} 64-bit pair is out of range", bar_index);
                 return Err(BlockError::Unsupported);
             }
             let bar1 = unsafe { pci::read_config_32(addr, bar_offset + 4) };
             mmio_phys |= (bar1 as u64) << 32;
             diag!(
-                "virtio: BAR{} low={:#x} high={:#x} phys={:#x}",
+                "[virtio] BAR{} low={:#x} high={:#x} phys={:#x}",
                 bar_index,
                 bar_lo,
                 bar1,
@@ -335,7 +335,7 @@ impl VirtioBlkDevice {
         }
 
         if mmio_phys == 0 {
-            warn!("virtio: BAR{} physical address is zero", bar_index);
+            warn!("[virtio] BAR{} physical address is zero", bar_index);
             return Err(BlockError::IoError);
         }
 
@@ -355,7 +355,7 @@ impl VirtioBlkDevice {
         let mmio_virt = ioremap(map_phys, map_len);
         if mmio_virt.is_null() {
             error!(
-                "virtio: failed to map BAR{} offset {:#x} len {:#x}",
+                "[virtio] failed to map BAR{} offset {:#x} len {:#x}",
                 cap.bar,
                 cap.offset,
                 map_len
@@ -364,7 +364,7 @@ impl VirtioBlkDevice {
         }
 
         diag!(
-            "virtio: BAR{} mapped phys={:#x} len={:#x} -> {:#x}",
+            "[virtio] BAR{} mapped phys={:#x} len={:#x} -> {:#x}",
             cap.bar,
             map_phys,
             map_len,
@@ -374,7 +374,7 @@ impl VirtioBlkDevice {
     }
 
     fn init_modern(&mut self, addr: PciAddress, _header: &PciHeader) -> Result<(), BlockError> {
-        diag!("virtio: initializing at {:?}", addr);
+        diag!("[virtio] initializing at {:?}", addr);
 
         // Enable Memory Space + Bus Master.
         let cmd = unsafe { pci::read_config_32(addr, 0x04) };
@@ -386,23 +386,23 @@ impl VirtioBlkDevice {
         let common_cap = if let Some(cap) = Self::find_capability(addr, VIRTIO_PCI_CAP_COMMON_CFG) {
             cap
         } else {
-            warn!("virtio-blk: no MMIO capabilities, device may be legacy-only");
+            warn!("[virtio-blk] no MMIO capabilities, device may be legacy-only");
             return Err(BlockError::Unsupported);
         };
         let notify_cap = if let Some(cap) = Self::find_capability(addr, VIRTIO_PCI_CAP_NOTIFY_CFG) {
             cap
         } else {
-            warn!("virtio-blk: missing notify capability");
+            warn!("[virtio-blk] missing notify capability");
             return Err(BlockError::Unsupported);
         };
         let device_cap = if let Some(cap) = Self::find_capability(addr, VIRTIO_PCI_CAP_DEVICE_CFG) {
             cap
         } else {
-            warn!("virtio-blk: missing device config capability");
+            warn!("[virtio-blk] missing device config capability");
             return Err(BlockError::Unsupported);
         };
 
-        info!("virtio-blk: using PCI modern capabilities");
+        info!("[virtio-blk] using PCI modern capabilities");
         self.common_cfg = Self::map_capability(addr, &common_cap, core::mem::size_of::<VirtioPciCommonCfg>())?
             as *mut VirtioPciCommonCfg;
         self.config = Self::map_capability(addr, &device_cap, core::mem::size_of::<VirtioBlkConfig>())?
@@ -411,7 +411,7 @@ impl VirtioBlkDevice {
         self.notify_len = core::cmp::max(notify_cap.length as usize, 2);
         self.notify_off_multiplier = notify_cap.notify_off_multiplier;
         if self.notify_off_multiplier == 0 {
-            warn!("virtio-blk: invalid notify_off_multiplier=0");
+            warn!("[virtio-blk] invalid notify_off_multiplier=0");
             return Err(BlockError::Unsupported);
         }
 
@@ -452,7 +452,7 @@ impl VirtioBlkDevice {
         let features_lo = self.read_device_features(0);
         let features_hi = self.read_device_features(1);
         if (features_hi & VIRTIO_F_VERSION_1) == 0 {
-            warn!("virtio: device does not advertise VIRTIO_F_VERSION_1");
+            warn!("[virtio] device does not advertise VIRTIO_F_VERSION_1");
             return Err(BlockError::Unsupported);
         }
         self.read_only = (features_lo & VIRTIO_BLK_F_RO) != 0;
@@ -467,7 +467,7 @@ impl VirtioBlkDevice {
         self.set_status(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK);
         let status = self.get_status();
         if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
-            error!("virtio: feature negotiation failed");
+            error!("[virtio] feature negotiation failed");
             return Err(BlockError::Unsupported);
         }
 
@@ -483,7 +483,7 @@ impl VirtioBlkDevice {
         self.initialized.store(true, Ordering::SeqCst);
 
         let size_mb = self.block_count * VIRTIO_BLK_SECTOR_SIZE as u64 / 1024 / 1024;
-        ok!("virtio-blk: {} MB", size_mb);
+        ok!("[virtio-blk] {} MB", size_mb);
 
         Ok(())
     }
@@ -495,7 +495,7 @@ impl VirtioBlkDevice {
 
         self.queue_size = unsafe { read_volatile(&(*self.common_cfg).queue_size) as u32 };
         if self.queue_size == 0 {
-            error!("virtio: queue 0 unavailable");
+            error!("[virtio] queue 0 unavailable");
             return Err(BlockError::IoError);
         }
         self.queue_size = self.queue_size.min(256);
@@ -539,7 +539,7 @@ impl VirtioBlkDevice {
             .ok_or(BlockError::IoError)?;
         if notify_offset + core::mem::size_of::<u16>() > self.notify_len {
             error!(
-                "virtio: notify offset out of range (off={:#x}, len={:#x})",
+                "[virtio] notify offset out of range (off={:#x}, len={:#x})",
                 notify_offset,
                 self.notify_len
             );
@@ -628,7 +628,7 @@ impl VirtioBlkDevice {
         if !completed {
             let used_idx = unsafe { read_volatile(&(*used).idx) };
             error!(
-                "virtio: queue timeout op={} lba={} used_idx={} target={}",
+                "[virtio] queue timeout op={} lba={} used_idx={} target={}",
                 if write_op { "write" } else { "read" },
                 lba,
                 used_idx,
@@ -651,7 +651,7 @@ impl VirtioBlkDevice {
             VIRTIO_BLK_S_IOERR => Err(BlockError::IoError),
             other => {
                 error!(
-                    "virtio: request failed op={} lba={} status={:#x}",
+                    "[virtio] request failed op={} lba={} status={:#x}",
                     if write_op { "write" } else { "read" },
                     lba,
                     other
@@ -708,11 +708,11 @@ impl PciDriver for VirtioBlkDriver {
         match dev.init_modern(addr, header) {
             Ok(()) => ProbeResult::Claimed,
             Err(BlockError::Unsupported) => {
-                warn!("virtio-blk: unsupported transport/features");
+                warn!("[virtio-blk] unsupported transport/features");
                 ProbeResult::Unsupported
             }
             Err(e) => {
-                error!("virtio-blk: init failed ({:?})", e);
+                error!("[virtio-blk] init failed ({:?})", e);
                 ProbeResult::Error("init failed")
             }
         }

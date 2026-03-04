@@ -2,7 +2,7 @@
 //!
 //! xHCI 是 USB 3.0+ 的主机控制器标准接口
 
-use crate::config::{DIRECT_MAP_OFFSET, PAGE_SIZE};
+use crate::config::PAGE_SIZE;
 use crate::drivers::input::hid::hid::{BootKeyboardReport, BootMouseReport};
 use crate::drivers::input::hid::keyboard;
 use crate::drivers::input::hid::mouse;
@@ -13,7 +13,7 @@ use crate::mm::page::page_to_pfn;
 use crate::mm::vmalloc::{ioremap, iounmap};
 use crate::mm::zone::{GfpFlags, GFP_KERNEL_ZERO};
 use crate::sync::IrqSpinLock;
-use crate::{debug, error, info, kprint, kprintln, ok, warn};
+use crate::{debug, error, info, kprintln, ok, warn};
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -467,7 +467,7 @@ impl XhciController {
                 if type_ == trb_type {
                     return Some(trb);
                 }
-                // kprintln!("USB: Ignored event type {}", type_);
+                // info!("[USB] Ignored event type {}", type_);
             }
 
             for _ in 0..100 {
@@ -514,7 +514,7 @@ impl XhciController {
 
         if cc != TRB_CC_SUCCESS && cc != TRB_CC_SHORT_PACKET {
             warn!(
-                "USB: Transfer Event Failed Slot {} DCI {} CC {}",
+                "[USB] Transfer Event Failed Slot {} DCI {} CC {}",
                 slot_id, dci, cc
             );
             return;
@@ -524,11 +524,11 @@ impl XhciController {
             if let Some(ep_state) = &mut slot_state.endpoints[dci as usize] {
                 if let Some((_, buf_virt, len)) = ep_state.buffer {
                     // Data received!
-                    // kprintln!("USB: Data received from Slot {} DCI {}", slot_id, dci);
+                    // info!("[USB] Data received from Slot {} DCI {}", slot_id, dci);
 
                     // Print first few bytes
                     let slice = core::slice::from_raw_parts(buf_virt, len);
-                    // kprintln!("USB: Data: {:02x?}", slice);
+                    // info!("[USB] Data: {:02x?}", slice);
 
                     // If it is HID data, we could parse it
                     // Assume DCI 3 = EP1 IN (Interrupt)
@@ -628,7 +628,7 @@ impl XhciController {
     }
 
     unsafe fn enable_slot(&mut self) -> Option<u8> {
-        kprintln!("USB: Sending Enable Slot Command...");
+        info!("[USB] Sending Enable Slot Command...");
 
         // Enable Slot Command: Type = 9
         let cmd_trb_control = (TRB_TYPE_ENABLE_SLOT << 10);
@@ -641,21 +641,20 @@ impl XhciController {
             let completion_code = (event.status >> 24) & 0xFF;
             if completion_code == TRB_CC_SUCCESS {
                 let slot_id = (event.control >> 24) & 0xFF;
-                kprintln!("USB: Slot Enabled, ID: {}", slot_id);
+                info!("[USB] Slot Enabled, ID: {}", slot_id);
                 return Some(slot_id as u8);
             } else {
-                kprintln!("USB: Enable Slot Failed, CC: {}", completion_code);
+                error!("[USB] Enable Slot Failed, CC: {}", completion_code);
             }
         } else {
-            kprintln!("USB: Enable Slot Timeout");
+            warn!("[USB] Enable Slot Timeout");
         }
 
         None
     }
 
     unsafe fn address_device(&mut self, slot_id: u8, port_id: u8, speed: u32) -> bool {
-        kprintln!(
-            "USB: Addressing Device on Slot {} (Port {}, Speed {})",
+        info!("[USB] Addressing Device on Slot {} (Port {}, Speed {})",
             slot_id,
             port_id,
             speed
@@ -746,13 +745,13 @@ impl XhciController {
         if let Some(event) = self.wait_for_event(TRB_TYPE_CMD_COMPLETION, 1000) {
             let cc = (event.status >> 24) & 0xFF;
             if cc == TRB_CC_SUCCESS {
-                kprintln!("USB: Device Addressed on Slot {}", slot_id);
+                info!("[USB] Device Addressed on Slot {}", slot_id);
                 return true;
             } else {
-                kprintln!("USB: Address Device Failed, CC: {}", cc);
+                error!("[USB] Address Device Failed, CC: {}", cc);
             }
         } else {
-            kprintln!("USB: Address Device Timeout");
+            warn!("[USB] Address Device Timeout");
         }
 
         false
@@ -823,9 +822,9 @@ impl XhciController {
             if cc == TRB_CC_SUCCESS {
                 return true;
             }
-            kprintln!("USB: Control Transfer Failed, CC: {}", cc);
+            error!("[USB] Control Transfer Failed, CC: {}", cc);
         } else {
-            kprintln!("USB: Control Transfer Timeout");
+            warn!("[USB] Control Transfer Timeout");
         }
 
         false
@@ -860,7 +859,7 @@ impl XhciController {
     }
 
     unsafe fn configure_device(&mut self, slot_id: u8) {
-        kprintln!("USB: Configuring Device on Slot {}", slot_id);
+        info!("[USB] Configuring Device on Slot {}", slot_id);
 
         // Allocate buffer for Descriptor
         let (buf_phys, buf_virt) = match alloc_dma_zeroed() {
@@ -883,7 +882,7 @@ impl XhciController {
 
         let desc = &*(buf_virt as *const DeviceDescriptor);
         let mps = desc.max_packet_size0;
-        kprintln!("USB: Slot {} MaxPacketSize0: {}", slot_id, mps);
+        info!("[USB] Slot {} MaxPacketSize0: {}", slot_id, mps);
 
         // 2. Get Full Device Descriptor
         let setup_full = SetupPacket {
@@ -902,17 +901,16 @@ impl XhciController {
         let vendor = desc.id_vendor;
         let product = desc.id_product;
 
-        kprintln!(
-            "USB: Slot {} Vendor: {:04x}, Product: {:04x}",
+        info!("[USB] Slot {} Vendor: {:04x}, Product: {:04x}",
             slot_id,
             vendor,
             product
         );
 
         if vendor == 0x0627 && product == 0x0001 {
-            kprintln!("USB: Found QEMU USB Tablet/Mouse");
+            info!("[USB] Found QEMU USB Tablet/Mouse");
         } else if vendor == 0x046d {
-            kprintln!("USB: Found Logitech Device");
+            info!("[USB] Found Logitech Device");
         }
 
         // 3. Get Configuration Descriptor Header (9 bytes)
@@ -929,7 +927,7 @@ impl XhciController {
             let total_len = conf.total_length as usize;
             if total_len < core::mem::size_of::<ConfigurationDescriptor>() {
                 warn!(
-                    "USB: Slot {} invalid config descriptor length {}",
+                    "[USB] Slot {} invalid config descriptor length {}",
                     slot_id, total_len
                 );
                 return;
@@ -938,11 +936,11 @@ impl XhciController {
             let transfer_len = total_len.min(PAGE_SIZE as usize);
             if transfer_len < total_len {
                 warn!(
-                    "USB: Slot {} config descriptor too large ({}), clamped to {}",
+                    "[USB] Slot {} config descriptor too large ({}), clamped to {}",
                     slot_id, total_len, transfer_len,
                 );
             }
-            kprintln!("USB: Slot {} Config Total Length: {}", slot_id, total_len);
+            info!("[USB] Slot {} Config Total Length: {}", slot_id, total_len);
 
             // 4. Get Full Configuration Descriptor
             let setup_full_conf = SetupPacket {
@@ -972,7 +970,7 @@ impl XhciController {
         while offset < length {
             let remaining = length - offset;
             if remaining < 2 {
-                warn!("USB: Descriptor header truncated, remain={}", remaining);
+                warn!("[USB] Descriptor header truncated, remain={}", remaining);
                 break;
             }
 
@@ -982,7 +980,7 @@ impl XhciController {
 
             if len < 2 || len > remaining {
                 warn!(
-                    "USB: Invalid descriptor length {}, remaining {}",
+                    "[USB] Invalid descriptor length {}, remaining {}",
                     len, remaining,
                 );
                 break;
@@ -991,7 +989,7 @@ impl XhciController {
             if type_ == 4 {
                 // Interface Descriptor
                 if len < core::mem::size_of::<InterfaceDescriptor>() {
-                    warn!("USB: Short interface descriptor len={}", len);
+                    warn!("[USB] Short interface descriptor len={}", len);
                     offset += len;
                     continue;
                 }
@@ -1001,8 +999,7 @@ impl XhciController {
                 let subclass = if_desc.interface_subclass;
                 let protocol = if_desc.interface_protocol;
 
-                kprintln!(
-                    "USB: Interface {} Class: {} Subclass: {} Protocol: {}",
+                info!("[USB] Interface {} Class: {} Subclass: {} Protocol: {}",
                     current_interface,
                     class,
                     subclass,
@@ -1011,23 +1008,22 @@ impl XhciController {
 
                 if class == 3 {
                     // HID
-                    kprintln!("USB: Found HID Interface");
+                    info!("[USB] Found HID Interface");
 
                     {
                         if let Some(slot_state) = &mut self.slots[slot_id as usize] {
                             if protocol == 1 {
                                 slot_state.device_type = DeviceType::Keyboard;
-                                kprintln!("USB: Device Type: Keyboard");
+                                info!("[USB] Device Type: Keyboard");
                             } else if protocol == 2 {
                                 slot_state.device_type = DeviceType::Mouse;
-                                kprintln!("USB: Device Type: Mouse");
+                                info!("[USB] Device Type: Mouse");
                             }
                         }
                     }
 
                     if subclass == 1 {
-                        kprintln!(
-                            "USB: Setting Boot Protocol and Idle for Interface {}",
+                        info!("[USB] Setting Boot Protocol and Idle for Interface {}",
                             current_interface
                         );
                         self.set_protocol(slot_id, current_interface, 0);
@@ -1037,7 +1033,7 @@ impl XhciController {
             } else if type_ == 5 {
                 // Endpoint Descriptor
                 if len < core::mem::size_of::<EndpointDescriptor>() {
-                    warn!("USB: Short endpoint descriptor len={}", len);
+                    warn!("[USB] Short endpoint descriptor len={}", len);
                     offset += len;
                     continue;
                 }
@@ -1045,7 +1041,7 @@ impl XhciController {
                 let addr = ep_desc.endpoint_address;
                 let attr = ep_desc.attributes;
 
-                kprintln!("USB: Endpoint Addr: {:#x} Attr: {:#x}", addr, attr);
+                info!("[USB] Endpoint Addr: {:#x} Attr: {:#x}", addr, attr);
 
                 // If Interrupt IN
                 if (addr & 0x80) != 0 && (attr & 0x03) == 3 {
@@ -1075,7 +1071,7 @@ impl XhciController {
             length: 0,
         };
         if self.send_control_transfer(slot_id, setup_set_conf, None) {
-            kprintln!("USB: Device Configured");
+            info!("[USB] Device Configured");
 
             // Start Polling for Interrupt Endpoints
             for i in 0..ep_count {
@@ -1099,7 +1095,7 @@ impl XhciController {
         let dir_in = (ep_desc.endpoint_address & 0x80) != 0;
         let dci = (ep_num * 2) + if dir_in { 1 } else { 0 };
 
-        kprintln!("USB: Configuring Endpoint {}, DCI: {}", ep_num, dci);
+        info!("[USB] Configuring Endpoint {}, DCI: {}", ep_num, dci);
 
         // 1. Allocate Transfer Ring
         let (tr_phys, tr_virt) = match alloc_dma_zeroed() {
@@ -1176,7 +1172,7 @@ impl XhciController {
             if cc == TRB_CC_SUCCESS {
                 return true;
             } else {
-                kprintln!("USB: Configure Endpoint Failed, CC: {}", cc);
+                error!("[USB] Configure Endpoint Failed, CC: {}", cc);
             }
         }
 
@@ -1209,8 +1205,7 @@ impl XhciController {
         self.enqueue_transfer(slot_id, dci, buf_phys, length, control);
         self.ring_doorbell_ep(slot_id, dci);
 
-        kprintln!(
-            "USB: Queued Interrupt Transfer for Slot {} DCI {}",
+        info!("[USB] Queued Interrupt Transfer for Slot {} DCI {}",
             slot_id,
             dci
         );
@@ -1284,8 +1279,7 @@ pub fn init() {
         // Subclass 0x03 (USB Controller)
         // ProgIF 0x30 (xHCI)
         if header.class_code == 0x0C && header.subclass == 0x03 && header.prog_if == 0x30 {
-            kprintln!(
-                "USB: Found xHCI Controller at {:?} (Vendor: {:04x}, Device: {:04x})",
+            info!("[USB] Found xHCI Controller at {:?} (Vendor: {:04x}, Device: {:04x})",
                 addr,
                 header.vendor_id,
                 header.device_id
@@ -1304,7 +1298,7 @@ pub fn init() {
 
 unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] init_controller begin addr={:?}", addr);
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] init_controller begin addr={:?}", addr);
     }
 
     // 1. 启用 Bus Master 和 Memory Space
@@ -1326,7 +1320,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
 
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] bar0={:#x} bar_type={} prefetchable={} mmio_phys={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] bar0={:#x} bar_type={} prefetchable={} mmio_phys={:#x}",
             bar0,
             bar_type,
             prefetchable,
@@ -1334,7 +1328,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
         );
     }
 
-    kprintln!("USB: xHCI MMIO Phys Base: {:#x}", mmio_phys);
+    info!("[USB] xHCI MMIO Phys Base: {:#x}", mmio_phys);
 
     // 3. 映射 MMIO
     // 暂时映射 64KB，通常足够覆盖寄存器
@@ -1342,22 +1336,22 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     let mmio_base = ioremap(mmio_phys, mmio_size);
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] ioremap returned mmio_base={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] ioremap returned mmio_base={:#x}",
             mmio_base as u64
         );
     }
 
     if mmio_base.is_null() {
-        kprintln!("USB: Failed to map xHCI MMIO");
+        error!("[USB] Failed to map xHCI MMIO");
         return;
     }
 
-    kprintln!("USB: xHCI MMIO Mapped at {:#x}", mmio_base as u64);
+    info!("[USB] xHCI MMIO Mapped at {:#x}", mmio_base as u64);
 
     // 4. 解析寄存器
     let cap_regs = mmio_base as *const CapabilityRegisters;
     if core::mem::size_of::<CapabilityRegisters>() > mmio_size {
-        warn!("USB: xHCI MMIO too small for capability registers");
+        warn!("[USB] xHCI MMIO too small for capability registers");
         iounmap(mmio_base);
         return;
     }
@@ -1368,8 +1362,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
 
     xhci_legacy_handoff(mmio_base, mmio_size, hccparams1);
 
-    kprintln!(
-        "USB: xHCI Version: {:x}.{:x} (Raw: {:#x}, CapLen: {})",
+    info!("[USB] xHCI Version: {:x}.{:x} (Raw: {:#x}, CapLen: {})",
         hciversion >> 8,
         hciversion & 0xFF,
         hciversion,
@@ -1378,7 +1371,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
 
     let op_regs_offset = caplength as usize;
     if op_regs_offset < core::mem::size_of::<CapabilityRegisters>() {
-        warn!("USB: Invalid CAPLENGTH {}", caplength);
+        warn!("[USB] Invalid CAPLENGTH {}", caplength);
         iounmap(mmio_base);
         return;
     }
@@ -1386,20 +1379,20 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     {
         Some(v) => v,
         None => {
-            warn!("USB: xHCI op regs overflow");
+            warn!("[USB] xHCI op regs overflow");
             iounmap(mmio_base);
             return;
         }
     };
     if op_regs_end > mmio_size {
-        warn!("USB: xHCI op regs out of mapped range");
+        warn!("[USB] xHCI op regs out of mapped range");
         iounmap(mmio_base);
         return;
     }
     let op_regs = mmio_base.add(op_regs_offset) as *mut OperationalRegisters;
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] op_regs_offset={:#x} op_regs={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] op_regs_offset={:#x} op_regs={:#x}",
             op_regs_offset,
             op_regs as u64,
         );
@@ -1410,8 +1403,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     let max_ints = ((hcsparams1 >> 8) & 0x7FF) as u16;
     let max_ports = ((hcsparams1 >> 24) & 0xFF) as u8;
 
-    kprintln!(
-        "USB: Max Slots: {}, Max Ports: {}, Max Ints: {}",
+    info!("[USB] Max Slots: {}, Max Ports: {}, Max Ints: {}",
         max_slots,
         max_ports,
         max_ints
@@ -1420,29 +1412,29 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     // Check Context Size (CSZ, bit 2 of HCCPARAMS1)
     let context_size_64 = (hccparams1 & (1 << 2)) != 0;
     if context_size_64 {
-        kprintln!("USB: Context Size is 64 bytes");
+        info!("[USB] Context Size is 64 bytes");
     } else {
-        kprintln!("USB: Context Size is 32 bytes");
+        info!("[USB] Context Size is 32 bytes");
     }
 
     // 计算 Runtime Registers 和 Doorbell Registers 地址
     let dboff = read_volatile(addr_of!((*cap_regs).dboff)) & !0x3;
     let rtsoff = read_volatile(addr_of!((*cap_regs).rtsoff)) & !0x1F;
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] dboff={:#x} rtsoff={:#x}", dboff, rtsoff,);
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] dboff={:#x} rtsoff={:#x}", dboff, rtsoff,);
     }
 
     let db_needed = (max_slots as usize).saturating_add(1) * core::mem::size_of::<u32>();
     let db_end = match (dboff as usize).checked_add(db_needed) {
         Some(v) => v,
         None => {
-            warn!("USB: xHCI doorbell offset overflow");
+            warn!("[USB] xHCI doorbell offset overflow");
             iounmap(mmio_base);
             return;
         }
     };
     if db_end > mmio_size {
-        warn!("USB: xHCI doorbell regs out of mapped range");
+        warn!("[USB] xHCI doorbell regs out of mapped range");
         iounmap(mmio_base);
         return;
     }
@@ -1452,13 +1444,13 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     let rt_end = match (rtsoff as usize).checked_add(rt_needed) {
         Some(v) => v,
         None => {
-            warn!("USB: xHCI runtime offset overflow");
+            warn!("[USB] xHCI runtime offset overflow");
             iounmap(mmio_base);
             return;
         }
     };
     if rt_end > mmio_size {
-        warn!("USB: xHCI runtime regs out of mapped range");
+        warn!("[USB] xHCI runtime regs out of mapped range");
         iounmap(mmio_base);
         return;
     }
@@ -1467,7 +1459,7 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     let rt_regs = mmio_base.add(rtsoff as usize) as *mut RuntimeRegisters;
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] db_regs={:#x} rt_regs={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] db_regs={:#x} rt_regs={:#x}",
             db_regs as u64,
             rt_regs as u64,
         );
@@ -1475,27 +1467,27 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
 
     // 6. 重置控制器
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] step6 reset_controller begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] step6 reset_controller begin");
     }
     reset_controller(op_regs);
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] step6 reset_controller done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] step6 reset_controller done");
     }
 
     // 启用 MSI/MSI-X 中断
     if pci::enable_msi(addr, IRQ_XHCI) {
-        ok!("USB: xHCI MSI Enabled (Vector {})", IRQ_XHCI);
+        ok!("[USB] xHCI MSI Enabled (Vector {})", IRQ_XHCI);
     } else {
         // Try MSI-X
         // Note: mmio_base corresponds to BAR0, which covers most xHCI MSI-X tables
         if pci::msix::enable_msix(addr, mmio_base, IRQ_XHCI) {
-            ok!("USB: xHCI MSI-X Enabled (Vector {})", IRQ_XHCI);
+            ok!("[USB] xHCI MSI-X Enabled (Vector {})", IRQ_XHCI);
         } else {
-            warn!("USB: Failed to enable MSI/MSI-X for xHCI");
+            warn!("[USB] Failed to enable MSI/MSI-X for xHCI");
         }
     }
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] step7 irq setup done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] step7 irq setup done");
     }
 
     // 7. 构造控制器实例
@@ -1526,32 +1518,32 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
 
     // 8. 初始化内存结构
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] step8 init_memory_structures begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] step8 init_memory_structures begin");
     }
     if !init_memory_structures(&mut controller) {
-        kprintln!("USB: Failed to initialize xHCI memory structures");
+        error!("[USB] Failed to initialize xHCI memory structures");
         return;
     }
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] step8 init_memory_structures done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] step8 init_memory_structures done");
     }
 
     // 9. 启动控制器
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] step9 start_controller begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] step9 start_controller begin");
     }
     start_controller(&mut controller);
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] step9 start_controller done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] step9 start_controller done");
     }
 
     // 10. 检查端口状态
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] step10 check_ports begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] step10 check_ports begin");
     }
     check_ports(&mut controller);
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] step10 check_ports done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] step10 check_ports done");
     }
 
     // Enable Global Interrupts (USBCMD_INTE)
@@ -1563,19 +1555,19 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     write_volatile(usbcmd, cmd);
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] usbcmd after INTE={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] usbcmd after INTE={:#x}",
             read_volatile(usbcmd)
         );
     }
-    ok!("USB: xHCI Interrupts Enabled (USBCMD_INTE)");
+    ok!("[USB] xHCI Interrupts Enabled (USBCMD_INTE)");
 
     // 保存控制器实例
     *XHCI_CONTROLLER.lock() = Some(controller);
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] controller published");
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] controller published");
     }
 
-    ok!("USB: xHCI Controller Initialized");
+    ok!("[USB] xHCI Controller Initialized");
 }
 
 unsafe fn check_ports(xhci: &mut XhciController) {
@@ -1583,7 +1575,7 @@ unsafe fn check_ports(xhci: &mut XhciController) {
     // Port Register Set is at offset 0x400 from Operational Registers Base
     let port_base = op_base.add(0x400);
 
-    info!("USB: Checking {} ports...", xhci.max_ports);
+    info!("[USB] Checking {} ports...", xhci.max_ports);
 
     for i in 0..xhci.max_ports {
         let port_sc_addr = port_base.add((i as usize) * 0x10) as *mut u32;
@@ -1592,7 +1584,7 @@ unsafe fn check_ports(xhci: &mut XhciController) {
         if (port_sc & PORTSC_CCS) != 0 {
             let speed = (port_sc >> 10) & 0xF;
             info!(
-                "USB: Port {} Connected (Status: {:#x}, Speed: {})",
+                "[USB] Port {} Connected (Status: {:#x}, Speed: {})",
                 i + 1,
                 port_sc,
                 speed
@@ -1600,7 +1592,7 @@ unsafe fn check_ports(xhci: &mut XhciController) {
 
             // Reset Port to enable it
             if (port_sc & PORTSC_PED) == 0 {
-                debug!("USB: Resetting Port {}...", i + 1);
+                debug!("[USB] Resetting Port {}...", i + 1);
                 let mut new_sc = port_sc | PORTSC_PR;
                 // 清除状态位 (Write 1 to Clear)
                 new_sc &= !(PORTSC_CSC | PORTSC_PRC); // 不要写 1 到这些位，否则会清除它们?
@@ -1620,11 +1612,11 @@ unsafe fn check_ports(xhci: &mut XhciController) {
                     if (sc & PORTSC_PRC) != 0 {
                         // Clear PRC
                         write_volatile(port_sc_addr, (sc & !change_bits) | PORTSC_PRC);
-                        ok!("USB: Port {} Reset Complete (Status: {:#x})", i + 1, sc);
+                        ok!("[USB] Port {} Reset Complete (Status: {:#x})", i + 1, sc);
 
                         // Try to enable slot for this port
                         if let Some(slot_id) = xhci.enable_slot() {
-                            info!("USB: Port {} Slot ID: {}", i + 1, slot_id);
+                            info!("[USB] Port {} Slot ID: {}", i + 1, slot_id);
                             // Next step: Address Device
                             if xhci.address_device(slot_id, (i + 1) as u8, speed) {
                                 xhci.configure_device(slot_id);
@@ -1641,7 +1633,7 @@ unsafe fn check_ports(xhci: &mut XhciController) {
                 }
             }
         } else {
-            // kprintln!("USB: Port {} Disconnected (Status: {:#x})", i + 1, port_sc);
+            // info!("[USB] Port {} Disconnected (Status: {:#x})", i + 1, port_sc);
         }
     }
 }
@@ -1650,7 +1642,7 @@ unsafe fn alloc_dma_zeroed() -> Option<(u64, *mut u8)> {
     let page = alloc_pages(0, GFP_KERNEL_ZERO)?;
     let pfn = page_to_pfn(page);
     let phys = pfn * PAGE_SIZE;
-    let virt = (phys + DIRECT_MAP_OFFSET) as *mut u8;
+    let virt = (phys + crate::mm::direct_map_offset()) as *mut u8;
 
     // 显式清零
     core::ptr::write_bytes(virt, 0, PAGE_SIZE as usize);
@@ -1660,7 +1652,7 @@ unsafe fn alloc_dma_zeroed() -> Option<(u64, *mut u8)> {
 
 unsafe fn init_memory_structures(xhci: &mut XhciController) -> bool {
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] mem init: max_slots={}", xhci.max_slots);
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] mem init: max_slots={}", xhci.max_slots);
     }
 
     // 1. 设置 Max Slots Enabled (CONFIG 寄存器)
@@ -1674,7 +1666,7 @@ unsafe fn init_memory_structures(xhci: &mut XhciController) -> bool {
     };
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] dcbaap phys={:#x} virt={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] dcbaap phys={:#x} virt={:#x}",
             dcbaap_phys,
             dcbaap_virt as u64,
         );
@@ -1692,7 +1684,7 @@ unsafe fn init_memory_structures(xhci: &mut XhciController) -> bool {
     };
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] cmd_ring phys={:#x} virt={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] cmd_ring phys={:#x} virt={:#x}",
             cmd_ring_phys,
             cmd_ring_virt as u64,
         );
@@ -1711,7 +1703,7 @@ unsafe fn init_memory_structures(xhci: &mut XhciController) -> bool {
     };
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] event_ring phys={:#x} virt={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] event_ring phys={:#x} virt={:#x}",
             er_seg_phys,
             er_seg_virt as u64,
         );
@@ -1726,7 +1718,7 @@ unsafe fn init_memory_structures(xhci: &mut XhciController) -> bool {
     };
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] erst phys={:#x} virt={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] erst phys={:#x} virt={:#x}",
             erst_phys,
             erst_virt as u64,
         );
@@ -1761,7 +1753,7 @@ unsafe fn init_memory_structures(xhci: &mut XhciController) -> bool {
     write_volatile(&mut ir0.iman, iman | 0x02 | 0x01); // Enable + Clear Pending
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] interrupter: iman(before={:#x}, after={:#x}) erdp={:#x} erstba={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] interrupter: iman(before={:#x}, after={:#x}) erdp={:#x} erstba={:#x}",
             iman,
             read_volatile(&ir0.iman),
             read_volatile(&ir0.erdp),
@@ -1778,7 +1770,7 @@ unsafe fn start_controller(xhci: &mut XhciController) {
     cmd |= USBCMD_RUN_STOP;
     write_volatile(usbcmd, cmd);
 
-    kprintln!("USB: xHCI Controller Started");
+    info!("[USB] xHCI Controller Started");
 }
 
 #[inline]
@@ -1792,27 +1784,27 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
     let mut xecp = ((hccparams1 >> 16) & 0xFFFF) as usize;
     if xecp == 0 {
         if crate::config::DEBUG_VERBOSE {
-            kprintln!("[diag][xhci] no extended capabilities");
+            kprintln!("\x1b[90m[diag]\x1b[0m[xhci] no extended capabilities");
         }
         return;
     }
 
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("[diag][xhci] scan ext caps start xecp={:#x}", xecp);
+        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] scan ext caps start xecp={:#x}", xecp);
     }
 
     for _ in 0..64 {
         let cap_off = match xecp.checked_mul(4) {
             Some(v) => v,
             None => {
-                warn!("USB: xHCI ext cap offset overflow");
+                warn!("[USB] xHCI ext cap offset overflow");
                 return;
             }
         };
 
         if cap_off + core::mem::size_of::<u32>() > mmio_size {
             warn!(
-                "USB: xHCI ext cap out of mapped range off={:#x} size={:#x}",
+                "[USB] xHCI ext cap out of mapped range off={:#x} size={:#x}",
                 cap_off, mmio_size
             );
             return;
@@ -1825,7 +1817,7 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
 
         if crate::config::DEBUG_VERBOSE {
             kprintln!(
-                "[diag][xhci] ext cap id={:#x} off={:#x} next={:#x} raw={:#x}",
+                "\x1b[90m[diag]\x1b[0m[xhci] ext cap id={:#x} off={:#x} next={:#x} raw={:#x}",
                 cap_id,
                 cap_off,
                 next,
@@ -1842,7 +1834,7 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
                 write_volatile(cap_ptr, legsup);
                 if crate::config::DEBUG_VERBOSE {
                     kprintln!(
-                        "[diag][xhci] legacy handoff request: legsup={:#x}",
+                        "\x1b[90m[diag]\x1b[0m[xhci] legacy handoff request: legsup={:#x}",
                         read_volatile(cap_ptr)
                     );
                 }
@@ -1854,7 +1846,7 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
                         handed_over = true;
                         if crate::config::DEBUG_VERBOSE {
                             kprintln!(
-                                "[diag][xhci] legacy handoff done in {} rounds: legsup={:#x}",
+                                "\x1b[90m[diag]\x1b[0m[xhci] legacy handoff done in {} rounds: legsup={:#x}",
                                 round,
                                 current
                             );
@@ -1865,7 +1857,7 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
                     if round == 0 || round % 1000 == 999 {
                         if crate::config::DEBUG_VERBOSE {
                             kprintln!(
-                                "[diag][xhci] waiting legacy handoff round={} legsup={:#x}",
+                                "\x1b[90m[diag]\x1b[0m[xhci] waiting legacy handoff round={} legsup={:#x}",
                                 round,
                                 current
                             );
@@ -1876,7 +1868,7 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
                 }
 
                 if !handed_over {
-                    warn!("USB: xHCI BIOS handoff timeout, forcing BIOS-owned clear");
+                    warn!("[USB] xHCI BIOS handoff timeout, forcing BIOS-owned clear");
                     let current = read_volatile(cap_ptr);
                     write_volatile(
                         cap_ptr,
@@ -1884,14 +1876,14 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
                     );
                     if crate::config::DEBUG_VERBOSE {
                         kprintln!(
-                            "[diag][xhci] legacy handoff forced: legsup={:#x}",
+                            "\x1b[90m[diag]\x1b[0m[xhci] legacy handoff forced: legsup={:#x}",
                             read_volatile(cap_ptr)
                         );
                     }
                 }
             } else {
                 if crate::config::DEBUG_VERBOSE {
-                    kprintln!("[diag][xhci] legacy handoff not required (BIOS-owned=0)");
+                    kprintln!("\x1b[90m[diag]\x1b[0m[xhci] legacy handoff not required (BIOS-owned=0)");
                 }
             }
 
@@ -1902,7 +1894,7 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
                 let after = read_volatile(legctl_ptr);
                 if crate::config::DEBUG_VERBOSE {
                     kprintln!(
-                        "[diag][xhci] legacy ctl clear before={:#x} after={:#x}",
+                        "\x1b[90m[diag]\x1b[0m[xhci] legacy ctl clear before={:#x} after={:#x}",
                         before,
                         after
                     );
@@ -1919,7 +1911,7 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
         xecp = next;
     }
 
-    warn!("USB: xHCI ext cap scan reached step limit");
+    warn!("[USB] xHCI ext cap scan reached step limit");
 }
 
 unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
@@ -1927,7 +1919,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     let usbsts = &mut (*op_regs).usbsts;
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] reset begin usbcmd={:#x} usbsts={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] reset begin usbcmd={:#x} usbsts={:#x}",
             read_volatile(usbcmd),
             read_volatile(usbsts),
         );
@@ -1939,7 +1931,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
         write_volatile(usbsts, rw1c_mask);
         if crate::config::DEBUG_VERBOSE {
             kprintln!(
-                "[diag][xhci] reset clear usbsts rw1c mask={:#x} now={:#x}",
+                "\x1b[90m[diag]\x1b[0m[xhci] reset clear usbsts rw1c mask={:#x} now={:#x}",
                 rw1c_mask,
                 read_volatile(usbsts),
             );
@@ -1950,7 +1942,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     let mut cmd = read_volatile(usbcmd);
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] reset step1 pre-clear runstop usbcmd={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] reset step1 pre-clear runstop usbcmd={:#x}",
             cmd
         );
     }
@@ -1958,23 +1950,23 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     write_volatile(usbcmd, cmd);
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] reset step1 post-clear runstop usbcmd={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] reset step1 post-clear runstop usbcmd={:#x}",
             read_volatile(usbcmd)
         );
     }
 
     // 等待 HCH (Host Controller Halted)
-    kprintln!("USB: Waiting for xHCI halt...");
+    info!("[USB] Waiting for xHCI halt...");
     let mut timeout = XHCI_RESET_TIMEOUT_LOOPS;
     while (read_volatile(usbsts) & USBSTS_HCH) == 0 {
         if timeout == 0 {
-            kprintln!("USB: Timeout waiting for xHCI halt");
+            warn!("[USB] Timeout waiting for xHCI halt");
             break;
         }
         if timeout == XHCI_RESET_TIMEOUT_LOOPS || timeout % 1000 == 0 {
             if crate::config::DEBUG_VERBOSE {
                 kprintln!(
-                    "[diag][xhci] waiting halt usbcmd={:#x} usbsts={:#x} timeout_left={}",
+                    "\x1b[90m[diag]\x1b[0m[xhci] waiting halt usbcmd={:#x} usbsts={:#x} timeout_left={}",
                     read_volatile(usbcmd),
                     read_volatile(usbsts),
                     timeout,
@@ -1986,20 +1978,20 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     }
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] halt wait done usbcmd={:#x} usbsts={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] halt wait done usbcmd={:#x} usbsts={:#x}",
             read_volatile(usbcmd),
             read_volatile(usbsts),
         );
     }
 
     // 2. 重置控制器 (Set RESET bit)
-    debug!("USB: Resetting xHCI...");
+    debug!("[USB] Resetting xHCI...");
     cmd = read_volatile(usbcmd);
     cmd |= USBCMD_RESET;
     write_volatile(usbcmd, cmd);
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] reset step2 set HC reset usbcmd={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] reset step2 set HC reset usbcmd={:#x}",
             read_volatile(usbcmd),
         );
     }
@@ -2008,13 +2000,13 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     timeout = XHCI_RESET_TIMEOUT_LOOPS;
     while (read_volatile(usbcmd) & USBCMD_RESET) != 0 {
         if timeout == 0 {
-            warn!("USB: Timeout waiting for xHCI reset");
+            warn!("[USB] Timeout waiting for xHCI reset");
             break;
         }
         if timeout == XHCI_RESET_TIMEOUT_LOOPS || timeout % 1000 == 0 {
             if crate::config::DEBUG_VERBOSE {
                 kprintln!(
-                    "[diag][xhci] waiting HC reset clear usbcmd={:#x} usbsts={:#x} timeout_left={}",
+                    "\x1b[90m[diag]\x1b[0m[xhci] waiting HC reset clear usbcmd={:#x} usbsts={:#x} timeout_left={}",
                     read_volatile(usbcmd),
                     read_volatile(usbsts),
                     timeout,
@@ -2026,7 +2018,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     }
 
     if (read_volatile(usbcmd) & USBCMD_RESET) != 0 {
-        warn!("USB: xHCI HC reset still set, trying Light HC Reset");
+        warn!("[USB] xHCI HC reset still set, trying Light HC Reset");
         let mut lcmd = read_volatile(usbcmd);
         lcmd |= USBCMD_LHCRST;
         write_volatile(usbcmd, lcmd);
@@ -2034,13 +2026,13 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
         timeout = XHCI_RESET_TIMEOUT_LOOPS;
         while (read_volatile(usbcmd) & USBCMD_LHCRST) != 0 {
             if timeout == 0 {
-                warn!("USB: Timeout waiting for xHCI light reset");
+                warn!("[USB] Timeout waiting for xHCI light reset");
                 break;
             }
             if timeout == XHCI_RESET_TIMEOUT_LOOPS || timeout % 1000 == 0 {
                 if crate::config::DEBUG_VERBOSE {
                     kprintln!(
-                        "[diag][xhci] waiting LHCRST clear usbcmd={:#x} usbsts={:#x} timeout_left={}",
+                        "\x1b[90m[diag]\x1b[0m[xhci] waiting LHCRST clear usbcmd={:#x} usbsts={:#x} timeout_left={}",
                         read_volatile(usbcmd),
                         read_volatile(usbsts),
                         timeout,
@@ -2054,7 +2046,7 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
 
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] reset bit cleared usbcmd={:#x} usbsts={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] reset bit cleared usbcmd={:#x} usbsts={:#x}",
             read_volatile(usbcmd),
             read_volatile(usbsts),
         );
@@ -2064,13 +2056,13 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     timeout = XHCI_RESET_TIMEOUT_LOOPS;
     while (read_volatile(usbsts) & USBSTS_CNR) != 0 {
         if timeout == 0 {
-            warn!("USB: Timeout waiting for xHCI ready");
+            warn!("[USB] Timeout waiting for xHCI ready");
             break;
         }
         if timeout == XHCI_RESET_TIMEOUT_LOOPS || timeout % 1000 == 0 {
             if crate::config::DEBUG_VERBOSE {
                 kprintln!(
-                    "[diag][xhci] waiting CNR clear usbcmd={:#x} usbsts={:#x} timeout_left={}",
+                    "\x1b[90m[diag]\x1b[0m[xhci] waiting CNR clear usbcmd={:#x} usbsts={:#x} timeout_left={}",
                     read_volatile(usbcmd),
                     read_volatile(usbsts),
                     timeout,
@@ -2082,13 +2074,13 @@ unsafe fn reset_controller(op_regs: *mut OperationalRegisters) {
     }
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][xhci] cnr wait done usbcmd={:#x} usbsts={:#x}",
+            "\x1b[90m[diag]\x1b[0m[xhci] cnr wait done usbcmd={:#x} usbsts={:#x}",
             read_volatile(usbcmd),
             read_volatile(usbsts),
         );
     }
 
-    debug!("USB: xHCI Reset Complete");
+    debug!("[USB] xHCI Reset Complete");
 }
 
 // Function moved to pci/msix.rs
@@ -2114,7 +2106,7 @@ pub fn handle_interrupt() {
                     xhci.handle_transfer_event(&trb);
                 } else {
                     // Log other events?
-                    // debug!("USB: IRQ Event Type {}", trb_type);
+                    // debug!("[USB] IRQ Event Type {}", trb_type);
                 }
             }
         }

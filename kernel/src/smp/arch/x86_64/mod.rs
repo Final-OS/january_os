@@ -77,13 +77,13 @@ pub unsafe fn prepare_smp(madt: &Madt, direct_map_base: u64) {
     if let Some(wakeup) = mp_wakeup {
         let addr = wakeup.mailbox_address;
         crate::info!(
-            "SMP: Using ACPI Multiprocessor Wakeup (Mailbox: {:#x}, legacy fallback ready)",
+            "[SMP] Using ACPI Multiprocessor Wakeup (Mailbox: {:#x}, legacy fallback ready)",
             addr
         );
         MAILBOX_VIRT_ADDR.store(direct_map_base + addr, Ordering::Release);
     } else {
         MAILBOX_VIRT_ADDR.store(0, Ordering::Release);
-        crate::info!("SMP: Using Legacy Trampoline");
+        crate::info!("[SMP] Using Legacy Trampoline");
     }
 }
 
@@ -97,7 +97,7 @@ pub fn boot_ap(apic_id: u32, direct_map_base: u64) -> bool {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][smp] apic_id={} ap_stack_top={:#x} ap_stack_pfn={:#x}",
+            "\x1b[90m[diag]\x1b[0m[smp] apic_id={} ap_stack_top={:#x} ap_stack_pfn={:#x}",
             apic_id,
             stack_top,
             mm::page_to_pfn(stack),
@@ -155,7 +155,7 @@ pub fn boot_ap(apic_id: u32, direct_map_base: u64) -> bool {
 
 /// Boot AP using ACPI Multiprocessor Wakeup
 unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) -> bool {
-    crate::info!("  [SMP] Booting AP {} via ACPI Wakeup...", apic_id);
+        crate::info!("[SMP] Booting AP {} via ACPI Wakeup...", apic_id);
     let mailbox_virt = MAILBOX_VIRT_ADDR.load(Ordering::Acquire);
     let mailbox = &mut *(mailbox_virt as *mut MultiprocessorWakeupMailbox);
 
@@ -172,7 +172,7 @@ unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) -> bool {
         MultiprocessorWakeupMailbox::COMMAND_WAKEUP,
     );
     if crate::config::DEBUG_VERBOSE {
-        crate::kprintln!("[diag][smp] acpi wakeup sent apic_id={}", apic_id);
+        crate::kprintln!("\x1b[90m[diag]\x1b[0m[smp] acpi wakeup sent apic_id={}", apic_id);
     }
 
     // 2. 等待 AP 启动并读取完数据
@@ -181,7 +181,7 @@ unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) -> bool {
         core::hint::spin_loop();
         timeout += 1;
         if timeout > AP_START_TIMEOUT_SPINS {
-            crate::warn!("  [SMP] AP {} (ACPI) start timeout!", apic_id);
+            crate::warn!("[SMP] AP {} (ACPI) start timeout!", apic_id);
             AP_STARTED.store(false, Ordering::Release);
             return false;
         }
@@ -192,7 +192,7 @@ unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) -> bool {
 
 /// Boot AP using Legacy Trampoline (SIPI)
 unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) -> bool {
-    crate::info!("  [SMP] Booting AP {} via Legacy Trampoline...", apic_id);
+    crate::info!("[SMP] Booting AP {} via Legacy Trampoline...", apic_id);
     let pml4_phys = read_cr3();
 
     // Read BSP's GDTR and IDTR
@@ -222,13 +222,13 @@ unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) -> 
     // Send INIT-SIPI-SIPI
     interrupt::send_init_ipi(apic_id);
     if crate::config::DEBUG_VERBOSE {
-        crate::kprintln!("[diag][smp] INIT sent apic_id={}", apic_id);
+        crate::kprintln!("\x1b[90m[diag]\x1b[0m[smp] INIT sent apic_id={}", apic_id);
     }
     delay_ms(10);
 
     let vector = (trampoline::TRAMPOLINE_BASE >> 12) as u8; // 0x08
     if crate::config::DEBUG_VERBOSE {
-        crate::kprintln!("[diag][smp] SIPI vector={:#x} apic_id={}", vector, apic_id);
+        crate::kprintln!("\x1b[90m[diag]\x1b[0m[smp] SIPI vector={:#x} apic_id={}", vector, apic_id);
     }
     interrupt::send_sipi(apic_id, vector);
     delay_us(200);
@@ -240,7 +240,7 @@ unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) -> 
         core::hint::spin_loop();
         timeout += 1;
         if timeout > AP_START_TIMEOUT_SPINS {
-            crate::warn!("  [SMP] AP {} start timeout!", apic_id);
+            crate::warn!("[SMP] AP {} start timeout!", apic_id);
             // 超时也必须重置标志，但不能继续启动下一个 AP
             // 因为当前 AP 可能稍后才读取 trampoline 数据
             AP_STARTED.store(false, Ordering::Release);
@@ -317,7 +317,7 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][smp] ap_entry cpu_id={} local_apic_id={} if={} online_cpus={}",
+            "\x1b[90m[diag]\x1b[0m[smp] ap_entry cpu_id={} local_apic_id={} if={} online_cpus={}",
             cpu_id,
             interrupt::local_apic_id(),
             interrupt::interrupts_enabled(),
@@ -325,7 +325,7 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
         );
     }
 
-    crate::kprintln!("      [SMP] AP Started (CPU {})", cpu_id);
+    crate::info!("[SMP] AP Started (CPU {})", cpu_id);
 
     crate::task::scheduler::run_idle()
 }

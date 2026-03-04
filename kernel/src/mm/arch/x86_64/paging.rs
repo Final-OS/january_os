@@ -47,6 +47,8 @@ pub const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 /// 页表层级
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageTableLevel {
+    /// PML5 (5-level paging root)
+    Pml5 = 5,
     /// PML4 (Page Map Level 4) - 512 GB 每项
     Pml4 = 4,
     /// PDPT (Page Directory Pointer Table) - 1 GB 每项
@@ -61,6 +63,7 @@ impl PageTableLevel {
     /// 获取每个条目覆盖的地址范围大小
     pub const fn entry_size(&self) -> u64 {
         match self {
+            PageTableLevel::Pml5 => 256 * 1024 * 1024 * 1024 * 1024, // 256 TB
             PageTableLevel::Pml4 => 512 * 1024 * 1024 * 1024, // 512 GB
             PageTableLevel::Pdpt => 1024 * 1024 * 1024,       // 1 GB
             PageTableLevel::Pd => 2 * 1024 * 1024,            // 2 MB
@@ -71,6 +74,7 @@ impl PageTableLevel {
     /// 获取下一级页表层级
     pub const fn next_level(&self) -> Option<PageTableLevel> {
         match self {
+            PageTableLevel::Pml5 => Some(PageTableLevel::Pml4),
             PageTableLevel::Pml4 => Some(PageTableLevel::Pdpt),
             PageTableLevel::Pdpt => Some(PageTableLevel::Pd),
             PageTableLevel::Pd => Some(PageTableLevel::Pt),
@@ -261,6 +265,12 @@ pub const fn pml4_index(virt: u64) -> usize {
     ((virt >> 39) & 0x1FF) as usize
 }
 
+/// 从虚拟地址提取 PML5 索引
+#[inline]
+pub const fn pml5_index(virt: u64) -> usize {
+    ((virt >> 48) & 0x1FF) as usize
+}
+
 /// 从虚拟地址提取 PDPT 索引
 #[inline]
 pub const fn pdpt_index(virt: u64) -> usize {
@@ -285,6 +295,22 @@ pub const fn page_offset(virt: u64) -> usize {
     (virt & 0xFFF) as usize
 }
 
+#[inline]
+const fn level_shift(level: u8) -> u8 {
+    12 + (level - 1) * 9
+}
+
+/// 按页表层级提取索引：
+/// - level=5 => PML5 index
+/// - level=4 => PML4 index
+/// - level=3 => PDPT index
+/// - level=2 => PD index
+/// - level=1 => PT index
+#[inline]
+pub const fn level_index(virt: u64, level: u8) -> usize {
+    ((virt >> level_shift(level)) & 0x1FF) as usize
+}
+
 // ============================================================================
 // 页表管理器
 // ============================================================================
@@ -293,10 +319,14 @@ pub const fn page_offset(virt: u64) -> usize {
 ///
 /// 负责管理内核页表，提供虚拟地址映射功能
 pub struct PageTableManager {
-    /// PML4 物理地址
-    pml4_phys: u64,
+    /// 根页表物理地址（4-level 为 PML4，5-level 为 PML5）
+    root_phys: u64,
     /// 直接映射偏移
     direct_map_offset: u64,
+    /// 页表层级（4/5）
+    page_levels: u8,
+    /// 规范地址位宽（48/57）
+    va_bits: u8,
 }
 
 /// 全局页表操作锁
@@ -410,7 +440,7 @@ pub fn register_tlb_shootdown_cpu() {
             .is_ok()
     {
         if crate::config::DEBUG_VERBOSE {
-            crate::kprintln!("[diag][tlb] register shootdown cpu apic_id={}", apic_id,);
+            crate::kprintln!("\x1b[90m[diag]\x1b[0m[tlb] register shootdown cpu apic_id={}", apic_id,);
         }
     }
 }
@@ -467,7 +497,7 @@ fn shootdown_other_cpus() {
         {
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][tlb] skip shootdown: interrupt/APIC not ready (int_init={} apic_init={})",
+                    "\x1b[90m[diag]\x1b[0m[tlb] skip shootdown: interrupt/APIC not ready (int_init={} apic_init={})",
                     interrupt::initialized(),
                     interrupt::apic_initialized(),
                 );
@@ -492,7 +522,7 @@ fn shootdown_other_cpus() {
     {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][tlb] send shootdown ipi vector={:#x} targets={} from_apic_id={}",
+                "\x1b[90m[diag]\x1b[0m[tlb] send shootdown ipi vector={:#x} targets={} from_apic_id={}",
                 interrupt::IPI_TLB_SHOOTDOWN,
                 target_count,
                 self_apic_id,
@@ -534,7 +564,7 @@ pub fn handle_tlb_shootdown_ipi() {
     {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][tlb] first shootdown IPI received on apic_id={}",
+                "\x1b[90m[diag]\x1b[0m[tlb] first shootdown IPI received on apic_id={}",
                 interrupt::local_apic_id(),
             );
         }
@@ -608,11 +638,30 @@ impl PageTableManager {
     /// 创建页表管理器
     ///
     /// # Safety
-    /// pml4_phys 必须指向有效的 PML4 页表
-    pub const unsafe fn new(pml4_phys: u64, direct_map_offset: u64) -> Self {
+    /// `root_phys` 必须指向有效根页表（4-level 为 PML4，5-level 为 PML5）
+    pub unsafe fn new(root_phys: u64, direct_map_offset: u64) -> Self {
+        let page_levels = crate::mm::vm::layout_runtime::page_levels();
+        let va_bits = crate::mm::vm::layout_runtime::va_bits();
+        unsafe { Self::new_with_layout(root_phys, direct_map_offset, page_levels, va_bits) }
+    }
+
+    /// 创建页表管理器（显式指定页表层级与 VA 位宽）
+    ///
+    /// # Safety
+    /// `root_phys` 必须指向与 `page_levels` 匹配的根页表。
+    pub const unsafe fn new_with_layout(
+        root_phys: u64,
+        direct_map_offset: u64,
+        page_levels: u8,
+        va_bits: u8,
+    ) -> Self {
+        let levels = if page_levels == 5 { 5 } else { 4 };
+        let bits = if levels == 5 && va_bits == 57 { 57 } else { 48 };
         Self {
-            pml4_phys,
+            root_phys,
             direct_map_offset,
+            page_levels: levels,
+            va_bits: bits,
         }
     }
 
@@ -628,19 +677,60 @@ impl PageTableManager {
         virt - self.direct_map_offset
     }
 
-    /// 获取 PML4 页表
-    pub fn pml4(&self) -> &PageTable {
-        unsafe { &*(self.phys_to_virt(self.pml4_phys) as *const PageTable) }
+    #[inline]
+    pub const fn page_levels(&self) -> u8 {
+        self.page_levels
     }
 
-    /// 获取 PML4 页表可变引用
-    pub fn pml4_mut(&mut self) -> &mut PageTable {
-        unsafe { &mut *(self.phys_to_virt(self.pml4_phys) as *mut PageTable) }
+    #[inline]
+    pub const fn va_bits(&self) -> u8 {
+        self.va_bits
     }
 
-    /// 获取 PML4 物理地址
+    /// 获取根页表
+    pub fn root_table(&self) -> &PageTable {
+        unsafe { &*(self.phys_to_virt(self.root_phys) as *const PageTable) }
+    }
+
+    /// 获取根页表可变引用
+    pub fn root_table_mut(&mut self) -> &mut PageTable {
+        unsafe { &mut *(self.phys_to_virt(self.root_phys) as *mut PageTable) }
+    }
+
+    /// 获取根页表物理地址
+    pub const fn root_phys(&self) -> u64 {
+        self.root_phys
+    }
+
+    /// 兼容接口：返回 CR3 根页表地址。
     pub const fn pml4_phys(&self) -> u64 {
-        self.pml4_phys
+        self.root_phys
+    }
+
+    #[inline]
+    unsafe fn table_ref(&self, phys: u64) -> &PageTable {
+        unsafe { &*(self.phys_to_virt(phys) as *const PageTable) }
+    }
+
+    #[inline]
+    unsafe fn table_mut(&self, phys: u64) -> &mut PageTable {
+        unsafe { &mut *(self.phys_to_virt(phys) as *mut PageTable) }
+    }
+
+    #[inline]
+    unsafe fn alloc_zeroed_table_phys(&self) -> Option<u64> {
+        let page = alloc_pages(0, GFP_KERNEL_ZERO)?;
+        let pfn = page_to_pfn(page);
+        let table_phys = pfn * config::PAGE_SIZE;
+        // 防御式清零：避免分配器快路径遗漏 GFP_ZERO 语义时引入脏页表。
+        unsafe {
+            core::ptr::write_bytes(
+                self.phys_to_virt(table_phys) as *mut u8,
+                0,
+                config::PAGE_SIZE as usize,
+            );
+        }
+        Some(table_phys)
     }
 
     /// 遍历页表，查找虚拟地址对应的页表条目
@@ -648,48 +738,32 @@ impl PageTableManager {
     /// 返回 (条目, 页表层级, 页面大小)
     pub fn translate(&self, virt_addr: u64) -> Option<(PageTableEntry, PageTableLevel, u64)> {
         let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
-        let pml4 = self.pml4();
-        let pml4_entry = pml4.entry(pml4_index(virt_addr));
+        let mut table_phys = self.root_phys;
 
-        if !pml4_entry.is_present() {
+        for level in (2..=self.page_levels).rev() {
+            let idx = level_index(virt_addr, level);
+            let table = unsafe { self.table_ref(table_phys) };
+            let entry = table.entry(idx);
+            if !entry.is_present() {
+                return None;
+            }
+
+            if level == 3 && entry.is_huge() {
+                return Some((*entry, PageTableLevel::Pdpt, 1024 * 1024 * 1024));
+            }
+            if level == 2 && entry.is_huge() {
+                return Some((*entry, PageTableLevel::Pd, 2 * 1024 * 1024));
+            }
+
+            table_phys = entry.phys_addr();
+        }
+
+        let pt = unsafe { self.table_ref(table_phys) };
+        let pte = pt.entry(level_index(virt_addr, 1));
+        if !pte.is_present() {
             return None;
         }
-
-        // PDPT
-        let pdpt = unsafe { &*(self.phys_to_virt(pml4_entry.phys_addr()) as *const PageTable) };
-        let pdpt_entry = pdpt.entry(pdpt_index(virt_addr));
-
-        if !pdpt_entry.is_present() {
-            return None;
-        }
-
-        // 1GB 大页面?
-        if pdpt_entry.is_huge() {
-            return Some((*pdpt_entry, PageTableLevel::Pdpt, 1024 * 1024 * 1024));
-        }
-
-        // PD
-        let pd = unsafe { &*(self.phys_to_virt(pdpt_entry.phys_addr()) as *const PageTable) };
-        let pd_entry = pd.entry(pd_index(virt_addr));
-
-        if !pd_entry.is_present() {
-            return None;
-        }
-
-        // 2MB 大页面?
-        if pd_entry.is_huge() {
-            return Some((*pd_entry, PageTableLevel::Pd, 2 * 1024 * 1024));
-        }
-
-        // PT
-        let pt = unsafe { &*(self.phys_to_virt(pd_entry.phys_addr()) as *const PageTable) };
-        let pt_entry = pt.entry(pt_index(virt_addr));
-
-        if !pt_entry.is_present() {
-            return None;
-        }
-
-        Some((*pt_entry, PageTableLevel::Pt, config::PAGE_SIZE))
+        Some((*pte, PageTableLevel::Pt, config::PAGE_SIZE))
     }
 
     /// 将虚拟地址转换为物理地址
@@ -758,93 +832,34 @@ impl PageTableManager {
     /// - 需要确保分配内存成功
     pub unsafe fn map_page(&self, virt: u64, phys: u64, flags: u64) -> bool {
         let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
-        let direct_map_offset = self.direct_map_offset;
-        let pml4_phys = self.pml4_phys;
+        let mut table_phys = self.root_phys;
 
-        let phys_to_virt = |p: u64| direct_map_offset + p;
+        for level in (2..=self.page_levels).rev() {
+            let idx = level_index(virt, level);
+            let table = unsafe { self.table_mut(table_phys) };
+            let entry = table.entry_mut(idx);
 
-        let pml4 = &mut *(phys_to_virt(pml4_phys) as *mut PageTable);
-        let pml4_idx = pml4_index(virt);
-        let pml4_entry = &mut pml4.entries[pml4_idx];
+            if entry.is_huge() {
+                // 4KB 映射不能直接穿透已有 huge 映射。
+                return false;
+            }
 
-        if !pml4_entry.is_present() {
-            let page = match alloc_pages(0, GFP_KERNEL_ZERO) {
-                Some(p) => p,
-                None => {
+            if !entry.is_present() {
+                let Some(next_phys) = (unsafe { self.alloc_zeroed_table_phys() }) else {
                     return false;
-                }
-            };
-            let pfn = page_to_pfn(page);
-            let table_phys = pfn * config::PAGE_SIZE;
+                };
+                entry.set_phys_addr(next_phys);
+                entry.set_present(true);
+                entry.set_writable(true);
+                entry.set_user(true);
+            }
 
-            // 防御式清零：避免分配器快路径遗漏 GFP_ZERO 语义时引入脏页表。
-            core::ptr::write_bytes(
-                phys_to_virt(table_phys) as *mut u8,
-                0,
-                config::PAGE_SIZE as usize,
-            );
-
-            pml4_entry.set_phys_addr(table_phys);
-            pml4_entry.set_present(true);
-            pml4_entry.set_writable(true);
-            pml4_entry.set_user(true);
+            table_phys = entry.phys_addr();
         }
 
-        let pdpt = &mut *(phys_to_virt(pml4_entry.phys_addr()) as *mut PageTable);
-        let pdpt_idx = pdpt_index(virt);
-        let pdpt_entry = &mut pdpt.entries[pdpt_idx];
-
-        if !pdpt_entry.is_present() {
-            let page = match alloc_pages(0, GFP_KERNEL_ZERO) {
-                Some(p) => p,
-                None => {
-                    return false;
-                }
-            };
-            let pfn = page_to_pfn(page);
-            let table_phys = pfn * config::PAGE_SIZE;
-
-            core::ptr::write_bytes(
-                phys_to_virt(table_phys) as *mut u8,
-                0,
-                config::PAGE_SIZE as usize,
-            );
-
-            pdpt_entry.set_phys_addr(table_phys);
-            pdpt_entry.set_present(true);
-            pdpt_entry.set_writable(true);
-            pdpt_entry.set_user(true);
-        }
-
-        let pd = &mut *(phys_to_virt(pdpt_entry.phys_addr()) as *mut PageTable);
-        let pd_idx = pd_index(virt);
-        let pd_entry = &mut pd.entries[pd_idx];
-
-        if !pd_entry.is_present() {
-            let page = match alloc_pages(0, GFP_KERNEL_ZERO) {
-                Some(p) => p,
-                None => {
-                    return false;
-                }
-            };
-            let pfn = page_to_pfn(page);
-            let table_phys = pfn * config::PAGE_SIZE;
-
-            core::ptr::write_bytes(
-                phys_to_virt(table_phys) as *mut u8,
-                0,
-                config::PAGE_SIZE as usize,
-            );
-
-            pd_entry.set_phys_addr(table_phys);
-            pd_entry.set_present(true);
-            pd_entry.set_writable(true);
-            pd_entry.set_user(true);
-        }
-
-        let pt = &mut *(phys_to_virt(pd_entry.phys_addr()) as *mut PageTable);
-        let pt_idx = pt_index(virt);
-        let pt_entry = &mut pt.entries[pt_idx];
+        let pt = unsafe { self.table_mut(table_phys) };
+        let pt_idx = level_index(virt, 1);
+        let pt_entry = pt.entry_mut(pt_idx);
 
         let was_present = pt_entry.is_present();
 
@@ -878,76 +893,57 @@ impl PageTableManager {
     /// 空的中间页表页会被自动回收。
     pub unsafe fn unmap_page(&self, virt: u64) -> bool {
         let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
-        let direct_map_offset = self.direct_map_offset;
-        let pml4_phys = self.pml4_phys;
+        const MAX_LEVELS: usize = 5;
+        let mut parent_phys_path = [0u64; MAX_LEVELS];
+        let mut parent_idx_path = [0usize; MAX_LEVELS];
+        let mut path_len = 0usize;
 
-        let phys_to_virt = |p: u64| direct_map_offset + p;
+        let mut table_phys = self.root_phys;
+        for level in (2..=self.page_levels).rev() {
+            let idx = level_index(virt, level);
+            parent_phys_path[path_len] = table_phys;
+            parent_idx_path[path_len] = idx;
+            path_len += 1;
 
-        let pml4 = &mut *(phys_to_virt(pml4_phys) as *mut PageTable);
-        let pml4_idx = pml4_index(virt);
-        let pml4_entry = &mut pml4.entries[pml4_idx];
+            let table = unsafe { self.table_mut(table_phys) };
+            let entry = table.entry_mut(idx);
+            if !entry.is_present() {
+                return false;
+            }
 
-        if !pml4_entry.is_present() {
-            return false;
+            if (level == 3 || level == 2) && entry.is_huge() {
+                *entry = PageTableEntry::empty();
+                drop(_pt_guard);
+                self.flush_tlb_global(virt);
+                return true;
+            }
+
+            table_phys = entry.phys_addr();
         }
 
-        let pdpt_phys = pml4_entry.phys_addr();
-        let pdpt = &mut *(phys_to_virt(pdpt_phys) as *mut PageTable);
-        let pdpt_idx = pdpt_index(virt);
-        let pdpt_entry = &mut pdpt.entries[pdpt_idx];
-
-        if !pdpt_entry.is_present() {
-            return false;
-        }
-
-        if pdpt_entry.is_huge() {
-            *pdpt_entry = PageTableEntry::empty();
-            drop(_pt_guard);
-            self.flush_tlb_global(virt);
-            return true;
-        }
-
-        let pd_phys = pdpt_entry.phys_addr();
-        let pd = &mut *(phys_to_virt(pd_phys) as *mut PageTable);
-        let pd_idx = pd_index(virt);
-        let pd_entry = &mut pd.entries[pd_idx];
-
-        if !pd_entry.is_present() {
-            return false;
-        }
-
-        if pd_entry.is_huge() {
-            *pd_entry = PageTableEntry::empty();
-            drop(_pt_guard);
-            self.flush_tlb_global(virt);
-            return true;
-        }
-
-        let pt_phys = pd_entry.phys_addr();
-        let pt = &mut *(phys_to_virt(pt_phys) as *mut PageTable);
-        let pt_idx = pt_index(virt);
-        let pt_entry = &mut pt.entries[pt_idx];
-
+        let pt_phys = table_phys;
+        let pt = unsafe { self.table_mut(pt_phys) };
+        let pt_idx = level_index(virt, 1);
+        let pt_entry = pt.entry_mut(pt_idx);
         if !pt_entry.is_present() {
             return false;
         }
-
         *pt_entry = PageTableEntry::empty();
 
-        // 回收空的中间页表页（PT → PD → PDPT，不回收 PML4）
-        if Self::is_table_empty(pt) {
-            *pd_entry = PageTableEntry::empty();
-            free_page(&mut *pfn_to_page(pt_phys / config::PAGE_SIZE));
-
-            if Self::is_table_empty(pd) {
-                *pdpt_entry = PageTableEntry::empty();
-                free_page(&mut *pfn_to_page(pd_phys / config::PAGE_SIZE));
-
-                if Self::is_table_empty(pdpt) {
-                    *pml4_entry = PageTableEntry::empty();
-                    free_page(&mut *pfn_to_page(pdpt_phys / config::PAGE_SIZE));
-                }
+        // 自底向上回收空页表（不回收根页表）。
+        let mut child_phys = pt_phys;
+        for i in (0..path_len).rev() {
+            let child_table = unsafe { self.table_ref(child_phys) };
+            if !Self::is_table_empty(child_table) {
+                break;
             }
+
+            let parent_phys = parent_phys_path[i];
+            let parent_idx = parent_idx_path[i];
+            let parent = unsafe { self.table_mut(parent_phys) };
+            *parent.entry_mut(parent_idx) = PageTableEntry::empty();
+            Self::free_table_page(child_phys);
+            child_phys = parent_phys;
         }
 
         drop(_pt_guard);
@@ -960,9 +956,19 @@ impl PageTableManager {
         table.entries().iter().all(|e| !e.is_present())
     }
 
+    fn free_table_page(table_phys: u64) {
+        let pfn = table_phys / config::PAGE_SIZE;
+        if pfn >= max_pfn() {
+            return;
+        }
+        unsafe {
+            free_page(&mut *pfn_to_page(pfn));
+        }
+    }
+
     /// 获取 PML4 中存在的条目数量
     pub fn count_pml4_entries(&self) -> usize {
-        self.pml4()
+        self.root_table()
             .entries()
             .iter()
             .filter(|e| e.is_present())

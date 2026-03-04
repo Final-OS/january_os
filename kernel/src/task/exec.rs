@@ -162,7 +162,7 @@ fn current_mm_pgd() -> u64 {
 #[inline]
 fn current_page_table_manager() -> mm::PageTableManager {
     let pml4_phys = current_mm_pgd();
-    unsafe { mm::PageTableManager::new(pml4_phys, mm::DIRECT_MAP_OFFSET) }
+    unsafe { mm::PageTableManager::new(pml4_phys, mm::direct_map_offset()) }
 }
 
 #[inline]
@@ -176,7 +176,7 @@ fn log_mapping_conflict(pt_mgr: &mm::PageTableManager, virt: u64, tag: &str) {
     if let Some((entry, level, page_size)) = pt_mgr.translate(virt) {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][execve] map conflict tag={} virt={:#x} phys={:#x} level={:?} page_size={:#x} flags={:#x}",
+                "\x1b[90m[diag]\x1b[0m[execve] map conflict tag={} virt={:#x} phys={:#x} level={:?} page_size={:#x} flags={:#x}",
                 tag,
                 virt,
                 entry.phys_addr(),
@@ -191,7 +191,7 @@ fn log_mapping_conflict(pt_mgr: &mm::PageTableManager, virt: u64, tag: &str) {
     if let Some(phys) = pt_mgr.translate_addr(virt) {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][execve] map conflict tag={} virt={:#x} phys={:#x} (translate_addr fallback)",
+                "\x1b[90m[diag]\x1b[0m[execve] map conflict tag={} virt={:#x} phys={:#x} (translate_addr fallback)",
                 tag,
                 virt,
                 phys,
@@ -202,7 +202,7 @@ fn log_mapping_conflict(pt_mgr: &mm::PageTableManager, virt: u64, tag: &str) {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][execve] map conflict tag={} virt={:#x} (translation unavailable)",
+            "\x1b[90m[diag]\x1b[0m[execve] map conflict tag={} virt={:#x} (translation unavailable)",
             tag,
             virt,
         );
@@ -221,7 +221,7 @@ fn validate_target_unmapped(
             if pt_mgr.translate_addr(virt).is_some() {
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "[diag][execve] segment page already mapped seg={} page_idx={} range=[{:#x}, {:#x})",
+                        "\x1b[90m[diag]\x1b[0m[execve] segment page already mapped seg={} page_idx={} range=[{:#x}, {:#x})",
                         segment_idx,
                         page_idx,
                         segment.page_start,
@@ -240,7 +240,7 @@ fn validate_target_unmapped(
         if pt_mgr.translate_addr(virt).is_some() {
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][execve] stack page already mapped page_idx={} range=[{:#x}, {:#x})",
+                    "\x1b[90m[diag]\x1b[0m[execve] stack page already mapped page_idx={} range=[{:#x}, {:#x})",
                     page_idx,
                     stack_bottom,
                     plan.stack_top,
@@ -275,7 +275,7 @@ fn map_zero_page(
         };
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][execve] map_zero_page invalid page metadata kind={:?} virt={:#x} page_ptr={:#x} pfn={} max_pfn={} vmemmap_base={:#x} raw_offset={}",
+                "\x1b[90m[diag]\x1b[0m[execve] map_zero_page invalid page metadata kind={:?} virt={:#x} page_ptr={:#x} pfn={} max_pfn={} vmemmap_base={:#x} raw_offset={}",
                 kind,
                 virt,
                 page_ptr,
@@ -293,7 +293,7 @@ fn map_zero_page(
         None => {
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][execve] map_zero_page pfn overflow kind={:?} virt={:#x} page_ptr={:#x} pfn={} page_size={:#x}",
+                    "\x1b[90m[diag]\x1b[0m[execve] map_zero_page pfn overflow kind={:?} virt={:#x} page_ptr={:#x} pfn={} page_size={:#x}",
                     kind,
                     virt,
                     page_ptr,
@@ -309,7 +309,7 @@ fn map_zero_page(
     if !mapped_ok {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][execve] map_zero_page map_page failed kind={:?} virt={:#x} phys={:#x}",
+                "\x1b[90m[diag]\x1b[0m[execve] map_zero_page map_page failed kind={:?} virt={:#x} phys={:#x}",
                 kind,
                 virt,
                 phys,
@@ -647,7 +647,7 @@ pub fn stage_pt_load_mappings(
     if let Err(errno) = stage_result {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][execve] stage map rollback errno={} mapped_pages={}",
+                "\x1b[90m[diag]\x1b[0m[execve] stage map rollback errno={} mapped_pages={}",
                 errno,
                 mapped_pages.len()
             );

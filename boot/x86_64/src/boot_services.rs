@@ -10,14 +10,10 @@ use uefi::Identify;
 use crate::bootinfo::{
     DiskInfo, DiskType, FramebufferInfo, PixelFormatType, KERNEL_PHYS_ADDR, MAX_DISKS,
 };
-use crate::console::{print_dec, print_uefi, println_uefi};
-
 pub fn setup_graphics() -> FramebufferInfo {
-    println_uefi("      Getting GOP handle...");
     let gop_handle = match boot::get_handle_for_protocol::<GraphicsOutput>() {
         Ok(h) => h,
         Err(_) => {
-            println_uefi("      GOP not available, using fallback");
             return FramebufferInfo {
                 address: 0,
                 size: 0,
@@ -31,7 +27,6 @@ pub fn setup_graphics() -> FramebufferInfo {
         }
     };
 
-    println_uefi("      Opening GOP protocol...");
     let gop = unsafe {
         boot::open_protocol::<GraphicsOutput>(
             boot::OpenProtocolParams {
@@ -46,7 +41,6 @@ pub fn setup_graphics() -> FramebufferInfo {
     let mut gop = match gop {
         Ok(g) => g,
         Err(_) => {
-            println_uefi("      Failed to open GOP, using fallback");
             return FramebufferInfo {
                 address: 0,
                 size: 0,
@@ -60,17 +54,14 @@ pub fn setup_graphics() -> FramebufferInfo {
         }
     };
 
-    println_uefi("      Getting mode info...");
     let mode_info = gop.current_mode_info();
     let (width, height) = mode_info.resolution();
     let stride = mode_info.stride() as u32;
 
-    println_uefi("      Getting framebuffer...");
     let mut fb = gop.frame_buffer();
     let fb_addr = fb.as_mut_ptr() as u64;
     let fb_size = fb.size() as u64;
 
-    println_uefi("      Setup complete.");
     let pixel_format = match mode_info.pixel_format() {
         PixelFormat::Rgb => PixelFormatType::Rgb as u32,
         PixelFormat::Bgr => PixelFormatType::Bgr as u32,
@@ -98,7 +89,6 @@ pub fn load_kernel() -> usize {
 
     let mut root = fs.open_volume().expect("Failed to open volume");
 
-    println_uefi("      Opening kernel file...");
     let kernel_file_handle = root
         .open(
             uefi::cstr16!("\\EFI\\january_os\\kernel.bin"),
@@ -111,14 +101,12 @@ pub fn load_kernel() -> usize {
         .into_regular_file()
         .expect("Kernel is not a regular file");
 
-    println_uefi("      Getting file info...");
     let mut info_buf = [0u8; 256];
     let file_info: &FileInfo = kernel_file
         .get_info(&mut info_buf)
         .expect("Failed to get file info");
     let kernel_size = file_info.file_size() as usize;
 
-    println_uefi("      Allocating memory...");
     let pages = (kernel_size + 4095) / 4096;
     boot::allocate_pages(
         boot::AllocateType::Address(KERNEL_PHYS_ADDR),
@@ -127,7 +115,6 @@ pub fn load_kernel() -> usize {
     )
     .expect("Failed to allocate memory for kernel");
 
-    println_uefi("      Reading kernel...");
     let kernel_buffer =
         unsafe { core::slice::from_raw_parts_mut(KERNEL_PHYS_ADDR as *mut u8, kernel_size) };
     kernel_file
@@ -188,19 +175,6 @@ pub fn scan_disks(diskinfo_phys: u64) -> (u32, i32) {
             unsafe {
                 core::ptr::write_volatile(disk_info_base.add(count as usize), disk_info);
             }
-
-            print_uefi("      Disk ");
-            print_dec(count as u64);
-            print_uefi(": ");
-            match disk_type {
-                x if x == DiskType::HardDisk as u32 => print_uefi("HDD"),
-                x if x == DiskType::CdRom as u32 => print_uefi("CD-ROM"),
-                x if x == DiskType::Usb as u32 => print_uefi("USB"),
-                _ => print_uefi("Unknown"),
-            }
-            print_uefi(", ");
-            print_dec(total_size / 1024 / 1024);
-            println_uefi(" MB");
 
             count += 1;
         }

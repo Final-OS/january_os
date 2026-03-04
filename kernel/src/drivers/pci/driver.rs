@@ -82,7 +82,7 @@ static DRIVER_REGISTRY: Mutex<Vec<Box<dyn PciDriver>>> = Mutex::new(Vec::new());
 
 /// Register a PCI driver
 pub fn register_driver(driver: Box<dyn PciDriver>) {
-    diag!("PCI: register driver '{}'", driver.name());
+    diag!("[PCI] register driver '{}'", driver.name());
     DRIVER_REGISTRY.lock().push(driver);
 }
 
@@ -94,7 +94,7 @@ pub fn probe_device(addr: PciAddress, header: &PciHeader) -> bool {
     for driver in registry.iter() {
         for id in driver.supported_ids() {
             if id.matches(header) {
-                diag!("PCI: [{:02x}:{:02x}.{:x}] {:04x}:{:04x} -> '{}'",
+                diag!("[PCI] [{:02x}:{:02x}.{:x}] {:04x}:{:04x} -> '{}'",
                     addr.bus, addr.device, addr.function,
                     header.vendor_id, header.device_id, driver.name());
 
@@ -102,7 +102,7 @@ pub fn probe_device(addr: PciAddress, header: &PciHeader) -> bool {
                     ProbeResult::Claimed => return true,
                     ProbeResult::Unsupported => continue,
                     ProbeResult::Error(msg) => {
-                        crate::error!("PCI: '{}' probe failed: {}", driver.name(), msg);
+                        crate::error!("[PCI] '{}' probe failed: {}", driver.name(), msg);
                         continue;
                     }
                 }

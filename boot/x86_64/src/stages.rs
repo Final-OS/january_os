@@ -5,7 +5,8 @@ use crate::boot_services::{
 };
 use crate::bootinfo::FramebufferInfo;
 use crate::buffers::BootBufferLayout;
-use crate::console::{print_dec, print_diag, print_stage, print_uefi, println_uefi};
+use crate::console::{print_bool, print_dec, print_hex, print_stage, print_uefi, println_uefi};
+use crate::paging::probe_paging_mode;
 
 const KERNEL_CMDLINE: &[u8] = b"console=ttyS0 loglevel=7\0";
 
@@ -51,7 +52,13 @@ pub fn run_pre_exit_stages(buffers: &BootBufferLayout) -> StageState {
     let (disk_count, boot_disk_index) = scan_disks(buffers.diskinfo_phys);
     print_uefi("      ");
     print_dec(disk_count as u64);
-    println_uefi(" disks");
+    print_uefi(" disks, boot=");
+    if boot_disk_index >= 0 {
+        print_dec(boot_disk_index as u64);
+    } else {
+        print_uefi("N/A");
+    }
+    println_uefi("");
 
     // Stage 4: ACPI
     print_stage(4, "ACPI");
@@ -87,7 +94,39 @@ pub fn run_pre_exit_stages(buffers: &BootBufferLayout) -> StageState {
     // Stage 7: Page Tables
     let cmdline_len = write_kernel_cmdline(buffers.cmdline_phys);
     print_stage(7, "Page tables");
-    print_diag("Preparing identity map...");
+    let probe = probe_paging_mode();
+    print_uefi("      LA57 probe: cpuid.7.0.ecx=");
+    print_hex(probe.cpuid_7_0_ecx as u64);
+    print_uefi(" cr4=");
+    print_hex(probe.cr4);
+    print_uefi(" supported=");
+    print_bool(probe.la57_supported);
+    print_uefi(" active=");
+    print_bool(probe.la57_active);
+    println_uefi("");
+    print_uefi("      Paging mode: requested=");
+    if probe.va_mode_la57_prefer {
+        print_uefi("la57_prefer");
+    } else {
+        print_uefi("4level");
+    }
+    print_uefi(" fallback=");
+    if probe.fallback_4level {
+        print_uefi("4level");
+    } else {
+        print_uefi("none");
+    }
+    print_uefi(" selected_levels=");
+    print_dec(probe.selected_page_levels as u64);
+    print_uefi(" va_bits=");
+    print_dec(probe.selected_va_bits as u64);
+    print_uefi(" transition=");
+    if probe.transition_requested {
+        print_uefi("la57_trampoline");
+    } else {
+        print_uefi("none");
+    }
+    println_uefi("");
 
     // Stage 8: Exit Boot Services
     print_stage(8, "Exit BS");

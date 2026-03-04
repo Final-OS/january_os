@@ -3,7 +3,7 @@
 //! 负责按顺序初始化各个子系统。
 
 use crate::arch;
-use crate::boot::{BootInfo, BOOTINFO_MAGIC};
+use crate::boot::{BootInfo, BOOTINFO_MAGIC, MAX_MEMORY_REGIONS};
 use crate::config;
 use crate::drivers::tty::fbcon;
 use crate::drivers::tty::{serial, serial_enable_rx_interrupt, SerialWriter};
@@ -30,7 +30,7 @@ fn resolve_kernel_reserved_end_phys(info: &BootInfo) -> u64 {
 
     if config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][boot] kernel reserve range=[{:#x}, {:#x}) boot_file_size={:#x} linked_file_size={:#x} linked_mem_size={:#x}",
+            "\x1b[90m[diag]\x1b[0m[boot] kernel reserve range=[{:#x}, {:#x}) boot_file_size={:#x} linked_file_size={:#x} linked_mem_size={:#x}",
             info.kernel_phys_addr,
             reserved_end,
             info.kernel_size,
@@ -40,21 +40,6 @@ fn resolve_kernel_reserved_end_phys(info: &BootInfo) -> u64 {
     }
 
     reserved_end
-}
-
-fn resolve_direct_map_offset(boot_direct_map: u64) -> u64 {
-    const KERNEL_ADDR_MIN: u64 = 0xFFFF_0000_0000_0000;
-
-    if boot_direct_map >= KERNEL_ADDR_MIN {
-        return boot_direct_map;
-    }
-
-    warn!(
-        "BootInfo direct_map_offset is invalid ({:#x}), fallback to config ({:#x})",
-        boot_direct_map,
-        config::DIRECT_MAP_OFFSET
-    );
-    config::DIRECT_MAP_OFFSET
 }
 
 /// 初始化内核各子系统
@@ -69,14 +54,26 @@ pub fn init_kernel(info: &BootInfo) {
     if info.magic != BOOTINFO_MAGIC {
         panic!("Invalid BootInfo magic: {:#x}", info.magic);
     }
+    if info.version < 3 {
+        panic!("BootInfo version {} is too old, need >= 3", info.version);
+    }
 
-    let direct_map = resolve_direct_map_offset(info.direct_map_offset);
+    if !mm::init_from_boot_info(info) {
+        panic!("Invalid kernel layout in BootInfo");
+    }
+    let direct_map = mm::direct_map_offset();
+    let runtime_layout = mm::snapshot();
     if config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][boot] bootinfo: mem_entries={} usable={}MB direct_map={:#x} rsdp={:#x}",
+            "\x1b[90m[diag]\x1b[0m[boot] bootinfo: mem_entries={} usable={}MB direct_map=[{:#x},{:#x}) vmalloc=[{:#x},{:#x}) va_bits={} levels={} rsdp={:#x}",
             info.memory_map_entries,
             info.usable_memory / 1024 / 1024,
-            direct_map,
+            runtime_layout.direct_map_start,
+            runtime_layout.direct_map_end,
+            runtime_layout.vmalloc_start,
+            runtime_layout.vmalloc_end,
+            runtime_layout.va_bits,
+            runtime_layout.page_levels,
             info.acpi_rsdp_addr,
         );
     }
@@ -89,7 +86,7 @@ pub fn init_kernel(info: &BootInfo) {
     kprintln!("\n\x1b[36;1m   January OS \x1b[0;36mv0.1.0\x1b[0m");
     kprintln!("\x1b[90m   --------------------------------\x1b[0m\n");
 
-    info!("Booting kernel...");
+    info!("[BOOT] Booting kernel...");
 
     // 早期 ACPI 初始化 (为了获取 SRAT 表进行 NUMA 初始化)
     if info.acpi_rsdp_addr != 0 {
@@ -98,27 +95,27 @@ pub fn init_kernel(info: &BootInfo) {
 
     // 4. 内存管理初始化
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step4: init_memory begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step4: init_memory begin");
     }
     init_memory(info, direct_map);
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step4: init_memory done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step4: init_memory done");
     }
 
     let kernel_stack_top = arch::current_stack_top();
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] kernel_stack_top={:#x}", kernel_stack_top);
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] kernel_stack_top={:#x}", kernel_stack_top);
     }
 
     // 5. ACPI 解析
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step5: init_acpi begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step5: init_acpi begin");
     }
     let acpi_config = init_acpi(info);
     let cpu_count = acpi_config.cpu_count;
     if config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][boot] step5: init_acpi done cpu_count={} lapic={:#x} ioapic={:#x}",
+            "\x1b[90m[diag]\x1b[0m[boot] step5: init_acpi done cpu_count={} lapic={:#x} ioapic={:#x}",
             cpu_count,
             acpi_config.local_apic_addr,
             acpi_config.ioapic_addr,
@@ -127,94 +124,94 @@ pub fn init_kernel(info: &BootInfo) {
 
     // 6. 初始化 PCP (Per-CPU Pages) - 依赖 CPU 数量
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step6: init_pcp nr_cpus={}", cpu_count);
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step6: init_pcp nr_cpus={}", cpu_count);
     }
     mm::init_pcp(cpu_count as u32);
 
     // 7. 中断控制器初始化
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step7: init_interrupts begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step7: init_interrupts begin");
     }
     init_interrupts(&acpi_config, kernel_stack_top, direct_map);
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step7: init_interrupts done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step7: init_interrupts done");
     }
 
     // 8. 启动 AP 核心 (SMP)
     if config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][boot] step8: smp::init begin expected_cpus={}",
+            "\x1b[90m[diag]\x1b[0m[boot] step8: smp::init begin expected_cpus={}",
             cpu_count
         );
     }
     smp::init(direct_map, cpu_count as usize);
     if config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][boot] step8: smp::init done online_cpus={}",
+            "\x1b[90m[diag]\x1b[0m[boot] step8: smp::init done online_cpus={}",
             smp::cpu_count()
         );
     }
 
     // 9. IOMMU 初始化
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step9: init_iommu begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9: init_iommu begin");
     }
     init_iommu();
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step9: init_iommu done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9: init_iommu done");
     }
 
     // 9a. 虚拟化环境探测（为后续虚拟化组件留接口）
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step9a: detect_virtualization begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9a: detect_virtualization begin");
     }
     detect_virtualization();
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step9a: detect_virtualization done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9a: detect_virtualization done");
     }
 
     // 10. 设备驱动初始化
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step10: init_drivers begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step10: init_drivers begin");
     }
     init_drivers();
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step10: init_drivers done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step10: init_drivers done");
     }
 
     // 11. 启用时钟和中断
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step11: init_timer_and_enable_interrupts begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11: init_timer_and_enable_interrupts begin");
     }
     init_timer_and_enable_interrupts();
     let if_after_step11 = interrupt::interrupts_enabled();
     if config::DEBUG_VERBOSE {
         kprintln!(
-            "[diag][boot] step11: interrupts_enabled={}",
+            "\x1b[90m[diag]\x1b[0m[boot] step11: interrupts_enabled={}",
             if_after_step11
         );
     }
 
     // 11a. 初始化最小文件后端
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step11a: fs::init begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11a: fs::init begin");
     }
     fs::init();
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step11a: fs::init done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11a: fs::init done");
     }
 
     // 12. 初始化任务子系统
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step12: task::init begin");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step12: task::init begin");
     }
     crate::task::init();
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step12: task::init done");
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step12: task::init done");
     }
 
     kprintln!();
-    ok!("Kernel initialization complete.");
+    ok!("[BOOT] Kernel initialization complete.");
     kprintln!();
 
     // 系统摘要
@@ -319,11 +316,23 @@ fn detect_numa_nodes() -> ([mm::numa::NumaNodeInfo; mm::numa::MAX_NUMNODES], usi
 }
 
 fn init_memory(info: &BootInfo, direct_map: u64) {
-    info!("Initializing Memory Management...");
+    info!("[MM] Initializing Memory Management...");
 
     let mem_regions = info.memory_map_addr as *const MemoryRegion;
     let entries_count = info.memory_map_entries as usize;
     let kernel_end_phys = resolve_kernel_reserved_end_phys(info);
+    // 与 boot/x86_64/src/paging.rs 保持一致：
+    // direct-map 最多扩展到 vmalloc 起始地址之前，避免两者虚拟地址重叠。
+    let vmalloc_start = mm::vmalloc_start();
+    let direct_map_span = vmalloc_start.saturating_sub(direct_map);
+    if direct_map_span == 0 {
+        panic!(
+            "Invalid direct-map layout: direct_map={:#x} vmalloc_start={:#x}",
+            direct_map,
+            vmalloc_start
+        );
+    }
+
     // 统计内存
     let mut max_phys_addr: u64 = 0;
     for i in 0..entries_count {
@@ -335,11 +344,27 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
             }
         }
     }
-    let max_managed = max_phys_addr.min(4 * 1024 * 1024 * 1024);
+    let max_managed = max_phys_addr.min(direct_map_span);
+    if max_phys_addr > max_managed {
+        warn!(
+            "Managed physical memory is capped by direct-map span: max_phys={:#x}, managed={:#x}, limit={} GiB",
+            max_phys_addr,
+            max_managed,
+            direct_map_span / 1024 / 1024 / 1024
+        );
+    }
+    if config::DEBUG_VERBOSE {
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[mm] managed_phys_limit max_phys={:#x} managed={:#x} direct_map={:#x}",
+            max_phys_addr,
+            max_managed,
+            direct_map
+        );
+    }
     let max_pfn = max_managed / 4096;
 
     // 构建内存区域信息
-    const MAX_REGIONS: usize = 64;
+    const MAX_REGIONS: usize = MAX_MEMORY_REGIONS;
     let mut region_infos: [mm::MemoryRegionInfo; MAX_REGIONS] = [mm::MemoryRegionInfo {
         phys_start: 0,
         page_count: 0,
@@ -373,11 +398,23 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
         mm::init_slub().expect("SLUB init failed");
         mm::finish_mm_init();
 
-        // 初始化堆
-        if let Some(heap_page) = mm::alloc_pages(8, mm::GFP_KERNEL) {
-            let heap_phys = mm::page_to_pfn(heap_page) * 4096;
-            let heap_virt = direct_map + heap_phys;
-            mm::init_heap(heap_virt as usize, 256 * 4096);
+        // 初始化堆（按配置分段预热，可在运行期继续增长）
+        let heap_target = config::KERNEL_HEAP_INIT_SIZE as usize;
+        let heap_actual = mm::init_heap(heap_target);
+        if heap_actual == 0 {
+            panic!("Kernel heap init failed: target={} bytes", heap_target);
+        } else if heap_actual < heap_target {
+            warn!(
+                "Kernel heap partially initialized: target={} MiB actual={} MiB",
+                heap_target / 1024 / 1024,
+                heap_actual / 1024 / 1024,
+            );
+        } else if config::DEBUG_VERBOSE {
+            ok!(
+                "Kernel heap initialized: target={} MiB actual={} MiB",
+                heap_target / 1024 / 1024,
+                heap_actual / 1024 / 1024,
+            );
         }
     }
 
@@ -402,8 +439,16 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
     // 初始化 vmalloc
     {
         use alloc::boxed::Box;
-        let pml4_phys = info.pml4_phys_addr;
-        let pt_mgr = unsafe { mm::paging::PageTableManager::new(pml4_phys, direct_map) };
+        let root_phys = info.page_table_root_phys();
+        let layout = mm::snapshot();
+        let pt_mgr = unsafe {
+            mm::paging::PageTableManager::new_with_layout(
+                root_phys,
+                direct_map,
+                layout.page_levels,
+                layout.va_bits,
+            )
+        };
         let pt_mgr_ptr = Box::leak(Box::new(pt_mgr));
         unsafe { mm::vmalloc::init_vmalloc(direct_map, pt_mgr_ptr) };
     }
@@ -412,7 +457,7 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
 }
 
 fn init_acpi(info: &BootInfo) -> acpi::AcpiConfig {
-    info!("Parsing ACPI Tables...");
+    info!("[ACPI] Parsing ACPI Tables...");
 
     if info.acpi_rsdp_addr != 0 {
         // 如果尚未初始化，则初始化
@@ -425,7 +470,7 @@ fn init_acpi(info: &BootInfo) -> acpi::AcpiConfig {
 
         let config = acpi::detect_system_config();
         ok!(
-            "ACPI: {} CPUs | APIC: {:#x} | IOMMU: {}",
+            "[ACPI] {} CPUs | APIC: {:#x} | IOMMU: {}",
             config.cpu_count,
             config.local_apic_addr,
             if config.has_iommu { "yes" } else { "no" }
@@ -438,7 +483,7 @@ fn init_acpi(info: &BootInfo) -> acpi::AcpiConfig {
 }
 
 fn init_interrupts(acpi_config: &acpi::AcpiConfig, kernel_stack_top: u64, direct_map: u64) {
-    info!("Initializing Interrupt Controller...");
+    info!("[INT] Initializing Interrupt Controller...");
 
     let mut irq_overrides = [interrupt::IrqRouteOverride {
         source: 0,
@@ -475,14 +520,14 @@ fn init_interrupts(acpi_config: &acpi::AcpiConfig, kernel_stack_top: u64, direct
     }
 
     ok!(
-        "Local APIC: {:#x} | I/O APIC: {:#x}",
+        "[INT] Local APIC: {:#x} | I/O APIC: {:#x}",
         acpi_config.local_apic_addr,
         acpi_config.ioapic_addr
     );
 }
 
 fn init_iommu() {
-    info!("Initializing IOMMU...");
+    info!("[IOMMU] Initializing IOMMU...");
     mm::init_iommu();
     let stats = mm::iommu_stats();
     let iommu_type = match stats.iommu_type {
@@ -495,13 +540,13 @@ fn init_iommu() {
         mm::TranslationMode::Passthrough => "Passthrough",
         mm::TranslationMode::Translate => "Translate",
     };
-    ok!("IOMMU: {} | Mode: {}", iommu_type, trans_mode);
+    ok!("[IOMMU] {} | Mode: {}", iommu_type, trans_mode);
 }
 
 fn detect_virtualization() {
     let virt = virt::detect();
     if !virt.is_virtualized {
-        info!("Virtualization: Bare metal");
+        info!("[Virtualization] Bare metal");
         return;
     }
 
@@ -516,7 +561,7 @@ fn detect_virtualization() {
     };
 
     ok!(
-        "Virtualization: {} | vendor='{}' | nested={}",
+        "[Virtualization] {} | vendor='{}' | nested={}",
         hv,
         virt.vendor_str(),
         virt.nested_supported
@@ -524,18 +569,18 @@ fn detect_virtualization() {
 }
 
 fn init_drivers() {
-    info!("Initializing Devices...");
+    info!("[DRV] Initializing Devices...");
     drivers::block::init();
     drivers::pci::init();
     drivers::usb::init();
     drivers::input::init();
-    ok!("PCIe, USB and Input devices initialized.");
+    ok!("[DRV] PCIe, USB and Input devices initialized.");
 }
 
 fn init_timer_and_enable_interrupts() {
     let if_step11a = interrupt::interrupts_enabled();
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step11a: IF(before timer init)={}", if_step11a);
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11a: IF(before timer init)={}", if_step11a);
     }
 
     // 1. 校准 TSC (System Clock)
@@ -551,7 +596,7 @@ fn init_timer_and_enable_interrupts() {
 
     let if_step11b = interrupt::interrupts_enabled();
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step11b: IF(before sti)={}", if_step11b);
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11b: IF(before sti)={}", if_step11b);
     }
 
     interrupt::enable_interrupts();
@@ -562,12 +607,12 @@ fn init_timer_and_enable_interrupts() {
     let if_step11c = interrupt::interrupts_enabled();
 
     if config::DEBUG_VERBOSE {
-        kprintln!("[diag][boot] step11c: IF(after sti)={}", if_step11c);
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11c: IF(after sti)={}", if_step11c);
     }
     mm::paging::register_tlb_shootdown_cpu();
 
     ok!(
-        "Timer: {} MHz | Tick: {} Hz | Interrupts: ENABLED",
+        "[Timer] {} MHz | Tick: {} Hz | Interrupts: ENABLED",
         timer_freq / 1_000_000,
         TIMER_HZ
     );

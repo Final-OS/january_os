@@ -238,15 +238,15 @@ pub fn init_local_apic(apic_base_phys: u64) {
 
     // 2. Global State: Set OnceCell (only first time, BSP)
     if !LOCAL_APIC.is_initialized() {
-        let apic_base_virt = apic_base_phys + crate::config::DIRECT_MAP_OFFSET;
+        let apic_base_virt = apic_base_phys + crate::mm::direct_map_offset();
         let _ = LOCAL_APIC.set(LocalApicState {
             base: apic_base_virt,
             x2apic: x2apic_enabled,
         });
         if x2apic_enabled {
-            crate::kprintln!("      [APIC] x2APIC enabled");
+            crate::info!("[APIC] x2APIC enabled");
         } else {
-            crate::kprintln!("      [APIC] xAPIC enabled (Legacy)");
+            crate::info!("[APIC] xAPIC enabled (Legacy)");
         }
     }
 
@@ -401,7 +401,7 @@ pub fn calibrate_timer() -> u64 {
     let tsc_freq = super::tsc::tsc_frequency();
     let ticks_per_sec = if tsc_freq > 0 {
         // 使用 TSC 测量 100ms
-        crate::info!("APIC: Calibrating timer using TSC...");
+        crate::info!("[APIC] Calibrating timer using TSC...");
         
         // 1. 设置 APIC Timer
         // 分频: 16
@@ -430,10 +430,10 @@ pub fn calibrate_timer() -> u64 {
         let elapsed = 0xFFFFFFFF - current_count;
         let freq = elapsed as u64 * 10;
         
-        crate::ok!("APIC: Timer frequency: {} Hz ({} MHz)", freq, freq / 1_000_000);
+        crate::ok!("[APIC] Timer frequency: {} Hz ({} MHz)", freq, freq / 1_000_000);
         freq
     } else {
-        crate::warn!("APIC: TSC not calibrated, using fallback frequency");
+        crate::warn!("[APIC] TSC not calibrated, using fallback frequency");
         // Fallback: 假设 APIC 频率为 10MHz
         10_000_000 
     };
@@ -493,7 +493,7 @@ pub struct IoApicIrqRoute {
 }
 
 pub fn init_ioapic(addr: u64, gsi_base: u32) {
-     let addr_virt = addr + crate::config::DIRECT_MAP_OFFSET;
+     let addr_virt = addr + crate::mm::direct_map_offset();
      let _ = IO_APIC.set(IoApicState {
          base: addr_virt,
          gsi_base,

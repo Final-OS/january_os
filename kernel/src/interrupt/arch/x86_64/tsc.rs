@@ -45,14 +45,14 @@ pub fn calibrate_tsc() {
     let fadt = match acpi::find_table::<acpi::Fadt>() {
         Some(t) => t,
         None => {
-            crate::warn!("TSC: FADT not found, cannot calibrate TSC using PM Timer");
+            crate::warn!("[TSC] FADT not found, cannot calibrate TSC using PM Timer");
             return;
         }
     };
 
     let pm_timer_port = fadt.pm_timer_blk as u16;
     if pm_timer_port == 0 {
-        crate::warn!("TSC: PM Timer block not present in FADT");
+        crate::warn!("[TSC] PM Timer block not present in FADT");
         return;
     }
 
@@ -61,7 +61,7 @@ pub fn calibrate_tsc() {
     let is_32bit = (fadt.flags & (1 << 8)) != 0;
     let mask = if is_32bit { 0xFFFFFFFF } else { 0x00FFFFFF };
 
-    crate::info!("TSC: Calibrating using ACPI PM Timer at port {:#x} ({} bit)...", pm_timer_port, if is_32bit { 32 } else { 24 });
+    crate::info!("[TSC] Calibrating using ACPI PM Timer at port {:#x} ({} bit)...", pm_timer_port, if is_32bit { 32 } else { 24 });
 
     // 校准时长: 100ms (约 357954 ticks)
     let calibration_ticks = PM_TIMER_FREQUENCY / 10; 
@@ -98,6 +98,6 @@ pub fn calibrate_tsc() {
         let freq = diff_tsc * 10;
         TSC_FREQUENCY.store(freq, Ordering::SeqCst);
         
-        crate::ok!("TSC: Frequency detected: {} Hz ({} MHz)", freq, freq / 1_000_000);
+        crate::ok!("[TSC] Frequency detected: {} Hz ({} MHz)", freq, freq / 1_000_000);
     }
 }

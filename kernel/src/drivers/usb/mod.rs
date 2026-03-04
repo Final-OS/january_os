@@ -4,11 +4,11 @@
 
 pub mod xhci;
 
-use crate::kprintln;
+use crate::info;
 
 /// 初始化 USB 子系统
 pub fn init() {
-    kprintln!("USB: Initializing USB subsystem...");
+    info!("[USB] Initializing USB subsystem...");
     xhci::init();
 }
 

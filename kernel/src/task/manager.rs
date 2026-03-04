@@ -255,7 +255,7 @@ pub fn record_current_exec_request(path: &str, argc: usize, envc: usize) -> Opti
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][execve] request recorded: pid={} pgid={} path={} argc={} envc={} seq={}",
+            "\x1b[90m[diag]\x1b[0m[execve] request recorded: pid={} pgid={} path={} argc={} envc={} seq={}",
             pid.0,
             pgid.0,
             path,
@@ -273,7 +273,7 @@ pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize>
         rollback_exec_mappings(&mappings);
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][execve] set current mappings failed: no current task, rolled back pages={}",
+                "\x1b[90m[diag]\x1b[0m[execve] set current mappings failed: no current task, rolled back pages={}",
                 mappings.len()
             );
         }
@@ -289,7 +289,7 @@ pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize>
         rollback_exec_mappings(&mappings);
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][execve] set current mappings failed: missing process pid={}, rolled back pages={}",
+                "\x1b[90m[diag]\x1b[0m[execve] set current mappings failed: missing process pid={}, rolled back pages={}",
                 pid.0,
                 mappings.len()
             );
@@ -307,7 +307,7 @@ pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize>
         rollback_exec_mappings(&replaced);
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][execve] replaced stale exec mappings: pid={} pages={}",
+                "\x1b[90m[diag]\x1b[0m[execve] replaced stale exec mappings: pid={} pages={}",
                 pid.0,
                 replaced_count
             );
@@ -364,7 +364,7 @@ fn reap_orphan_zombie_process(pid: ProcessId) {
     let removed_ready = SCHEDULER.remove_tasks_by_pid(pid);
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][task] auto reap orphan process: pid={} removed_tasks={} removed_ready={}",
+            "\x1b[90m[diag]\x1b[0m[task] auto reap orphan process: pid={} removed_tasks={} removed_ready={}",
             pid.0,
             removed_tasks,
             removed_ready
@@ -552,7 +552,7 @@ pub fn reap_observed_child(child_pid: ProcessId) -> Option<(ProcessId, i32)> {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][task] reap child: parent_pid={} child_pid={} code={} removed_ready={} released_exec_pages={}",
+            "\x1b[90m[diag]\x1b[0m[task] reap child: parent_pid={} child_pid={} code={} removed_ready={} released_exec_pages={}",
             parent_pid.0,
             child_pid.0,
             exit_code,
@@ -665,7 +665,7 @@ pub fn spawn_kernel_thread_with_mm_mode_checked(
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][task] spawn kernel thread: pid={} pgid={} ppid={} name={} mm_mode={:?}",
+            "\x1b[90m[diag]\x1b[0m[task] spawn kernel thread: pid={} pgid={} ppid={} name={} mm_mode={:?}",
             pid.0,
             pgid.0,
             ppid.0,
@@ -706,7 +706,7 @@ pub fn exit_current_task(exit_code: i32) {
         task.exit_code = Some(exit_code);
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][task] task exit: tid={} pid={} code={}",
+                "\x1b[90m[diag]\x1b[0m[task] task exit: tid={} pid={} code={}",
                 task.id.0,
                 task.pid.0,
                 exit_code
@@ -733,7 +733,7 @@ pub fn exit_current_task(exit_code: i32) {
                 should_reap_orphan = process.parent.is_none();
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "[diag][task] process became zombie: pid={} code={} exec_pages={}",
+                        "\x1b[90m[diag]\x1b[0m[task] process became zombie: pid={} code={} exec_pages={}",
                         pid.0,
                         exit_code,
                         released_exec_mappings.len()
@@ -797,7 +797,7 @@ pub fn exit_current_process(exit_code: i32) {
     let removed_ready = SCHEDULER.remove_tasks_by_pid(pid);
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][task] exit_group: pid={} code={} tasks={} removed_ready={} exec_pages={}",
+            "\x1b[90m[diag]\x1b[0m[task] exit_group: pid={} code={} tasks={} removed_ready={} exec_pages={}",
             pid.0,
             exit_code,
             task_count,

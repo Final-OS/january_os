@@ -48,10 +48,10 @@ pub use task::{Task, TaskStatus};
 
 /// 初始化任务子系统
 pub fn init() {
-    crate::info!("Initializing Task subsystem...");
+    crate::info!("[TASK] Initializing Task subsystem...");
     register_exec_image_provider(crate::fs::read_static_file);
     manager::init();
-    crate::ok!("Task subsystem initialized.");
+    crate::ok!("[TASK] Task subsystem initialized.");
 }
 
 /// 获取当前任务的进程 ID

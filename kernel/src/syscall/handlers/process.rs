@@ -378,7 +378,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => {
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][execve] parse failed errno={} path_ptr={:#x} argv_ptr={:#x} envp_ptr={:#x}",
+                    "\x1b[90m[diag]\x1b[0m[execve] parse failed errno={} path_ptr={:#x} argv_ptr={:#x} envp_ptr={:#x}",
                     errno,
                     path_ptr,
                     argv_ptr,
@@ -393,7 +393,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         Some(image) => image,
         None => {
             if crate::config::DEBUG_VERBOSE {
-                crate::kprintln!("[diag][execve] executable image not found path={}", path);
+                crate::kprintln!("\x1b[90m[diag]\x1b[0m[execve] executable image not found path={}", path);
             }
             return err(ENOENT);
         }
@@ -404,7 +404,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => {
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][execve] invalid elf path={} errno={} image_len={}",
+                    "\x1b[90m[diag]\x1b[0m[execve] invalid elf path={} errno={} image_len={}",
                     path,
                     errno,
                     image.len()
@@ -422,7 +422,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => {
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][execve] stage PT_LOAD failed path={} errno={} segs={} pages={}",
+                    "\x1b[90m[diag]\x1b[0m[execve] stage PT_LOAD failed path={} errno={} segs={} pages={}",
                     path,
                     errno,
                     map_preview.segment_count,
@@ -436,7 +436,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
     if task::record_current_exec_request(path.as_str(), argv.len(), envp.len()).is_none() {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][execve] current process missing while path={} argc={} envc={}",
+                "\x1b[90m[diag]\x1b[0m[execve] current process missing while path={} argc={} envc={}",
                 path,
                 argv.len(),
                 envp.len()
@@ -458,7 +458,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][execve] accepted request path={} argc={} envc={} argv0={}",
+            "\x1b[90m[diag]\x1b[0m[execve] accepted request path={} argc={} envc={} argv0={}",
             path,
             argv.len(),
             envp.len(),
@@ -468,7 +468,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][execve] elf plan path={} image_len={} entry={:#x} segs={} seg_pages={} stack_pages={} total_pages={}",
+            "\x1b[90m[diag]\x1b[0m[execve] elf plan path={} image_len={} entry={:#x} segs={} seg_pages={} stack_pages={} total_pages={}",
             path,
             load_plan.image_len,
             load_plan.entry,
@@ -481,7 +481,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][execve] stage mapping done path={} mapped_segment_pages={} mapped_stack_pages={} first_virt={:#x}",
+            "\x1b[90m[diag]\x1b[0m[execve] stage mapping done path={} mapped_segment_pages={} mapped_stack_pages={} first_virt={:#x}",
             path,
             mapped_segment_pages,
             mapped_stack_pages,
@@ -491,7 +491,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][execve] user frame rip={:#x} rsp={:#x} cs={:#x} ss={:#x} rflags={:#x}",
+            "\x1b[90m[diag]\x1b[0m[execve] user frame rip={:#x} rsp={:#x} cs={:#x} ss={:#x} rflags={:#x}",
             user_frame.rip,
             user_frame.rsp,
             user_frame.cs,
@@ -506,7 +506,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         None => {
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][execve] install mappings failed path={} staged_pages={}",
+                    "\x1b[90m[diag]\x1b[0m[execve] install mappings failed path={} staged_pages={}",
                     path,
                     staged_count,
                 );
@@ -517,7 +517,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][execve] mappings installed path={} staged_pages={} replaced_pages={}",
+            "\x1b[90m[diag]\x1b[0m[execve] mappings installed path={} staged_pages={} replaced_pages={}",
             path,
             staged_count,
             replaced_pages,
@@ -525,7 +525,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
     }
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][execve] enter ring3 path={} rip={:#x} rsp={:#x}",
+            "\x1b[90m[diag]\x1b[0m[execve] enter ring3 path={} rip={:#x} rsp={:#x}",
             path,
             user_frame.rip,
             user_frame.rsp,
@@ -589,7 +589,7 @@ fn spawn_minimal_child(
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][task] syscall spawn child: pid={} clone_child={} name={}",
+            "\x1b[90m[diag]\x1b[0m[task] syscall spawn child: pid={} clone_child={} name={}",
             child_pid.0,
             is_clone_child,
             name
@@ -621,7 +621,7 @@ fn wait_for_vfork_release(child_pid: task::ProcessId) {
                 if !logged_wait {
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
-                            "[diag][task] vfork parent waiting child_pid={}",
+                            "\x1b[90m[diag]\x1b[0m[task] vfork parent waiting child_pid={}",
                             child_pid.0
                         );
                     }
@@ -644,7 +644,7 @@ fn clone_impl(
     if unsupported != 0 {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][clone] unsupported flags={:#x} allowed={:#x}",
+                "\x1b[90m[diag]\x1b[0m[clone] unsupported flags={:#x} allowed={:#x}",
                 unsupported,
                 CLONE_SUPPORTED_FLAGS
             );
@@ -655,7 +655,7 @@ fn clone_impl(
     if (flags & CLONE_VFORK) != 0 && (flags & CLONE_VM) == 0 {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][clone] invalid flags: CLONE_VFORK without CLONE_VM flags={:#x}",
+                "\x1b[90m[diag]\x1b[0m[clone] invalid flags: CLONE_VFORK without CLONE_VM flags={:#x}",
                 flags
             );
         }
@@ -665,7 +665,7 @@ fn clone_impl(
     if (flags & CLONE_VM) != 0 && (flags & CLONE_VFORK) == 0 {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][clone] unsupported CLONE_VM without CLONE_VFORK flags={:#x}",
+                "\x1b[90m[diag]\x1b[0m[clone] unsupported CLONE_VM without CLONE_VFORK flags={:#x}",
                 flags
             );
         }
@@ -685,7 +685,7 @@ fn clone_impl(
     {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][clone] unsupported args/flags child_stack={:#x} ptid={:#x} ctid={:#x} tls={:#x} flags={:#x}",
+                "\x1b[90m[diag]\x1b[0m[clone] unsupported args/flags child_stack={:#x} ptid={:#x} ctid={:#x} tls={:#x} flags={:#x}",
                 child_stack,
                 parent_tid,
                 child_tid,
@@ -809,7 +809,7 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
             let removed_ready = task::scheduler::SCHEDULER.remove_tasks_by_pid(pid);
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][signal] terminate pid={} sig={} removed_ready={}",
+                    "\x1b[90m[diag]\x1b[0m[signal] terminate pid={} sig={} removed_ready={}",
                     pid.0,
                     sig,
                     removed_ready
@@ -837,7 +837,7 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
             let removed_ready = task::scheduler::SCHEDULER.remove_tasks_by_pid(pid);
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][signal] stop pid={} blocked_tasks={} removed_ready={}",
+                    "\x1b[90m[diag]\x1b[0m[signal] stop pid={} blocked_tasks={} removed_ready={}",
                     pid.0,
                     blocked_tasks,
                     removed_ready
@@ -872,7 +872,7 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
 
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][signal] continue pid={} resumed_tasks={}",
+                    "\x1b[90m[diag]\x1b[0m[signal] continue pid={} resumed_tasks={}",
                     pid.0,
                     resumed_tasks
                 );
@@ -981,7 +981,7 @@ pub(crate) fn sys_setpgid(args: &SyscallArgs) -> SyscallRet {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][task] setpgid target_pid={} new_pgid={} caller_pid={}",
+            "\x1b[90m[diag]\x1b[0m[task] setpgid target_pid={} new_pgid={} caller_pid={}",
             target_pid.0,
             new_pgid.0,
             caller_pid.0
@@ -1016,7 +1016,7 @@ pub(crate) fn sys_setsid(_args: &SyscallArgs) -> SyscallRet {
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][task] setsid pid={} pgid={} done",
+            "\x1b[90m[diag]\x1b[0m[task] setsid pid={} pgid={} done",
             caller_pid.0,
             caller_pid.0
         );
@@ -1133,7 +1133,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => {
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][wait4] invalid options={:#x} raw_pid={}",
+                    "\x1b[90m[diag]\x1b[0m[wait4] invalid options={:#x} raw_pid={}",
                     args.arg2,
                     raw_pid
                 );
@@ -1148,7 +1148,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
         WaitPidFilter::Target(target) => target,
         WaitPidFilter::Invalid => {
             if crate::config::DEBUG_VERBOSE {
-                crate::kprintln!("[diag][wait4] invalid raw pid {}", raw_pid);
+                crate::kprintln!("\x1b[90m[diag]\x1b[0m[wait4] invalid raw pid {}", raw_pid);
             }
             return err(EINVAL);
         }
@@ -1169,7 +1169,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
                 if let Err(errno) = write_wait_status(status_ptr, encode_exit_status(exit_code)) {
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
-                            "[diag][wait4] write status failed ptr={:#x} errno={}",
+                            "\x1b[90m[diag]\x1b[0m[wait4] write status failed ptr={:#x} errno={}",
                             status_ptr,
                             errno
                         );
@@ -1179,7 +1179,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
                 if let Err(errno) = write_wait_rusage(rusage_ptr, &rusage) {
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
-                            "[diag][wait4] write rusage failed ptr={:#x} errno={}",
+                            "\x1b[90m[diag]\x1b[0m[wait4] write rusage failed ptr={:#x} errno={}",
                             rusage_ptr,
                             errno
                         );
@@ -1194,7 +1194,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
 
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "[diag][wait4] reaped child pid={} target={:?} options={:#x} rusage_ptr={:#x}",
+                        "\x1b[90m[diag]\x1b[0m[wait4] reaped child pid={} target={:?} options={:#x} rusage_ptr={:#x}",
                         reaped_pid.0,
                         target,
                         options.raw,
@@ -1209,7 +1209,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
                 if let Err(errno) = write_wait_status(status_ptr, encode_stopped_status(signal)) {
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
-                            "[diag][wait4] write status failed ptr={:#x} errno={} (stopped)",
+                            "\x1b[90m[diag]\x1b[0m[wait4] write status failed ptr={:#x} errno={} (stopped)",
                             status_ptr,
                             errno
                         );
@@ -1220,7 +1220,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
                 if let Err(errno) = write_wait_rusage(rusage_ptr, &rusage) {
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
-                            "[diag][wait4] write rusage failed ptr={:#x} errno={} (stopped)",
+                            "\x1b[90m[diag]\x1b[0m[wait4] write rusage failed ptr={:#x} errno={} (stopped)",
                             rusage_ptr,
                             errno
                         );
@@ -1237,7 +1237,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
 
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "[diag][wait4] observed stopped child pid={} sig={} target={:?} options={:#x}",
+                        "\x1b[90m[diag]\x1b[0m[wait4] observed stopped child pid={} sig={} target={:?} options={:#x}",
                         child_pid.0,
                         signal,
                         target,
@@ -1252,7 +1252,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
                 if let Err(errno) = write_wait_status(status_ptr, encode_continued_status()) {
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
-                            "[diag][wait4] write status failed ptr={:#x} errno={} (continued)",
+                            "\x1b[90m[diag]\x1b[0m[wait4] write status failed ptr={:#x} errno={} (continued)",
                             status_ptr,
                             errno
                         );
@@ -1263,7 +1263,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
                 if let Err(errno) = write_wait_rusage(rusage_ptr, &rusage) {
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
-                            "[diag][wait4] write rusage failed ptr={:#x} errno={} (continued)",
+                            "\x1b[90m[diag]\x1b[0m[wait4] write rusage failed ptr={:#x} errno={} (continued)",
                             rusage_ptr,
                             errno
                         );
@@ -1280,7 +1280,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
 
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "[diag][wait4] observed continued child pid={} target={:?} options={:#x}",
+                        "\x1b[90m[diag]\x1b[0m[wait4] observed continued child pid={} target={:?} options={:#x}",
                         child_pid.0,
                         target,
                         options.raw
@@ -1290,7 +1290,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
             }
             task::WaitChildObserveResult::NoMatchedChild => {
                 if crate::config::DEBUG_VERBOSE {
-                    crate::kprintln!("[diag][wait4] no matched child target={:?}", target);
+                    crate::kprintln!("\x1b[90m[diag]\x1b[0m[wait4] no matched child target={:?}", target);
                 }
                 return err(ECHILD);
             }
@@ -1298,7 +1298,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
                 if options.nohang {
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
-                            "[diag][wait4] nohang: child not exited target={:?}",
+                            "\x1b[90m[diag]\x1b[0m[wait4] nohang: child not exited target={:?}",
                             target
                         );
                     }
@@ -1307,7 +1307,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
 
                 if !logged_waiting {
                     if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!("[diag][wait4] blocking wait target={:?}", target);
+                        crate::kprintln!("\x1b[90m[diag]\x1b[0m[wait4] blocking wait target={:?}", target);
                     }
                     logged_waiting = true;
                 }

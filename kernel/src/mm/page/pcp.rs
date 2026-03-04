@@ -332,7 +332,7 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
                 if !is_page_ptr_in_vmemmap(page as *const Page) {
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
-                            "[diag][pcp] invalid page pointer from pcp.alloc: cpu={} zone_idx={} page_ptr={:#x}",
+                            "\x1b[90m[diag]\x1b[0m[pcp] invalid page pointer from pcp.alloc: cpu={} zone_idx={} page_ptr={:#x}",
                             cpu,
                             zone_idx,
                             page as *mut Page as usize,
@@ -344,7 +344,7 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
                 if page_zone != zone_idx {
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
-                            "[diag][pcp] zone mismatch from pcp.alloc: cpu={} list_zone={} page_zone={} page_ptr={:#x} -> quarantine",
+                            "\x1b[90m[diag]\x1b[0m[pcp] zone mismatch from pcp.alloc: cpu={} list_zone={} page_zone={} page_ptr={:#x} -> quarantine",
                             cpu,
                             zone_idx,
                             page_zone,
@@ -365,7 +365,7 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
                     if !is_page_ptr_in_vmemmap(page as *const Page) {
                         if crate::config::DEBUG_VERBOSE {
                             crate::kprintln!(
-                                "[diag][pcp] invalid page pointer after refill: cpu={} zone_idx={} page_ptr={:#x}",
+                                "\x1b[90m[diag]\x1b[0m[pcp] invalid page pointer after refill: cpu={} zone_idx={} page_ptr={:#x}",
                                 cpu,
                                 zone_idx,
                                 page as *mut Page as usize,
@@ -377,7 +377,7 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
                     if page_zone != zone_idx {
                         if crate::config::DEBUG_VERBOSE {
                             crate::kprintln!(
-                                "[diag][pcp] zone mismatch after refill: cpu={} list_zone={} page_zone={} page_ptr={:#x} -> quarantine",
+                                "\x1b[90m[diag]\x1b[0m[pcp] zone mismatch after refill: cpu={} list_zone={} page_zone={} page_ptr={:#x} -> quarantine",
                                 cpu,
                                 zone_idx,
                                 page_zone,
@@ -404,7 +404,7 @@ pub fn pcp_free_page(page: &mut Page) {
     if !is_page_ptr_in_vmemmap(page as *const Page) {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][pcp] reject invalid free page pointer: page_ptr={:#x}",
+                "\x1b[90m[diag]\x1b[0m[pcp] reject invalid free page pointer: page_ptr={:#x}",
                 page as *mut Page as usize,
             );
         }
@@ -423,7 +423,7 @@ pub fn pcp_free_page(page: &mut Page) {
         if !page.lru.next.is_null() || !page.lru.prev.is_null() {
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "[diag][pcp] suspicious lru links on free: cpu={} zone_idx={} page_ptr={:#x} lru_next={:#x} lru_prev={:#x} -> quarantine",
+                    "\x1b[90m[diag]\x1b[0m[pcp] suspicious lru links on free: cpu={} zone_idx={} page_ptr={:#x} lru_next={:#x} lru_prev={:#x} -> quarantine",
                     cpu,
                     zone_idx,
                     page as *mut Page as usize,

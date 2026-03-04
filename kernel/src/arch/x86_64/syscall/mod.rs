@@ -135,7 +135,7 @@ extern "C" fn syscall_dispatch_from_asm(frame: *const RawSyscallFrame) -> usize 
     if should_log {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][syscall] enter seq={} nr={} args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}] k_rsp={:#x}",
+                "\x1b[90m[diag]\x1b[0m[syscall] enter seq={} nr={} args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}] k_rsp={:#x}",
                 seq,
                 frame.nr,
                 frame.arg0,
@@ -156,7 +156,7 @@ extern "C" fn syscall_dispatch_from_asm(frame: *const RawSyscallFrame) -> usize 
     if should_log {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][syscall] leave seq={} nr={} ret={:#x}",
+                "\x1b[90m[diag]\x1b[0m[syscall] leave seq={} nr={} ret={:#x}",
                 seq,
                 frame.nr,
                 ret,
@@ -200,7 +200,7 @@ pub unsafe fn init_syscall() {
     {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "[diag][syscall] init STAR={:#x} LSTAR={:#x} FMASK={:#x}",
+                "\x1b[90m[diag]\x1b[0m[syscall] init STAR={:#x} LSTAR={:#x} FMASK={:#x}",
                 star,
                 syscall_entry as *const () as usize,
                 FMASK_CLEAR_FLAGS,

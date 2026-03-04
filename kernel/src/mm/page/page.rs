@@ -380,7 +380,7 @@ pub unsafe fn init_vmemmap(base: *mut Page, max_pfn: u64) {
     let max_pfn_snapshot = MAX_PFN.load(Ordering::Acquire);
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
-            "[diag][mm] init_vmemmap base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
+            "\x1b[90m[diag]\x1b[0m[mm] init_vmemmap base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
             vmemmap_base,
             max_pfn_snapshot,
             core::ptr::addr_of!(VMEMMAP_BASE) as usize,
