@@ -183,7 +183,9 @@ pub fn init() {
 #[inline]
 fn resolve_child_mm(parent_pid: Option<ProcessId>, mm_mode: SpawnMmMode) -> Option<usize> {
     let parent_mm = parent_pid
-        .and_then(|ppid| find_process_by_pid(ppid).map(|process| process.lock().mm as *mut crate::mm::Mm))
+        .and_then(|ppid| {
+            find_process_by_pid(ppid).map(|process| process.lock().mm as *mut crate::mm::Mm)
+        })
         .unwrap_or(crate::mm::init_mm_ptr());
 
     match mm_mode {
@@ -251,15 +253,17 @@ pub fn record_current_exec_request(path: &str, argc: usize, envc: usize) -> Opti
         (process.exec_request_seq, process.pgid)
     };
 
-    crate::kprintln!(
-        "[diag][execve] request recorded: pid={} pgid={} path={} argc={} envc={} seq={}",
-        pid.0,
-        pgid.0,
-        path,
-        argc,
-        envc,
-        seq
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][execve] request recorded: pid={} pgid={} path={} argc={} envc={} seq={}",
+            pid.0,
+            pgid.0,
+            path,
+            argc,
+            envc,
+            seq
+        );
+    }
 
     Some(pid)
 }
@@ -267,10 +271,12 @@ pub fn record_current_exec_request(path: &str, argc: usize, envc: usize) -> Opti
 pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize> {
     let Some(current_task) = super::processor::current_task() else {
         rollback_exec_mappings(&mappings);
-        crate::kprintln!(
-            "[diag][execve] set current mappings failed: no current task, rolled back pages={}",
-            mappings.len()
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][execve] set current mappings failed: no current task, rolled back pages={}",
+                mappings.len()
+            );
+        }
         return None;
     };
 
@@ -281,11 +287,13 @@ pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize>
 
     let Some(process_ref) = find_process_by_pid(pid) else {
         rollback_exec_mappings(&mappings);
-        crate::kprintln!(
-            "[diag][execve] set current mappings failed: missing process pid={}, rolled back pages={}",
-            pid.0,
-            mappings.len()
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][execve] set current mappings failed: missing process pid={}, rolled back pages={}",
+                pid.0,
+                mappings.len()
+            );
+        }
         return None;
     };
 
@@ -297,11 +305,13 @@ pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize>
     let replaced_count = replaced.len();
     if replaced_count > 0 {
         rollback_exec_mappings(&replaced);
-        crate::kprintln!(
-            "[diag][execve] replaced stale exec mappings: pid={} pages={}",
-            pid.0,
-            replaced_count
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][execve] replaced stale exec mappings: pid={} pages={}",
+                pid.0,
+                replaced_count
+            );
+        }
     }
 
     Some(replaced_count)
@@ -352,12 +362,14 @@ fn reap_orphan_zombie_process(pid: ProcessId) {
     unsafe { crate::mm::mm_release(mm_ptr) };
 
     let removed_ready = SCHEDULER.remove_tasks_by_pid(pid);
-    crate::kprintln!(
-        "[diag][task] auto reap orphan process: pid={} removed_tasks={} removed_ready={}",
-        pid.0,
-        removed_tasks,
-        removed_ready
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][task] auto reap orphan process: pid={} removed_tasks={} removed_ready={}",
+            pid.0,
+            removed_tasks,
+            removed_ready
+        );
+    }
 }
 
 pub fn find_task_by_tid(tid: TaskId) -> Option<Arc<Mutex<Task>>> {
@@ -538,14 +550,16 @@ pub fn reap_observed_child(child_pid: ProcessId) -> Option<(ProcessId, i32)> {
         rollback_exec_mappings(&exec_mappings);
     }
 
-    crate::kprintln!(
-        "[diag][task] reap child: parent_pid={} child_pid={} code={} removed_ready={} released_exec_pages={}",
-        parent_pid.0,
-        child_pid.0,
-        exit_code,
-        removed_ready,
-        released_mappings
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][task] reap child: parent_pid={} child_pid={} code={} removed_ready={} released_exec_pages={}",
+            parent_pid.0,
+            child_pid.0,
+            exit_code,
+            removed_ready,
+            released_mappings
+        );
+    }
 
     Some((child_pid, exit_code))
 }
@@ -649,14 +663,16 @@ pub fn spawn_kernel_thread_with_mm_mode_checked(
         }
     }
 
-    crate::kprintln!(
-        "[diag][task] spawn kernel thread: pid={} pgid={} ppid={} name={} mm_mode={:?}",
-        pid.0,
-        pgid.0,
-        ppid.0,
-        name,
-        mm_mode
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][task] spawn kernel thread: pid={} pgid={} ppid={} name={} mm_mode={:?}",
+            pid.0,
+            pgid.0,
+            ppid.0,
+            name,
+            mm_mode
+        );
+    }
 
     // 添加到就绪队列
     SCHEDULER.add_task(task_ref.clone());
@@ -673,8 +689,7 @@ pub fn spawn_kernel_thread_with_mm_mode(
     spawn_kernel_thread_with_mm_mode_checked(name, entry, mm_mode).unwrap_or_else(|| {
         panic!(
             "spawn_kernel_thread_with_mm_mode failed: mm clone OOM name={} mode={:?}",
-            name,
-            mm_mode
+            name, mm_mode
         )
     })
 }
@@ -689,12 +704,14 @@ pub fn exit_current_task(exit_code: i32) {
         let mut task = task_ref.lock();
         task.status = TaskStatus::Exited;
         task.exit_code = Some(exit_code);
-        crate::kprintln!(
-            "[diag][task] task exit: tid={} pid={} code={}",
-            task.id.0,
-            task.pid.0,
-            exit_code
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][task] task exit: tid={} pid={} code={}",
+                task.id.0,
+                task.pid.0,
+                exit_code
+            );
+        }
         task.pid
     };
 
@@ -714,12 +731,14 @@ pub fn exit_current_task(exit_code: i32) {
                 process.mark_zombie();
                 released_exec_mappings = process.take_exec_mappings();
                 should_reap_orphan = process.parent.is_none();
-                crate::kprintln!(
-                    "[diag][task] process became zombie: pid={} code={} exec_pages={}",
-                    pid.0,
-                    exit_code,
-                    released_exec_mappings.len()
-                );
+                if crate::config::DEBUG_VERBOSE {
+                    crate::kprintln!(
+                        "[diag][task] process became zombie: pid={} code={} exec_pages={}",
+                        pid.0,
+                        exit_code,
+                        released_exec_mappings.len()
+                    );
+                }
             }
         }
 
@@ -776,14 +795,16 @@ pub fn exit_current_process(exit_code: i32) {
 
     // 清理同进程残留的就绪队列项，避免退出任务再次被调度。
     let removed_ready = SCHEDULER.remove_tasks_by_pid(pid);
-    crate::kprintln!(
-        "[diag][task] exit_group: pid={} code={} tasks={} removed_ready={} exec_pages={}",
-        pid.0,
-        exit_code,
-        task_count,
-        removed_ready,
-        released_exec_mappings.len()
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][task] exit_group: pid={} code={} tasks={} removed_ready={} exec_pages={}",
+            pid.0,
+            exit_code,
+            task_count,
+            removed_ready,
+            released_exec_mappings.len()
+        );
+    }
 
     if should_reap_orphan {
         reap_orphan_zombie_process(pid);
@@ -793,12 +814,10 @@ pub fn exit_current_process(exit_code: i32) {
 /// 等待子进程退出（按目标回收 Zombie 子进程）
 pub fn wait_child_result_by_target(target: WaitTarget) -> WaitChildResult {
     match wait_child_observe_by_target_with_options(target, WaitChildOptions::default()) {
-        WaitChildObserveResult::Reapable(pid, _exit_code) => {
-            match reap_observed_child(pid) {
-                Some((reaped_pid, exit_code)) => WaitChildResult::Reaped(reaped_pid, exit_code),
-                None => WaitChildResult::ChildRunning,
-            }
-        }
+        WaitChildObserveResult::Reapable(pid, _exit_code) => match reap_observed_child(pid) {
+            Some((reaped_pid, exit_code)) => WaitChildResult::Reaped(reaped_pid, exit_code),
+            None => WaitChildResult::ChildRunning,
+        },
         WaitChildObserveResult::Stopped(_, _) | WaitChildObserveResult::Continued(_) => {
             WaitChildResult::ChildRunning
         }

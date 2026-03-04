@@ -8,13 +8,7 @@ fn stats_sum(per_zone: &[u64]) -> u64 {
 
 pub(super) fn run() {
     use crate::mm::{
-        alloc_page,
-        drain_all_pcps,
-        free_page,
-        page_to_pfn,
-        pcp_initialized,
-        pcp_stats,
-        GFP_KERNEL,
+        alloc_page, drain_all_pcps, free_page, page_to_pfn, pcp_initialized, pcp_stats, GFP_KERNEL,
         GFP_KERNEL_ZERO,
     };
 
@@ -57,7 +51,10 @@ pub(super) fn run() {
         return fail("pcp", "pcp stats inconsistent after second drain");
     }
     if after_first_drain.total_cached != after_second_drain.total_cached {
-        return fail("pcp", "drain_all_pcps should be idempotent on empty cache baseline");
+        return fail(
+            "pcp",
+            "drain_all_pcps should be idempotent on empty cache baseline",
+        );
     }
 
     let base = after_second_drain.total_cached;
@@ -162,7 +159,10 @@ pub(super) fn run() {
     );
     unsafe { free_page(zero_page) };
     if !zero_ok {
-        return fail("pcp", "GFP_KERNEL_ZERO allocation should return zeroed memory");
+        return fail(
+            "pcp",
+            "GFP_KERNEL_ZERO allocation should return zeroed memory",
+        );
     }
 
     mm_step("pcp: case=stats_consistency_after_ops");

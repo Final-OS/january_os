@@ -24,7 +24,9 @@ pub(super) fn run() {
 
     let pid = REAPED_CHILD_PID.load(Ordering::SeqCst);
     let code = REAPED_CHILD_CODE.load(Ordering::SeqCst);
-    kprintln!("[test/task] wait_reap result: pid={} code={}", pid, code);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/task] wait_reap result: pid={} code={}", pid, code);
+    }
 
     if pid != 0 && code == 0 {
         ok!("task: wait/reap OK (pid={}, code={})", pid, code);
@@ -34,12 +36,20 @@ pub(super) fn run() {
 }
 
 extern "C" fn wait_parent_thread() {
-    kprintln!("[test/task] wait_parent: spawn child");
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/task] wait_parent: spawn child");
+    }
     task::spawn_kernel_thread("task_wait_child", wait_child_thread);
 
     for _ in 0..24 {
         if let Some((pid, code)) = task::wait_child(None) {
-            kprintln!("[test/task] wait_parent: reaped pid={} code={}", pid.0, code);
+            if crate::config::DEBUG_VERBOSE {
+                kprintln!(
+                    "[test/task] wait_parent: reaped pid={} code={}",
+                    pid.0,
+                    code
+                );
+            }
             REAPED_CHILD_PID.store(pid.0, Ordering::SeqCst);
             REAPED_CHILD_CODE.store(code as usize, Ordering::SeqCst);
             return;

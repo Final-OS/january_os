@@ -17,63 +17,63 @@ pub struct PageFlags(u32);
 
 impl PageFlags {
     /// 保留页（不可分配）
-    pub const RESERVED: u32   = 1 << 0;
+    pub const RESERVED: u32 = 1 << 0;
     /// 被 SLUB 使用
-    pub const SLAB: u32       = 1 << 1;
+    pub const SLAB: u32 = 1 << 1;
     /// 在 Buddy 系统空闲链表中
-    pub const BUDDY: u32      = 1 << 2;
+    pub const BUDDY: u32 = 1 << 2;
     /// 复合页（大页的一部分）
-    pub const COMPOUND: u32   = 1 << 3;
+    pub const COMPOUND: u32 = 1 << 3;
     /// 复合页头
-    pub const HEAD: u32       = 1 << 4;
+    pub const HEAD: u32 = 1 << 4;
     /// 复合页尾
-    pub const TAIL: u32       = 1 << 5;
+    pub const TAIL: u32 = 1 << 5;
     /// 脏页（已修改）
-    pub const DIRTY: u32      = 1 << 6;
+    pub const DIRTY: u32 = 1 << 6;
     /// 在 LRU 链表中
-    pub const LRU: u32        = 1 << 7;
+    pub const LRU: u32 = 1 << 7;
     /// 活跃页
-    pub const ACTIVE: u32     = 1 << 8;
+    pub const ACTIVE: u32 = 1 << 8;
     /// 被锁定
-    pub const LOCKED: u32     = 1 << 9;
+    pub const LOCKED: u32 = 1 << 9;
     /// 正在回写
-    pub const WRITEBACK: u32  = 1 << 10;
+    pub const WRITEBACK: u32 = 1 << 10;
     /// 私有页
-    pub const PRIVATE: u32    = 1 << 11;
+    pub const PRIVATE: u32 = 1 << 11;
     /// 页内容已更新
-    pub const UPTODATE: u32   = 1 << 12;
+    pub const UPTODATE: u32 = 1 << 12;
     /// 匿名页
-    pub const ANON: u32       = 1 << 13;
+    pub const ANON: u32 = 1 << 13;
     /// 文件映射页
     pub const FILEMAPPED: u32 = 1 << 14;
     /// 交换页
-    pub const SWAPCACHE: u32  = 1 << 15;
-    
+    pub const SWAPCACHE: u32 = 1 << 15;
+
     /// 创建空标志
     pub const fn empty() -> Self {
         Self(0)
     }
-    
+
     /// 创建带初始值的标志
     pub const fn new(bits: u32) -> Self {
         Self(bits)
     }
-    
+
     /// 获取原始值
     pub const fn bits(&self) -> u32 {
         self.0
     }
-    
+
     /// 设置标志位
     pub fn set(&mut self, flag: u32) {
         self.0 |= flag;
     }
-    
+
     /// 清除标志位
     pub fn clear(&mut self, flag: u32) {
         self.0 &= !flag;
     }
-    
+
     /// 测试标志位
     pub const fn test(&self, flag: u32) -> bool {
         (self.0 & flag) != 0
@@ -99,18 +99,18 @@ impl ListHead {
             prev: core::ptr::null_mut(),
         }
     }
-    
+
     /// 初始化为指向自己（空链表）
     pub fn init(&mut self) {
         self.next = self as *mut _;
         self.prev = self as *mut _;
     }
-    
+
     /// 检查是否为空
     pub fn is_empty(&self) -> bool {
         self.next == self as *const _ as *mut _
     }
-    
+
     /// 在 head 之后插入 new
     pub unsafe fn add(&mut self, new: *mut ListHead) {
         unsafe {
@@ -121,7 +121,7 @@ impl ListHead {
             self.next = new;
         }
     }
-    
+
     /// 从链表中删除
     pub unsafe fn del(&mut self) {
         unsafe {
@@ -152,30 +152,30 @@ impl Default for ListHead {
 pub struct Page {
     /// 页帧标志
     flags: AtomicU32,
-    
+
     /// 引用计数
     /// - 0: 空闲页
     /// - >0: 被使用中
     refcount: AtomicU32,
-    
+
     /// 映射计数（多少页表项指向此页）
     /// - -1: 未映射
     /// - 0: 内核映射
     /// - >0: 用户空间映射数
     mapcount: AtomicI32,
-    
+
     /// 所属 Zone ID
     zone_id: u8,
-    
+
     /// Buddy order（如果在空闲链表中）
     order: AtomicU8,
-    
+
     /// 保留字段（对齐）
     _reserved: [u8; 2],
-    
+
     /// 用于链表（Buddy 空闲链表、LRU 等）
     pub lru: ListHead,
-    
+
     /// 私有数据指针
     /// - SLUB: 指向 KmemCache
     /// - 文件页: 指向 address_space
@@ -200,7 +200,7 @@ impl Page {
             private: core::ptr::null_mut(),
         }
     }
-    
+
     /// 初始化 Page
     pub fn init(&mut self, zone_id: u8) {
         self.flags.store(0, Ordering::Relaxed);
@@ -211,83 +211,83 @@ impl Page {
         self.lru.init();
         self.private = core::ptr::null_mut();
     }
-    
+
     // ========== 标志操作 ==========
-    
+
     /// 获取标志
     pub fn flags(&self) -> PageFlags {
         PageFlags(self.flags.load(Ordering::Relaxed))
     }
-    
+
     /// 设置标志位
     pub fn set_flag(&self, flag: u32) {
         self.flags.fetch_or(flag, Ordering::Relaxed);
     }
-    
+
     /// 清除标志位
     pub fn clear_flag(&self, flag: u32) {
         self.flags.fetch_and(!flag, Ordering::Relaxed);
     }
-    
+
     /// 测试标志位
     pub fn test_flag(&self, flag: u32) -> bool {
         (self.flags.load(Ordering::Relaxed) & flag) != 0
     }
-    
+
     // ========== 引用计数 ==========
-    
+
     /// 获取引用计数
     pub fn refcount(&self) -> u32 {
         self.refcount.load(Ordering::Relaxed)
     }
-    
+
     /// 增加引用计数
     pub fn get(&self) -> u32 {
         self.refcount.fetch_add(1, Ordering::Relaxed) + 1
     }
-    
+
     /// 减少引用计数，返回新值
     pub fn put(&self) -> u32 {
         let old = self.refcount.fetch_sub(1, Ordering::Relaxed);
         debug_assert!(old > 0, "Page refcount underflow");
         old - 1
     }
-    
+
     /// 设置引用计数为 1（新分配的页）
     pub fn set_count_one(&self) {
         self.refcount.store(1, Ordering::Relaxed);
     }
-    
+
     // ========== 映射计数 ==========
-    
+
     /// 获取映射计数
     pub fn mapcount(&self) -> i32 {
         self.mapcount.load(Ordering::Relaxed)
     }
-    
+
     /// 增加映射计数
     pub fn inc_mapcount(&self) -> i32 {
         self.mapcount.fetch_add(1, Ordering::Relaxed) + 1
     }
-    
+
     /// 减少映射计数
     pub fn dec_mapcount(&self) -> i32 {
         let old = self.mapcount.fetch_sub(1, Ordering::Relaxed);
         old - 1
     }
-    
+
     // ========== Zone 和 Order ==========
-    
+
     /// 获取 Zone ID
     pub fn zone_id(&self) -> u8 {
         self.zone_id
     }
-    
+
     /// 设置 Zone ID
     pub fn set_zone_id(&mut self, id: u8) {
         self.zone_id = id;
     }
-    
+
     /// 获取 Buddy order
     pub fn order(&self) -> u8 {
         self.order.load(Ordering::Relaxed)
@@ -297,52 +297,52 @@ impl Page {
     pub fn set_order(&mut self, order: u8) {
         self.order.store(order, Ordering::Relaxed);
     }
-    
+
     // ========== 私有数据 ==========
-    
+
     /// 获取私有数据指针
     pub fn private(&self) -> *mut u8 {
         self.private
     }
-    
+
     /// 设置私有数据指针
     pub fn set_private(&mut self, ptr: *mut u8) {
         self.private = ptr;
     }
-    
+
     // ========== 状态检查 ==========
-    
+
     /// 是否为保留页
     pub fn is_reserved(&self) -> bool {
         self.test_flag(PageFlags::RESERVED)
     }
-    
+
     /// 是否在 Buddy 系统中
     pub fn is_buddy(&self) -> bool {
         self.test_flag(PageFlags::BUDDY)
     }
-    
+
     /// 是否被 SLUB 使用
     pub fn is_slab(&self) -> bool {
         self.test_flag(PageFlags::SLAB)
     }
-    
+
     /// 是否为复合页
     pub fn is_compound(&self) -> bool {
         self.test_flag(PageFlags::COMPOUND)
     }
-    
+
     /// 标记为保留
     pub fn mark_reserved(&self) {
         self.set_flag(PageFlags::RESERVED);
     }
-    
+
     /// 标记为 Buddy
     pub fn mark_buddy(&self, order: u8) {
         self.set_flag(PageFlags::BUDDY);
         self.order.store(order, Ordering::Relaxed);
     }
-    
+
     /// 清除 Buddy 标记
     pub fn clear_buddy(&self) {
         self.clear_flag(PageFlags::BUDDY);
@@ -360,7 +360,7 @@ impl Default for Page {
 // ============================================================================
 
 /// vmemmap 基地址（所有 Page 结构的数组）
-/// 
+///
 /// 在初始化时设置，之后通过此地址访问任意 PFN 的 Page 结构
 pub static VMEMMAP_BASE: AtomicUsize = AtomicUsize::new(0);
 
@@ -368,9 +368,9 @@ pub static VMEMMAP_BASE: AtomicUsize = AtomicUsize::new(0);
 pub static MAX_PFN: AtomicU64 = AtomicU64::new(0);
 
 /// 初始化 vmemmap
-/// 
+///
 /// # Safety
-/// 
+///
 /// - base 必须指向足够大的内存区域
 /// - max_pfn 必须正确
 pub unsafe fn init_vmemmap(base: *mut Page, max_pfn: u64) {
@@ -378,13 +378,15 @@ pub unsafe fn init_vmemmap(base: *mut Page, max_pfn: u64) {
     MAX_PFN.store(max_pfn, Ordering::Release);
     let vmemmap_base = VMEMMAP_BASE.load(Ordering::Acquire);
     let max_pfn_snapshot = MAX_PFN.load(Ordering::Acquire);
-    crate::kprintln!(
-        "[diag][mm] init_vmemmap base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
-        vmemmap_base,
-        max_pfn_snapshot,
-        core::ptr::addr_of!(VMEMMAP_BASE) as usize,
-        core::ptr::addr_of!(MAX_PFN) as usize,
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][mm] init_vmemmap base={:#x} max_pfn={} vmemmap_sym={:#x} max_pfn_sym={:#x}",
+            vmemmap_base,
+            max_pfn_snapshot,
+            core::ptr::addr_of!(VMEMMAP_BASE) as usize,
+            core::ptr::addr_of!(MAX_PFN) as usize,
+        );
+    }
 }
 
 #[inline]

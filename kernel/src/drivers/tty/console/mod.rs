@@ -9,11 +9,11 @@
 mod font;
 mod vt;
 
-pub use vt::{VtParser, VtState, VtAction};
+pub use vt::{VtAction, VtParser, VtState};
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-use core::fmt::{self, Write};
 use crate::sync::IrqMutex;
+use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 // ============================================================================
 // Console Lock
@@ -35,7 +35,7 @@ impl Console {
     /// 处理 VT 动作
     fn process_action(&mut self, action: VtAction) {
         use crate::drivers::tty::fbcon;
-        
+
         match action {
             VtAction::Print(ch) => {
                 fbcon::put_char(ch);
@@ -100,40 +100,48 @@ impl Console {
         }
 
         match attr {
-            0 => { // Reset
+            0 => {
+                // Reset
                 fbcon::set_fg_color(DEFAULT_FG);
                 fbcon::set_bg_color(DEFAULT_BG);
                 self.sgr_ext_state = SgrExtState::None;
             }
-            1 => { // Bold (Bright) - 简化处理：如果是深色则变亮
+            1 => {
+                // Bold (Bright) - 简化处理：如果是深色则变亮
                 let (fg, _) = fbcon::get_colors();
                 fbcon::set_fg_color(brighten_rgb(fg));
             }
-            30..=37 => { // FG Color
+            30..=37 => {
+                // FG Color
                 let color = ansi_to_rgb(attr - 30);
                 fbcon::set_fg_color(color);
             }
             38 => {
                 self.sgr_ext_state = SgrExtState::ExpectColorMode(SgrColorTarget::Foreground);
             }
-            39 => { // Default FG
+            39 => {
+                // Default FG
                 fbcon::set_fg_color(DEFAULT_FG);
             }
-            40..=47 => { // BG Color
+            40..=47 => {
+                // BG Color
                 let color = ansi_to_rgb(attr - 40);
                 fbcon::set_bg_color(color);
             }
             48 => {
                 self.sgr_ext_state = SgrExtState::ExpectColorMode(SgrColorTarget::Background);
             }
-            49 => { // Default BG
+            49 => {
+                // Default BG
                 fbcon::set_bg_color(DEFAULT_BG);
             }
-            90..=97 => { // Bright FG
+            90..=97 => {
+                // Bright FG
                 let color = ansi_to_rgb(attr - 90 + 8);
                 fbcon::set_fg_color(color);
             }
-            100..=107 => { // Bright BG
+            100..=107 => {
+                // Bright BG
                 let color = ansi_to_rgb(attr - 100 + 8);
                 fbcon::set_bg_color(color);
             }
@@ -248,7 +256,7 @@ impl Write for Console {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         // 串口输出 (Raw)
         let _ = write!(crate::drivers::tty::serial::SerialWriter, "{}", s);
-        
+
         // Framebuffer 输出 (VT 处理)
         for ch in s.chars() {
             let mut iter = self.vt_parser.feed(ch);

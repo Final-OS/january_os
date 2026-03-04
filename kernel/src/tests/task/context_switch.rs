@@ -28,12 +28,17 @@ pub(super) fn run() {
 
     let a = COUNTER_A.load(Ordering::SeqCst);
     let b = COUNTER_B.load(Ordering::SeqCst);
-    kprintln!("[test/task] context_switch counters: a={} b={}", a, b);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/task] context_switch counters: a={} b={}", a, b);
+    }
 
     if a == 5 && b == 5 {
         ok!("task: context switch OK (A={}, B={})", a, b);
     } else {
-        error!("task: context switch FAIL (A={}, B={}, expected 5 each)", a, b);
+        error!(
+            "task: context switch FAIL (A={}, B={}, expected 5 each)",
+            a, b
+        );
     }
 }
 

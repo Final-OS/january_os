@@ -12,7 +12,9 @@ static TASK_STEP_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) fn task_step(msg: &str) {
     let seq = TASK_STEP_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-    kprintln!("[test/task][step {}] {}", seq, msg);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/task][step {}] {}", seq, msg);
+    }
 }
 
 pub fn run() {
@@ -23,7 +25,9 @@ pub fn run_with_filter(filter: Option<&str>) {
     TASK_STEP_SEQ.store(0, Ordering::SeqCst);
     kprintln!("=== Task / Context Switch Test ===");
     task_step("start task test suite");
-    kprintln!("[test/task] filter={:?}", filter);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/task] filter={:?}", filter);
+    }
 
     match filter {
         None | Some("all") => {

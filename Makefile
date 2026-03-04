@@ -2,7 +2,7 @@
 # Configuration: os_cfg.toml
 # Tools: tools/cfg
 
-.PHONY: all build build-boot build-kernel build-tools run debug clean config help iso install-deps
+.PHONY: all build build-boot build-kernel build-tools run run-gui debug prepare-virtio-blk clean config help iso install-deps
 
 # ==============================================================================
 # 工具路径
@@ -52,6 +52,8 @@ LINKER       = $(KERNEL_DIR)/arch/$(ARCH)/linker.ld
 BOOT_EFI     = $(BUILD_DIR)/$(BOOT_TARGET)/release/january_os-boot-$(ARCH).efi
 KERNEL_ELF   = $(BUILD_DIR)/$(KERNEL_TARGET)/release/january_os-kernel
 KERNEL_BIN   = $(BUILD_DIR)/kernel.bin
+VIRTIO_BLK_IMG = $(BUILD_DIR)/virtio-blk.img
+VIRTIO_BLK_SIZE = 64M
 
 # ==============================================================================
 # OVMF / KVM 检测
@@ -75,7 +77,9 @@ QEMU_OPTS = -m $(QEMU_MEMORY) -smp $(QEMU_SMP) $(if $(QEMU_CPU),-cpu $(QEMU_CPU)
             -device usb-mouse,bus=xhci.0 \
             -device usb-kbd,bus=xhci.0 \
             -drive if=pflash,format=raw,readonly=on,file=$(OVMF) \
-            -drive format=raw,file=fat:rw:$(ESP_DIR)
+            -drive format=raw,file=fat:rw:$(ESP_DIR) \
+            -drive id=blk0,file=$(VIRTIO_BLK_IMG),format=raw,if=none \
+            -device virtio-blk-pci,drive=blk0
 
 # ==============================================================================
 # Rust 编译选项 (使用 = 延迟求值，因为依赖 LINKER)
@@ -114,20 +118,26 @@ build-kernel: $(CFG)
 		-Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
 	@rust-objcopy -O binary $(KERNEL_ELF) $(KERNEL_BIN)
 
-# ==============================================================================
+# ============================================================================== 
 # 运行目标 (纯串口模式)
-# ==============================================================================
-run: build
+# ============================================================================== 
+prepare-virtio-blk:
+	@mkdir -p $(BUILD_DIR)
+	@rm -f $(VIRTIO_BLK_IMG)
+	@truncate -s $(VIRTIO_BLK_SIZE) $(VIRTIO_BLK_IMG)
+	@echo "==> Created virtio-blk image: $(VIRTIO_BLK_IMG) ($(VIRTIO_BLK_SIZE))"
+
+run: build prepare-virtio-blk
 	@echo "==> $(QEMU_CMD): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, KVM=$(if $(USE_KVM),on,off)"
 	@echo "==> Serial console (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -nographic
 
-run-gui: build
+run-gui: build prepare-virtio-blk
 	@echo "==> $(QEMU_CMD): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, KVM=$(if $(USE_KVM),on,off)"
 	@echo "==> GUI console (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -serial stdio
 
-debug: build
+debug: build prepare-virtio-blk
 	@echo "==> GDB server on :1234 (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -nographic -s -S
 

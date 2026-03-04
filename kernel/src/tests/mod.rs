@@ -2,10 +2,11 @@
 //!
 //! 通过 shell `test <name>` 命令触发。
 
-mod task;
+mod block;
 mod libs;
 mod mm;
 mod smp;
+mod task;
 
 use crate::kprintln;
 use alloc::vec::Vec;
@@ -14,42 +15,42 @@ use alloc::vec::Vec;
 pub fn run(name: &str) {
     // 解析命令：支持 "test libs rcu" 格式
     let parts: Vec<&str> = name.split_whitespace().collect();
-    kprintln!("[test] request='{}' argc={}", name, parts.len());
 
     match parts.get(0).copied() {
         Some("task") => {
             let filter = parts.get(1).copied();
-            kprintln!("[test] dispatch module=task filter={:?}", filter);
             task::run_with_filter(filter);
         }
         Some("libs") => {
             let filter = parts.get(1).copied();
-            kprintln!("[test] dispatch module=libs filter={:?}", filter);
             libs::run_with_filter(filter);
         }
         Some("mm") => {
             let filter = parts.get(1).copied();
-            kprintln!("[test] dispatch module=mm filter={:?}", filter);
             mm::run_with_filter(filter);
         }
         Some("smp") => {
             let filter = parts.get(1).copied();
-            kprintln!("[test] dispatch module=smp filter={:?}", filter);
             smp::run_with_filter(filter);
         }
+        Some("block") => {
+            let filter = parts.get(1).copied();
+            block::run_with_filter(filter);
+        }
         Some("all") => {
-            kprintln!("[test] dispatch module=all (task+libs+mm+smp)");
             task::run();
             libs::run();
             mm::run();
             smp::run();
+            block::run();
         }
         Some("help") | _ => {
-            kprintln!("[test] dispatch module=help");
             kprintln!("Usage: test <subcommand>");
             kprintln!("Subcommands:");
             kprintln!("  task [name]    - Task subsystem tests");
-            kprintln!("                   Available: switch, wait, usermode, regression, safe, all");
+            kprintln!(
+                "                   Available: switch, wait, usermode, regression, safe, all"
+            );
             kprintln!("                   Default (`test task`) runs all");
             kprintln!("  libs [name]    - Data structure tests");
             kprintln!("                   Available: rbtree, lru, rdtree, btree, mptree, rcu");
@@ -57,8 +58,11 @@ pub fn run(name: &str) {
             kprintln!("  mm [name]      - Memory management tests");
             kprintln!("                   Available: swiotlb, slub, buddy, pcp, mmap");
             kprintln!("  smp [name]     - SMP/IPI tests");
-            kprintln!("                   Available: topology, cpu_id, ipi, irq_route, sched_stats, all");
-            kprintln!("  timer          - Timer tick test");
+            kprintln!(
+                "                   Available: topology, cpu_id, ipi, irq_route, sched_stats, all"
+            );
+            kprintln!("  block [name]   - Block device tests");
+            kprintln!("                   Available: virtio");
             kprintln!("  all            - Run all tests");
         }
     }

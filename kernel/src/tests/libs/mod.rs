@@ -15,14 +15,20 @@ static LIBS_STEP_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 fn libs_step(msg: &str) {
     let seq = LIBS_STEP_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-    kprintln!("[test/libs][step {}] {}", seq, msg);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/libs][step {}] {}", seq, msg);
+    }
 }
 
 fn run_case(name: &str, f: fn()) {
     libs_step("case begin");
-    kprintln!("[test/libs] case={} begin", name);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/libs] case={} begin", name);
+    }
     f();
-    kprintln!("[test/libs] case={} end", name);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/libs] case={} end", name);
+    }
 }
 
 pub fn run() {
@@ -33,7 +39,9 @@ pub fn run_with_filter(filter: Option<&str>) {
     LIBS_STEP_SEQ.store(0, Ordering::SeqCst);
     kprintln!("=== Libs Data Structure Tests ===");
     libs_step("start libs test suite");
-    kprintln!("[test/libs] filter={:?}", filter);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/libs] filter={:?}", filter);
+    }
 
     match filter {
         None | Some("all") => {
@@ -63,7 +71,9 @@ pub fn run_with_filter(filter: Option<&str>) {
         Some("bitmap") => run_case("bitmap", collections::run_bitmap),
         Some("hlist") => run_case("hlist", collections::run_hlist),
         Some("waitq") | Some("wait_queue") => run_case("wait_queue", collections::run_wait_queue),
-        Some("idalloc") | Some("id_allocator") => run_case("id_allocator", collections::run_id_allocator),
+        Some("idalloc") | Some("id_allocator") => {
+            run_case("id_allocator", collections::run_id_allocator)
+        }
         Some("once") | Some("sync_once") => run_case("sync_once", collections::run_sync_once),
         Some("sync_blocking") => run_case("sync_blocking", collections::run_sync_blocking),
         Some(name) => {

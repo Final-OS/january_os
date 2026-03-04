@@ -2,14 +2,7 @@ use super::{fail, mm_step, pass};
 use crate::{kprintln, warn};
 
 pub(super) fn run() {
-    use crate::mm::{
-        alloc_pages,
-        free_pages,
-        page_to_pfn,
-        GfpFlags,
-        GFP_KERNEL,
-        MAX_ORDER,
-    };
+    use crate::mm::{alloc_pages, free_pages, page_to_pfn, GfpFlags, GFP_KERNEL, MAX_ORDER};
 
     mm_step("buddy: case=invalid_order_rejected");
     let invalid = alloc_pages(MAX_ORDER, GFP_KERNEL);
@@ -70,7 +63,10 @@ pub(super) fn run() {
             free_pages(page1, 0);
             free_pages(page0, 0);
         }
-        return fail("buddy", "two live order-0 allocations should map to different PFNs");
+        return fail(
+            "buddy",
+            "two live order-0 allocations should map to different PFNs",
+        );
     }
 
     mm_step("buddy: free order-0 pages");
@@ -91,7 +87,10 @@ pub(super) fn run() {
     let page = match alloc_pages(order, flags) {
         Some(p) => p,
         None => {
-            warn!("mm/buddy: alloc_pages(order={}) failed, skip high-order checks", order);
+            warn!(
+                "mm/buddy: alloc_pages(order={}) failed, skip high-order checks",
+                order
+            );
             return pass("buddy");
         }
     };

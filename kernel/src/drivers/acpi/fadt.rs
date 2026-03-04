@@ -1,4 +1,4 @@
-use super::tables::{SdtHeader, AcpiTable, GenericAddress};
+use super::tables::{AcpiTable, GenericAddress, SdtHeader};
 
 /// FADT (Fixed ACPI Description Table)
 ///

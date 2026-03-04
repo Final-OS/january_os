@@ -4,7 +4,7 @@
 // NUMA 内存和 CPU 亲和性信息
 // ============================================================================
 
-use super::{SdtHeader, AcpiTable};
+use super::{AcpiTable, SdtHeader};
 
 /// SRAT 表签名
 pub const SRAT_SIGNATURE: &[u8; 4] = b"SRAT";
@@ -32,7 +32,7 @@ impl Srat {
         let header_size = core::mem::size_of::<Srat>();
         let total_size = self.header.length as usize;
         let entries_start = self as *const _ as *const u8;
-        
+
         SratEntryIter {
             current: unsafe { entries_start.add(header_size) },
             end: unsafe { entries_start.add(total_size) },
@@ -48,20 +48,20 @@ pub struct SratEntryIter {
 
 impl Iterator for SratEntryIter {
     type Item = SratEntry;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.current >= self.end {
             return None;
         }
-        
+
         unsafe {
             let entry_type = *self.current;
             let entry_length = *self.current.add(1);
-            
+
             if entry_length < 2 {
                 return None;
             }
-            
+
             let entry = match entry_type {
                 0 => {
                     let lapic = &*(self.current as *const LocalApicAffinity);
@@ -90,9 +90,9 @@ impl Iterator for SratEntryIter {
                 _ => SratEntry::Unknown {
                     entry_type,
                     length: entry_length,
-                }
+                },
             };
-            
+
             self.current = self.current.add(entry_length as usize);
             Some(entry)
         }
@@ -146,7 +146,7 @@ impl LocalApicAffinity {
             | ((self.proximity_domain_hi[1] as u32) << 16)
             | ((self.proximity_domain_hi[2] as u32) << 24)
     }
-    
+
     /// 是否启用
     pub fn is_enabled(&self) -> bool {
         self.flags & 1 != 0
@@ -184,22 +184,22 @@ impl MemoryAffinity {
     pub fn base_address(&self) -> u64 {
         (self.base_address_lo as u64) | ((self.base_address_hi as u64) << 32)
     }
-    
+
     /// 获取长度
     pub fn length(&self) -> u64 {
         (self.length_lo as u64) | ((self.length_hi as u64) << 32)
     }
-    
+
     /// 是否启用
     pub fn is_enabled(&self) -> bool {
         self.flags & 1 != 0
     }
-    
+
     /// 是否可热插拔
     pub fn is_hotpluggable(&self) -> bool {
         self.flags & 2 != 0
     }
-    
+
     /// 是否为非易失性内存
     pub fn is_non_volatile(&self) -> bool {
         self.flags & 4 != 0
@@ -355,9 +355,9 @@ pub fn parse_srat(srat: &Srat) -> SratInfo {
         present: true,
         ..Default::default()
     };
-    
+
     let mut seen_domains = [false; 256];
-    
+
     for entry in srat.entries() {
         match entry {
             SratEntry::LocalApicAffinity(lapic) => {
@@ -368,7 +368,7 @@ pub fn parse_srat(srat: &Srat) -> SratInfo {
                         proximity_domain: domain,
                     };
                     info.cpu_affinity_count += 1;
-                    
+
                     if domain < 256 {
                         seen_domains[domain as usize] = true;
                     }
@@ -385,7 +385,7 @@ pub fn parse_srat(srat: &Srat) -> SratInfo {
                         proximity_domain: domain,
                     };
                     info.cpu_affinity_count += 1;
-                    
+
                     if domain < 256 {
                         seen_domains[domain as usize] = true;
                     }
@@ -404,7 +404,7 @@ pub fn parse_srat(srat: &Srat) -> SratInfo {
                         hotpluggable: mem.is_hotpluggable(),
                     };
                     info.memory_affinity_count += 1;
-                    
+
                     if domain < 256 {
                         seen_domains[domain as usize] = true;
                     }
@@ -416,13 +416,13 @@ pub fn parse_srat(srat: &Srat) -> SratInfo {
             _ => {}
         }
     }
-    
+
     // 计算节点数量
     for seen in seen_domains.iter() {
         if *seen {
             info.node_count += 1;
         }
     }
-    
+
     info
 }

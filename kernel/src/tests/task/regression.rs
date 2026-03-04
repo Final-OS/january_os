@@ -81,8 +81,7 @@ pub(super) fn run() {
     if linked_mem_size < linked_file_size {
         error!(
             "task: regression FAIL (linked_mem_size < linked_file_size: {:#x} < {:#x})",
-            linked_mem_size,
-            linked_file_size
+            linked_mem_size, linked_file_size
         );
         return;
     }
@@ -90,8 +89,7 @@ pub(super) fn run() {
     if kernel_end < kernel_mem_end {
         error!(
             "task: regression FAIL (kernel_end < kernel_mem_end: end={:#x} mem_end={:#x})",
-            kernel_end,
-            kernel_mem_end
+            kernel_end, kernel_mem_end
         );
         return;
     }
@@ -177,7 +175,10 @@ pub(super) fn run() {
     const REGRESSION_FS_PID: usize = 0xfeed;
 
     if let Err(errno) = fs::register_static_file(REGRESSION_FS_PATH, REGRESSION_FS_DATA) {
-        error!("task: regression FAIL (register_static_file errno={})", errno);
+        error!(
+            "task: regression FAIL (register_static_file errno={})",
+            errno
+        );
         return;
     }
 
@@ -200,7 +201,10 @@ pub(super) fn run() {
     let second = match fs::read_for_pid(REGRESSION_FS_PID, fd, &mut buf[6..]) {
         Ok(n) => n,
         Err(errno) => {
-            error!("task: regression FAIL (read_for_pid second errno={})", errno);
+            error!(
+                "task: regression FAIL (read_for_pid second errno={})",
+                errno
+            );
             return;
         }
     };
@@ -233,8 +237,7 @@ pub(super) fn run() {
         Err(errno) => {
             error!(
                 "task: regression FAIL (unexpected errno after close, got={}, want={})",
-                errno,
-                EBADF
+                errno, EBADF
             );
             return;
         }
@@ -299,7 +302,10 @@ pub(super) fn run() {
     }
 
     if let Err(errno) = fs::close_for_pid(REGRESSION_PIPE_PID, rfd) {
-        error!("task: regression FAIL (pipe close read end errno={})", errno);
+        error!(
+            "task: regression FAIL (pipe close read end errno={})",
+            errno
+        );
         return;
     }
 
@@ -312,8 +318,7 @@ pub(super) fn run() {
         Err(errno) => {
             error!(
                 "task: regression FAIL (pipe write errno mismatch, got={}, want={})",
-                errno,
-                EPIPE
+                errno, EPIPE
             );
             return;
         }
@@ -327,7 +332,10 @@ pub(super) fn run() {
     let (rfd_nb, wfd_nb) = match fs::pipe2_for_pid(REGRESSION_PIPE_NB_PID, O_NONBLOCK) {
         Ok(v) => v,
         Err(errno) => {
-            error!("task: regression FAIL (pipe2_for_pid nonblock errno={})", errno);
+            error!(
+                "task: regression FAIL (pipe2_for_pid nonblock errno={})",
+                errno
+            );
             return;
         }
     };
@@ -344,8 +352,7 @@ pub(super) fn run() {
         Err(errno) => {
             error!(
                 "task: regression FAIL (nonblock pipe read errno mismatch, got={}, want={})",
-                errno,
-                EAGAIN
+                errno, EAGAIN
             );
             let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb);
             let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, wfd_nb);

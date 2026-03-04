@@ -18,16 +18,14 @@
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 
-pub mod ps2;
-pub mod hid;
 pub mod acpi_hotkey;
+pub mod hid;
+pub mod ps2;
 
 // 导出 PS/2 键盘接口
 pub use ps2::keyboard::{
-    init as keyboard_init,
-    handle_scancode, buffer_len,
-    last_scancode, last_char,
-    is_shift_pressed, is_ctrl_pressed, is_alt_pressed,
+    buffer_len, handle_scancode, init as keyboard_init, is_alt_pressed, is_ctrl_pressed,
+    is_shift_pressed, last_char, last_scancode,
 };
 
 /// 读取一个字符 (优先检查 USB 键盘，然后是 PS/2 键盘)
@@ -45,22 +43,17 @@ pub fn has_char() -> bool {
 
 // 导出 PS/2 鼠标接口
 pub use ps2::mouse::{
-    init as mouse_init,
-    handle_interrupt as mouse_handle_interrupt,
-    left_button, middle_button, right_button,
-    delta_x, delta_y,
-    event_count as mouse_event_count, has_event as mouse_has_event,
-    set_sample_rate, set_resolution,
-    device_id as mouse_device_id,
+    delta_x, delta_y, device_id as mouse_device_id, event_count as mouse_event_count,
+    handle_interrupt as mouse_handle_interrupt, has_event as mouse_has_event, init as mouse_init,
+    left_button, middle_button, right_button, set_resolution, set_sample_rate,
 };
 
 // 导出 USB HID 接口
-pub use hid::{
-    HidDeviceType, HidManager,
-    KeyEvent, KeyCode, Modifiers, KeyEventType,
-    MouseEvent, MouseButton, MouseEventType,
-};
 pub use acpi_hotkey::HotkeyEvent;
+pub use hid::{
+    HidDeviceType, HidManager, KeyCode, KeyEvent, KeyEventType, Modifiers, MouseButton, MouseEvent,
+    MouseEventType,
+};
 
 /// 初始化所有输入设备驱动
 pub fn init() {

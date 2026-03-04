@@ -20,18 +20,18 @@
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 
-pub mod usb;
 pub mod hid;
 pub mod keyboard;
 pub mod mouse;
+pub mod usb;
 
-use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::{IrqSpinLock, Once};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-pub use usb::{UsbDevice, UsbEndpoint, UsbTransferType, UsbDirection};
-pub use hid::{HidDevice, HidReport, HidReportType, HidDescriptor};
-pub use keyboard::{UsbKeyboard, KeyEvent, KeyCode, Modifiers, KeyEventType};
-pub use mouse::{UsbMouse, MouseEvent, MouseButton, MouseEventType};
+pub use hid::{HidDescriptor, HidDevice, HidReport, HidReportType};
+pub use keyboard::{KeyCode, KeyEvent, KeyEventType, Modifiers, UsbKeyboard};
+pub use mouse::{MouseButton, MouseEvent, MouseEventType, UsbMouse};
+pub use usb::{UsbDevice, UsbDirection, UsbEndpoint, UsbTransferType};
 
 // ============================================================================
 // 常量
@@ -87,14 +87,21 @@ impl HidManager {
     /// 创建新的 HID 管理器
     pub const fn new() -> Self {
         Self {
-            devices: [None, None, None, None, None, None, None, None,
-                      None, None, None, None, None, None, None, None],
+            devices: [
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None,
+            ],
             count: 0,
         }
     }
-    
+
     /// 注册 HID 设备
-    pub fn register_device(&mut self, device_type: HidDeviceType, usb_address: u8, interface: u8) -> Option<usize> {
+    pub fn register_device(
+        &mut self,
+        device_type: HidDeviceType,
+        usb_address: u8,
+        interface: u8,
+    ) -> Option<usize> {
         for (i, slot) in self.devices.iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(HidDeviceEntry {
@@ -110,7 +117,7 @@ impl HidManager {
         }
         None
     }
-    
+
     /// 注销 HID 设备
     pub fn unregister_device(&mut self, index: usize) {
         if index < MAX_HID_DEVICES {
@@ -121,7 +128,7 @@ impl HidManager {
             }
         }
     }
-    
+
     /// 获取设备数量
     pub fn device_count(&self) -> usize {
         self.count
@@ -139,15 +146,15 @@ pub fn init() -> Result<(), &'static str> {
     if HID_INIT.is_completed() {
         return Err("HID already initialized");
     }
-    
+
     HID_INIT.call_once(|| {
         // 初始化 USB 键盘驱动
         keyboard::init();
-        
+
         // 初始化 USB 鼠标驱动
         mouse::init();
     });
-    
+
     Ok(())
 }
 
@@ -168,13 +175,17 @@ pub fn poll() {
 
     // 轮询键盘
     keyboard::poll();
-    
+
     // 轮询鼠标
     mouse::poll();
 }
 
 /// 注册 HID 设备
-pub fn register_device(device_type: HidDeviceType, usb_address: u8, interface: u8) -> Option<usize> {
+pub fn register_device(
+    device_type: HidDeviceType,
+    usb_address: u8,
+    interface: u8,
+) -> Option<usize> {
     let mut mgr = HID_MANAGER.lock();
     mgr.register_device(device_type, usb_address, interface)
 }

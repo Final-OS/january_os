@@ -4,7 +4,7 @@
 // Intel VT-d IOMMU 描述表
 // ============================================================================
 
-use super::{SdtHeader, AcpiTable};
+use super::{AcpiTable, SdtHeader};
 
 /// DMAR 表签名
 pub const DMAR_SIGNATURE: &[u8; 4] = b"DMAR";
@@ -33,28 +33,28 @@ impl Dmar {
     pub fn physical_address_bits(&self) -> u8 {
         self.host_address_width + 1
     }
-    
+
     /// 是否启用中断重映射
     pub fn interrupt_remapping(&self) -> bool {
         self.flags & 0x01 != 0
     }
-    
+
     /// 是否启用 x2APIC 模式
     pub fn x2apic_opt_out(&self) -> bool {
         self.flags & 0x02 != 0
     }
-    
+
     /// 是否启用 DMA 控制平台可选择
     pub fn dma_control_platform_opt_in(&self) -> bool {
         self.flags & 0x04 != 0
     }
-    
+
     /// 遍历所有条目
     pub fn entries(&self) -> DmarEntryIter {
         let header_size = core::mem::size_of::<Dmar>();
         let total_size = self.header.length as usize;
         let entries_start = self as *const _ as *const u8;
-        
+
         DmarEntryIter {
             current: unsafe { entries_start.add(header_size) },
             end: unsafe { entries_start.add(total_size) },
@@ -70,19 +70,19 @@ pub struct DmarEntryIter {
 
 impl Iterator for DmarEntryIter {
     type Item = DmarEntry;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.current >= self.end {
             return None;
         }
-        
+
         unsafe {
             let header = &*(self.current as *const DmarStructHeader);
-            
+
             if header.length < 2 {
                 return None;
             }
-            
+
             let entry = match header.struct_type {
                 0 => {
                     let drhd = &*(self.current as *const Drhd);
@@ -111,9 +111,9 @@ impl Iterator for DmarEntryIter {
                 _ => DmarEntry::Unknown {
                     struct_type: header.struct_type,
                     length: header.length,
-                }
+                },
             };
-            
+
             self.current = self.current.add(header.length as usize);
             Some(entry)
         }
@@ -188,7 +188,7 @@ impl DmarDrhd {
         let include_pci_all = drhd.flags & 0x01 != 0;
         let segment = drhd.segment;
         let register_base = drhd.register_base;
-        
+
         let mut result = Self {
             include_pci_all,
             segment,
@@ -196,22 +196,20 @@ impl DmarDrhd {
             device_scopes: [DeviceScope::default(); 16],
             device_scope_count: 0,
         };
-        
+
         // 解析设备作用域
         let header_size = core::mem::size_of::<Drhd>();
         let total_size = drhd.header.length as usize;
         let scope_size = total_size - header_size;
-        
+
         if scope_size > 0 {
-            let scope_start = unsafe {
-                (drhd as *const _ as *const u8).add(header_size)
-            };
+            let scope_start = unsafe { (drhd as *const _ as *const u8).add(header_size) };
             result.parse_device_scopes(scope_start, scope_size);
         }
-        
+
         result
     }
-    
+
     fn parse_device_scopes(&mut self, start: *const u8, size: usize) {
         let mut offset = 0;
         while offset < size && self.device_scope_count < 16 {
@@ -220,14 +218,14 @@ impl DmarDrhd {
                 if scope.length < 6 {
                     break;
                 }
-                
+
                 self.device_scopes[self.device_scope_count] = DeviceScope {
                     scope_type: scope.scope_type,
                     enumeration_id: scope.enumeration_id,
                     start_bus: scope.start_bus,
                 };
                 self.device_scope_count += 1;
-                
+
                 offset += scope.length as usize;
             }
         }
@@ -500,7 +498,7 @@ pub fn parse_dmar(dmar: &Dmar) -> DmarInfo {
         interrupt_remapping: dmar.interrupt_remapping(),
         ..Default::default()
     };
-    
+
     for entry in dmar.entries() {
         match entry {
             DmarEntry::Drhd(drhd) => {
@@ -526,6 +524,6 @@ pub fn parse_dmar(dmar: &Dmar) -> DmarInfo {
             _ => {}
         }
     }
-    
+
     info
 }

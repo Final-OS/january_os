@@ -28,14 +28,16 @@ fn resolve_kernel_reserved_end_phys(info: &BootInfo) -> u64 {
     let linked_mem_end = info.kernel_phys_addr.saturating_add(linked_mem_size);
     let reserved_end = mm::page_align_up(boot_file_end.max(linked_mem_end));
 
-    kprintln!(
-        "[diag][boot] kernel reserve range=[{:#x}, {:#x}) boot_file_size={:#x} linked_file_size={:#x} linked_mem_size={:#x}",
-        info.kernel_phys_addr,
-        reserved_end,
-        info.kernel_size,
-        linked_file_size,
-        linked_mem_size,
-    );
+    if config::DEBUG_VERBOSE {
+        kprintln!(
+            "[diag][boot] kernel reserve range=[{:#x}, {:#x}) boot_file_size={:#x} linked_file_size={:#x} linked_mem_size={:#x}",
+            info.kernel_phys_addr,
+            reserved_end,
+            info.kernel_size,
+            linked_file_size,
+            linked_mem_size,
+        );
+    }
 
     reserved_end
 }
@@ -69,13 +71,15 @@ pub fn init_kernel(info: &BootInfo) {
     }
 
     let direct_map = resolve_direct_map_offset(info.direct_map_offset);
-    kprintln!(
-        "[diag][boot] bootinfo: mem_entries={} usable={}MB direct_map={:#x} rsdp={:#x}",
-        info.memory_map_entries,
-        info.usable_memory / 1024 / 1024,
-        direct_map,
-        info.acpi_rsdp_addr,
-    );
+    if config::DEBUG_VERBOSE {
+        kprintln!(
+            "[diag][boot] bootinfo: mem_entries={} usable={}MB direct_map={:#x} rsdp={:#x}",
+            info.memory_map_entries,
+            info.usable_memory / 1024 / 1024,
+            direct_map,
+            info.acpi_rsdp_addr,
+        );
+    }
 
     // 3. 初始化 Framebuffer 控制台
     init_graphics(info, direct_map);
@@ -93,77 +97,121 @@ pub fn init_kernel(info: &BootInfo) {
     }
 
     // 4. 内存管理初始化
-    kprintln!("[diag][boot] step4: init_memory begin");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step4: init_memory begin");
+    }
     init_memory(info, direct_map);
-    kprintln!("[diag][boot] step4: init_memory done");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step4: init_memory done");
+    }
 
     let kernel_stack_top = arch::current_stack_top();
-    kprintln!("[diag][boot] kernel_stack_top={:#x}", kernel_stack_top);
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] kernel_stack_top={:#x}", kernel_stack_top);
+    }
 
     // 5. ACPI 解析
-    kprintln!("[diag][boot] step5: init_acpi begin");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step5: init_acpi begin");
+    }
     let acpi_config = init_acpi(info);
     let cpu_count = acpi_config.cpu_count;
-    kprintln!(
-        "[diag][boot] step5: init_acpi done cpu_count={} lapic={:#x} ioapic={:#x}",
-        cpu_count,
-        acpi_config.local_apic_addr,
-        acpi_config.ioapic_addr,
-    );
+    if config::DEBUG_VERBOSE {
+        kprintln!(
+            "[diag][boot] step5: init_acpi done cpu_count={} lapic={:#x} ioapic={:#x}",
+            cpu_count,
+            acpi_config.local_apic_addr,
+            acpi_config.ioapic_addr,
+        );
+    }
 
     // 6. 初始化 PCP (Per-CPU Pages) - 依赖 CPU 数量
-    kprintln!("[diag][boot] step6: init_pcp nr_cpus={}", cpu_count);
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step6: init_pcp nr_cpus={}", cpu_count);
+    }
     mm::init_pcp(cpu_count as u32);
 
     // 7. 中断控制器初始化
-    kprintln!("[diag][boot] step7: init_interrupts begin");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step7: init_interrupts begin");
+    }
     init_interrupts(&acpi_config, kernel_stack_top, direct_map);
-    kprintln!("[diag][boot] step7: init_interrupts done");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step7: init_interrupts done");
+    }
 
     // 8. 启动 AP 核心 (SMP)
-    kprintln!(
-        "[diag][boot] step8: smp::init begin expected_cpus={}",
-        cpu_count
-    );
+    if config::DEBUG_VERBOSE {
+        kprintln!(
+            "[diag][boot] step8: smp::init begin expected_cpus={}",
+            cpu_count
+        );
+    }
     smp::init(direct_map, cpu_count as usize);
-    kprintln!(
-        "[diag][boot] step8: smp::init done online_cpus={}",
-        smp::cpu_count()
-    );
+    if config::DEBUG_VERBOSE {
+        kprintln!(
+            "[diag][boot] step8: smp::init done online_cpus={}",
+            smp::cpu_count()
+        );
+    }
 
     // 9. IOMMU 初始化
-    kprintln!("[diag][boot] step9: init_iommu begin");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step9: init_iommu begin");
+    }
     init_iommu();
-    kprintln!("[diag][boot] step9: init_iommu done");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step9: init_iommu done");
+    }
 
     // 9a. 虚拟化环境探测（为后续虚拟化组件留接口）
-    kprintln!("[diag][boot] step9a: detect_virtualization begin");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step9a: detect_virtualization begin");
+    }
     detect_virtualization();
-    kprintln!("[diag][boot] step9a: detect_virtualization done");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step9a: detect_virtualization done");
+    }
 
     // 10. 设备驱动初始化
-    kprintln!("[diag][boot] step10: init_drivers begin");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step10: init_drivers begin");
+    }
     init_drivers();
-    kprintln!("[diag][boot] step10: init_drivers done");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step10: init_drivers done");
+    }
 
     // 11. 启用时钟和中断
-    kprintln!("[diag][boot] step11: init_timer_and_enable_interrupts begin");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step11: init_timer_and_enable_interrupts begin");
+    }
     init_timer_and_enable_interrupts();
     let if_after_step11 = interrupt::interrupts_enabled();
-    kprintln!(
-        "[diag][boot] step11: interrupts_enabled={}",
-        if_after_step11
-    );
+    if config::DEBUG_VERBOSE {
+        kprintln!(
+            "[diag][boot] step11: interrupts_enabled={}",
+            if_after_step11
+        );
+    }
 
     // 11a. 初始化最小文件后端
-    kprintln!("[diag][boot] step11a: fs::init begin");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step11a: fs::init begin");
+    }
     fs::init();
-    kprintln!("[diag][boot] step11a: fs::init done");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step11a: fs::init done");
+    }
 
     // 12. 初始化任务子系统
-    kprintln!("[diag][boot] step12: task::init begin");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step12: task::init begin");
+    }
     crate::task::init();
-    kprintln!("[diag][boot] step12: task::init done");
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step12: task::init done");
+    }
 
     kprintln!();
     ok!("Kernel initialization complete.");
@@ -477,6 +525,7 @@ fn detect_virtualization() {
 
 fn init_drivers() {
     info!("Initializing Devices...");
+    drivers::block::init();
     drivers::pci::init();
     drivers::usb::init();
     drivers::input::init();
@@ -485,7 +534,9 @@ fn init_drivers() {
 
 fn init_timer_and_enable_interrupts() {
     let if_step11a = interrupt::interrupts_enabled();
-    kprintln!("[diag][boot] step11a: IF(before timer init)={}", if_step11a);
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step11a: IF(before timer init)={}", if_step11a);
+    }
 
     // 1. 校准 TSC (System Clock)
     interrupt::calibrate_tsc();
@@ -499,7 +550,9 @@ fn init_timer_and_enable_interrupts() {
     serial_enable_rx_interrupt();
 
     let if_step11b = interrupt::interrupts_enabled();
-    kprintln!("[diag][boot] step11b: IF(before sti)={}", if_step11b);
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step11b: IF(before sti)={}", if_step11b);
+    }
 
     interrupt::enable_interrupts();
 
@@ -508,7 +561,9 @@ fn init_timer_and_enable_interrupts() {
 
     let if_step11c = interrupt::interrupts_enabled();
 
-    kprintln!("[diag][boot] step11c: IF(after sti)={}", if_step11c);
+    if config::DEBUG_VERBOSE {
+        kprintln!("[diag][boot] step11c: IF(after sti)={}", if_step11c);
+    }
     mm::paging::register_tlb_shootdown_cpu();
 
     ok!(

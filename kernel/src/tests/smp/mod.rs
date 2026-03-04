@@ -10,7 +10,9 @@ static SMP_PROBE_SENTINEL: u64 = 0x55aa_1122_3344_7788;
 
 fn smp_step(msg: &str) {
     let seq = SMP_STEP_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-    kprintln!("[test/smp][step {}] {}", seq, msg);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/smp][step {}] {}", seq, msg);
+    }
 }
 
 fn pass(name: &str) {
@@ -26,12 +28,14 @@ fn run_topology_case() -> bool {
     let detected = smp::detected_cpu_count();
     let online = smp::cpu_count();
     let max_cfg = crate::config::MAX_CPUS;
-    kprintln!(
-        "[test/smp][topology] detected={} online={} config.max_cpus={}",
-        detected,
-        online,
-        max_cfg
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/smp][topology] detected={} online={} config.max_cpus={}",
+            detected,
+            online,
+            max_cfg
+        );
+    }
 
     smp_step("topology: validate boundary conditions");
     if detected == 0 {
@@ -70,13 +74,15 @@ fn run_cpu_id_case() -> bool {
     let cpu_id_before = smp::current_cpu_id();
     let cpu_id_after = smp::current_cpu_id();
     let apic_ready = crate::interrupt::apic_initialized();
-    kprintln!(
-        "[test/smp][cpu_id] apic_ready={} online={} current_before={} current_after={}",
-        apic_ready,
-        online,
-        cpu_id_before,
-        cpu_id_after
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/smp][cpu_id] apic_ready={} online={} current_before={} current_after={}",
+            apic_ready,
+            online,
+            cpu_id_before,
+            cpu_id_after
+        );
+    }
 
     smp_step("cpu_id: validate current cpu id range and stability");
     if online == 0 {
@@ -88,7 +94,10 @@ fn run_cpu_id_case() -> bool {
         return false;
     }
     if cpu_id_before != cpu_id_after {
-        fail("cpu_id", "current cpu id changed unexpectedly within same probe");
+        fail(
+            "cpu_id",
+            "current cpu id changed unexpectedly within same probe",
+        );
         return false;
     }
 
@@ -100,20 +109,24 @@ fn run_ipi_case() -> bool {
     smp_step("ipi: gather preconditions");
     let online = smp::cpu_count();
     let registered = mm::paging::tlb_shootdown_registered_cpu_count();
-    kprintln!(
-        "[test/smp][ipi] online_cpus={} shootdown_registered_cpus={}",
-        online,
-        registered
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/smp][ipi] online_cpus={} shootdown_registered_cpus={}",
+            online,
+            registered
+        );
+    }
 
     smp_step("ipi: invalid input case with zero probe address");
     let (targets0, handled0, matched0) = mm::paging::run_tlb_probe_on_other_cpus(0, 0x1234);
-    kprintln!(
-        "[test/smp][ipi][zero-addr] targets={} handled={} matched={} expected_matched=0",
-        targets0,
-        handled0,
-        matched0
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/smp][ipi][zero-addr] targets={} handled={} matched={} expected_matched=0",
+            targets0,
+            handled0,
+            matched0
+        );
+    }
     if handled0 > targets0 {
         fail("ipi", "zero-addr probe handled count exceeds targets");
         return false;
@@ -143,16 +156,21 @@ fn run_ipi_case() -> bool {
     let probe_addr = core::ptr::addr_of!(SMP_PROBE_SENTINEL) as u64;
     let expected = SMP_PROBE_SENTINEL;
     let (targets, handled, matched) = mm::paging::run_tlb_probe_on_other_cpus(probe_addr, expected);
-    kprintln!(
-        "[test/smp][ipi][positive] addr={:#x} expected={:#x} targets={} handled={} matched={}",
-        probe_addr,
-        expected,
-        targets,
-        handled,
-        matched
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/smp][ipi][positive] addr={:#x} expected={:#x} targets={} handled={} matched={}",
+            probe_addr,
+            expected,
+            targets,
+            handled,
+            matched
+        );
+    }
     if targets == 0 {
-        fail("ipi", "positive probe has zero targets in multi-cpu environment");
+        fail(
+            "ipi",
+            "positive probe has zero targets in multi-cpu environment",
+        );
         return false;
     }
     if handled != targets {
@@ -168,16 +186,21 @@ fn run_ipi_case() -> bool {
     let wrong_expected = expected ^ 0xffff_ffff_ffff_ffff;
     let (targets_bad, handled_bad, matched_bad) =
         mm::paging::run_tlb_probe_on_other_cpus(probe_addr, wrong_expected);
-    kprintln!(
-        "[test/smp][ipi][mismatch] addr={:#x} expected={:#x} targets={} handled={} matched={} expected_matched=0",
-        probe_addr,
-        wrong_expected,
-        targets_bad,
-        handled_bad,
-        matched_bad
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/smp][ipi][mismatch] addr={:#x} expected={:#x} targets={} handled={} matched={} expected_matched=0",
+            probe_addr,
+            wrong_expected,
+            targets_bad,
+            handled_bad,
+            matched_bad
+        );
+    }
     if targets_bad == 0 {
-        fail("ipi", "mismatch probe has zero targets in multi-cpu environment");
+        fail(
+            "ipi",
+            "mismatch probe has zero targets in multi-cpu environment",
+        );
         return false;
     }
     if handled_bad != targets_bad {
@@ -224,17 +247,19 @@ fn check_irq_route(name: &str, isa_irq: u8, expect_vector: u8) -> Result<(), &'s
         return Err("ioapic route read returned None");
     };
 
-    kprintln!(
-        "[test/smp][irq-route] {} isa_irq={} gsi={} vector={} masked={} level={} low={} dest={}",
-        name,
-        isa_irq,
-        gsi,
-        route.vector,
-        route.masked,
-        route.level_triggered,
-        route.active_low,
-        route.dest
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/smp][irq-route] {} isa_irq={} gsi={} vector={} masked={} level={} low={} dest={}",
+            name,
+            isa_irq,
+            gsi,
+            route.vector,
+            route.masked,
+            route.level_triggered,
+            route.active_low,
+            route.dest
+        );
+    }
 
     if route.vector != expect_vector {
         return Err("ioapic vector mismatch");
@@ -258,12 +283,14 @@ fn check_irq_route(name: &str, isa_irq: u8, expect_vector: u8) -> Result<(), &'s
 fn run_irq_route_case() -> bool {
     smp_step("irq_route: gather ioapic/acpi preconditions");
     let acpi_cfg = crate::drivers::acpi::detect_system_config();
-    kprintln!(
-        "[test/smp][irq-route] ioapic_addr={:#x} ioapic_gsi_base={} override_count={}",
-        acpi_cfg.ioapic_addr,
-        acpi_cfg.ioapic_gsi_base,
-        acpi_cfg.irq_override_count
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/smp][irq-route] ioapic_addr={:#x} ioapic_gsi_base={} override_count={}",
+            acpi_cfg.ioapic_addr,
+            acpi_cfg.ioapic_gsi_base,
+            acpi_cfg.irq_override_count
+        );
+    }
 
     if acpi_cfg.ioapic_addr == 0 {
         warn!("smp/irq_route: ioapic not present, skip route validation");
@@ -272,31 +299,19 @@ fn run_irq_route_case() -> bool {
     }
 
     smp_step("irq_route: validate keyboard route");
-    if let Err(msg) = check_irq_route(
-        "keyboard",
-        1,
-        crate::interrupt::IRQ_KEYBOARD,
-    ) {
+    if let Err(msg) = check_irq_route("keyboard", 1, crate::interrupt::IRQ_KEYBOARD) {
         fail("irq_route", msg);
         return false;
     }
 
     smp_step("irq_route: validate mouse route");
-    if let Err(msg) = check_irq_route(
-        "mouse",
-        12,
-        crate::interrupt::IRQ_MOUSE,
-    ) {
+    if let Err(msg) = check_irq_route("mouse", 12, crate::interrupt::IRQ_MOUSE) {
         fail("irq_route", msg);
         return false;
     }
 
     smp_step("irq_route: validate serial route");
-    if let Err(msg) = check_irq_route(
-        "serial",
-        4,
-        crate::interrupt::IRQ_COM1,
-    ) {
+    if let Err(msg) = check_irq_route("serial", 4, crate::interrupt::IRQ_COM1) {
         fail("irq_route", msg);
         return false;
     }
@@ -308,13 +323,15 @@ fn run_irq_route_case() -> bool {
 fn run_scheduler_stats_case() -> bool {
     smp_step("sched_stats: read scheduler stats before probe");
     let before = crate::task::scheduler_snapshot_stats();
-    kprintln!(
-        "[test/smp][sched_stats][before] local={} steal_attempts={} steal_successes={} idle={}",
-        before.local_picks,
-        before.steal_attempts,
-        before.steal_successes,
-        before.idle_fallbacks
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/smp][sched_stats][before] local={} steal_attempts={} steal_successes={} idle={}",
+            before.local_picks,
+            before.steal_attempts,
+            before.steal_successes,
+            before.idle_fallbacks
+        );
+    }
 
     smp_step("sched_stats: trigger scheduler probe cycles");
     for _ in 0..8 {
@@ -323,13 +340,15 @@ fn run_scheduler_stats_case() -> bool {
 
     smp_step("sched_stats: read scheduler stats after probe");
     let after = crate::task::scheduler_snapshot_stats();
-    kprintln!(
-        "[test/smp][sched_stats][after] local={} steal_attempts={} steal_successes={} idle={}",
-        after.local_picks,
-        after.steal_attempts,
-        after.steal_successes,
-        after.idle_fallbacks
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/smp][sched_stats][after] local={} steal_attempts={} steal_successes={} idle={}",
+            after.local_picks,
+            after.steal_attempts,
+            after.steal_successes,
+            after.idle_fallbacks
+        );
+    }
 
     if after.local_picks < before.local_picks {
         fail("sched_stats", "local picks counter regressed");
@@ -364,7 +383,9 @@ pub fn run_with_filter(filter: Option<&str>) {
     SMP_STEP_SEQ.store(0, Ordering::SeqCst);
     kprintln!("=== SMP / IPI Tests ===");
     smp_step("start smp test suite");
-    kprintln!("[test/smp] filter={:?}", filter);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/smp] filter={:?}", filter);
+    }
 
     match filter {
         None | Some("all") => {

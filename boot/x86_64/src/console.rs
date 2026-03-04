@@ -2,6 +2,9 @@
 
 use core::fmt::Write;
 
+/// Debug mode - set to true to enable detailed output
+pub const DEBUG: bool = false;
+
 pub fn println_uefi(s: &str) {
     print_uefi(s);
     print_uefi("\r\n");
@@ -13,37 +16,19 @@ pub fn print_uefi(s: &str) {
     });
 }
 
+/// Diagnostic output - only shown in DEBUG mode
+pub fn print_diag(s: &str) {
+    if DEBUG {
+        print_uefi("      ");
+        println_uefi(s);
+    }
+}
+
 pub fn print_stage(step: u8, title: &str) {
     print_uefi("[");
     print_dec(step as u64);
     print_uefi("/8] ");
     println_uefi(title);
-}
-
-pub fn print_hex(val: u64) {
-    let mut buf = [b'0'; 17];
-    let mut v = val;
-    let mut i = 16;
-
-    if v == 0 {
-        print_uefi("0");
-        return;
-    }
-
-    while v > 0 && i > 0 {
-        i -= 1;
-        let digit = (v & 0xF) as u8;
-        buf[i] = if digit < 10 {
-            b'0' + digit
-        } else {
-            b'A' + digit - 10
-        };
-        v >>= 4;
-    }
-
-    if let Ok(s) = core::str::from_utf8(&buf[i..16]) {
-        print_uefi(s);
-    }
 }
 
 pub fn print_dec(val: u64) {

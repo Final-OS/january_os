@@ -404,18 +404,21 @@ pub fn register_tlb_shootdown_cpu() {
         targets.register_apic_id(apic_id)
     };
 
-    if added && TLB_SHOOTDOWN_REGISTERED_LOGGED
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
-        .is_ok()
+    if added
+        && TLB_SHOOTDOWN_REGISTERED_LOGGED
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
     {
-        crate::kprintln!(
-            "[diag][tlb] register shootdown cpu apic_id={}",
-            apic_id,
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!("[diag][tlb] register shootdown cpu apic_id={}", apic_id,);
+        }
     }
 }
 
-fn collect_tlb_shootdown_targets(exclude_apic_id: u32, out: &mut [u32; TLB_TARGET_CAPACITY]) -> usize {
+fn collect_tlb_shootdown_targets(
+    exclude_apic_id: u32,
+    out: &mut [u32; TLB_TARGET_CAPACITY],
+) -> usize {
     let targets = TLB_SHOOTDOWN_TARGETS.lock();
     let mut count = 0usize;
     for idx in 0..targets.count {
@@ -462,11 +465,13 @@ fn shootdown_other_cpus() {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
             .is_ok()
         {
-            crate::kprintln!(
-                "[diag][tlb] skip shootdown: interrupt/APIC not ready (int_init={} apic_init={})",
-                interrupt::initialized(),
-                interrupt::apic_initialized(),
-            );
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "[diag][tlb] skip shootdown: interrupt/APIC not ready (int_init={} apic_init={})",
+                    interrupt::initialized(),
+                    interrupt::apic_initialized(),
+                );
+            }
         }
         return;
     }
@@ -485,12 +490,14 @@ fn shootdown_other_cpus() {
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
         .is_ok()
     {
-        crate::kprintln!(
-            "[diag][tlb] send shootdown ipi vector={:#x} targets={} from_apic_id={}",
-            interrupt::IPI_TLB_SHOOTDOWN,
-            target_count,
-            self_apic_id,
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][tlb] send shootdown ipi vector={:#x} targets={} from_apic_id={}",
+                interrupt::IPI_TLB_SHOOTDOWN,
+                target_count,
+                self_apic_id,
+            );
+        }
     }
 
     send_vector_to_targets(
@@ -525,10 +532,12 @@ pub fn handle_tlb_shootdown_ipi() {
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
         .is_ok()
     {
-        crate::kprintln!(
-            "[diag][tlb] first shootdown IPI received on apic_id={}",
-            interrupt::local_apic_id(),
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][tlb] first shootdown IPI received on apic_id={}",
+                interrupt::local_apic_id(),
+            );
+        }
     }
     TLB_SHOOTDOWN_ACKED.fetch_add(1, Ordering::AcqRel);
 }

@@ -190,9 +190,9 @@ impl HidReportItem {
         if data.is_empty() {
             return None;
         }
-        
+
         let prefix = data[0];
-        
+
         // 检查长项目 (0xFE)
         if prefix == 0xFE {
             if data.len() < 3 {
@@ -213,14 +213,17 @@ impl HidReportItem {
             for (idx, b) in payload.iter().take(4).enumerate() {
                 item_data |= (*b as u32) << (idx * 8);
             }
-            return Some((Self {
-                item_type,
-                tag,
-                size,
-                data: item_data,
-            }, consumed));
+            return Some((
+                Self {
+                    item_type,
+                    tag,
+                    size,
+                    data: item_data,
+                },
+                consumed,
+            ));
         }
-        
+
         // 短项目
         let size = match prefix & 0x03 {
             0 => 0,
@@ -229,35 +232,42 @@ impl HidReportItem {
             3 => 4,
             _ => 0,
         };
-        
+
         let item_type = match (prefix >> 2) & 0x03 {
             0 => HidItemType::Main,
             1 => HidItemType::Global,
             2 => HidItemType::Local,
             _ => HidItemType::Reserved,
         };
-        
+
         let tag = (prefix >> 4) & 0x0F;
-        
+
         if data.len() < 1 + size as usize {
             return None;
         }
-        
+
         let item_data = match size {
             0 => 0,
             1 => data[1] as u32,
             2 => (data[1] as u32) | ((data[2] as u32) << 8),
-            4 => (data[1] as u32) | ((data[2] as u32) << 8) 
-                | ((data[3] as u32) << 16) | ((data[4] as u32) << 24),
+            4 => {
+                (data[1] as u32)
+                    | ((data[2] as u32) << 8)
+                    | ((data[3] as u32) << 16)
+                    | ((data[4] as u32) << 24)
+            }
             _ => 0,
         };
-        
-        Some((Self {
-            item_type,
-            tag,
-            size,
-            data: item_data,
-        }, 1 + size as usize))
+
+        Some((
+            Self {
+                item_type,
+                tag,
+                size,
+                data: item_data,
+            },
+            1 + size as usize,
+        ))
     }
 }
 
@@ -288,7 +298,7 @@ impl HidReport {
             length: 0,
         }
     }
-    
+
     /// 从数据创建
     pub fn from_data(data: &[u8], report_type: HidReportType) -> Self {
         let mut report = Self::empty();
@@ -334,12 +344,12 @@ impl HidDevice {
             poll_interval: 10,
         }
     }
-    
+
     /// 设置为 Boot 协议
     pub fn set_boot_protocol(&mut self) {
         self.protocol = HidProtocol::Boot;
     }
-    
+
     /// 设置为 Report 协议
     pub fn set_report_protocol(&mut self) {
         self.protocol = HidProtocol::Report;
@@ -364,28 +374,50 @@ pub struct BootKeyboardReport {
 
 impl BootKeyboardReport {
     /// 检查是否按下左 Ctrl
-    pub fn left_ctrl(&self) -> bool { self.modifiers & 0x01 != 0 }
+    pub fn left_ctrl(&self) -> bool {
+        self.modifiers & 0x01 != 0
+    }
     /// 检查是否按下左 Shift
-    pub fn left_shift(&self) -> bool { self.modifiers & 0x02 != 0 }
+    pub fn left_shift(&self) -> bool {
+        self.modifiers & 0x02 != 0
+    }
     /// 检查是否按下左 Alt
-    pub fn left_alt(&self) -> bool { self.modifiers & 0x04 != 0 }
+    pub fn left_alt(&self) -> bool {
+        self.modifiers & 0x04 != 0
+    }
     /// 检查是否按下左 GUI (Win)
-    pub fn left_gui(&self) -> bool { self.modifiers & 0x08 != 0 }
+    pub fn left_gui(&self) -> bool {
+        self.modifiers & 0x08 != 0
+    }
     /// 检查是否按下右 Ctrl
-    pub fn right_ctrl(&self) -> bool { self.modifiers & 0x10 != 0 }
+    pub fn right_ctrl(&self) -> bool {
+        self.modifiers & 0x10 != 0
+    }
     /// 检查是否按下右 Shift
-    pub fn right_shift(&self) -> bool { self.modifiers & 0x20 != 0 }
+    pub fn right_shift(&self) -> bool {
+        self.modifiers & 0x20 != 0
+    }
     /// 检查是否按下右 Alt
-    pub fn right_alt(&self) -> bool { self.modifiers & 0x40 != 0 }
+    pub fn right_alt(&self) -> bool {
+        self.modifiers & 0x40 != 0
+    }
     /// 检查是否按下右 GUI (Win)
-    pub fn right_gui(&self) -> bool { self.modifiers & 0x80 != 0 }
-    
+    pub fn right_gui(&self) -> bool {
+        self.modifiers & 0x80 != 0
+    }
+
     /// 检查是否按下任意 Shift
-    pub fn shift(&self) -> bool { self.left_shift() || self.right_shift() }
+    pub fn shift(&self) -> bool {
+        self.left_shift() || self.right_shift()
+    }
     /// 检查是否按下任意 Ctrl
-    pub fn ctrl(&self) -> bool { self.left_ctrl() || self.right_ctrl() }
+    pub fn ctrl(&self) -> bool {
+        self.left_ctrl() || self.right_ctrl()
+    }
     /// 检查是否按下任意 Alt
-    pub fn alt(&self) -> bool { self.left_alt() || self.right_alt() }
+    pub fn alt(&self) -> bool {
+        self.left_alt() || self.right_alt()
+    }
 }
 
 /// Boot 协议鼠标报告 (3-4 字节)
@@ -404,9 +436,15 @@ pub struct BootMouseReport {
 
 impl BootMouseReport {
     /// 检查左键
-    pub fn left_button(&self) -> bool { self.buttons & 0x01 != 0 }
+    pub fn left_button(&self) -> bool {
+        self.buttons & 0x01 != 0
+    }
     /// 检查右键
-    pub fn right_button(&self) -> bool { self.buttons & 0x02 != 0 }
+    pub fn right_button(&self) -> bool {
+        self.buttons & 0x02 != 0
+    }
     /// 检查中键
-    pub fn middle_button(&self) -> bool { self.buttons & 0x04 != 0 }
+    pub fn middle_button(&self) -> bool {
+        self.buttons & 0x04 != 0
+    }
 }

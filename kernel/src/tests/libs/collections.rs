@@ -437,7 +437,10 @@ fn test_sync_once() {
         return fail("sync_once", "once_cell first try should fail");
     }
     if cell.get().is_some() {
-        return fail("sync_once", "once_cell should stay uninitialized after failure");
+        return fail(
+            "sync_once",
+            "once_cell should stay uninitialized after failure",
+        );
     }
 
     let second = cell.get_or_try_init(|| -> Result<u32, i32> {

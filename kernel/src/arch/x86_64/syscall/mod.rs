@@ -95,7 +95,9 @@ fn read_syscall_kernel_rsp() -> u64 {
 #[inline]
 pub fn set_syscall_kernel_rsp(rsp: u64) {
     let idx = syscall_slot_index_current_cpu();
-    SYSCALL_CPU_CONTEXTS[idx].kernel_rsp.store(rsp, Ordering::Release);
+    SYSCALL_CPU_CONTEXTS[idx]
+        .kernel_rsp
+        .store(rsp, Ordering::Release);
     SYSCALL_CPU_CONTEXTS[idx]
         .user_rsp_scratch
         .store(0, Ordering::Release);
@@ -131,37 +133,35 @@ extern "C" fn syscall_dispatch_from_asm(frame: *const RawSyscallFrame) -> usize 
     let should_log = seq < 32 || frame.nr == 59 || frame.nr == 60 || frame.nr == 231;
 
     if should_log {
-        crate::kprintln!(
-            "[diag][syscall] enter seq={} nr={} args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}] k_rsp={:#x}",
-            seq,
-            frame.nr,
-            frame.arg0,
-            frame.arg1,
-            frame.arg2,
-            frame.arg3,
-            frame.arg4,
-            frame.arg5,
-            read_syscall_kernel_rsp(),
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][syscall] enter seq={} nr={} args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}] k_rsp={:#x}",
+                seq,
+                frame.nr,
+                frame.arg0,
+                frame.arg1,
+                frame.arg2,
+                frame.arg3,
+                frame.arg4,
+                frame.arg5,
+                read_syscall_kernel_rsp(),
+            );
+        }
     }
 
     let ret = crate::syscall::dispatch(
-        frame.nr,
-        frame.arg0,
-        frame.arg1,
-        frame.arg2,
-        frame.arg3,
-        frame.arg4,
-        frame.arg5,
+        frame.nr, frame.arg0, frame.arg1, frame.arg2, frame.arg3, frame.arg4, frame.arg5,
     );
 
     if should_log {
-        crate::kprintln!(
-            "[diag][syscall] leave seq={} nr={} ret={:#x}",
-            seq,
-            frame.nr,
-            ret,
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][syscall] leave seq={} nr={} ret={:#x}",
+                seq,
+                frame.nr,
+                ret,
+            );
+        }
     }
 
     ret
@@ -198,12 +198,14 @@ pub unsafe fn init_syscall() {
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
         .is_ok()
     {
-        crate::kprintln!(
-            "[diag][syscall] init STAR={:#x} LSTAR={:#x} FMASK={:#x}",
-            star,
-            syscall_entry as *const () as usize,
-            FMASK_CLEAR_FLAGS,
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][syscall] init STAR={:#x} LSTAR={:#x} FMASK={:#x}",
+                star,
+                syscall_entry as *const () as usize,
+                FMASK_CLEAR_FLAGS,
+            );
+        }
     }
 }
 
@@ -220,13 +222,7 @@ pub struct SyscallFrame {
 
 pub fn handle(frame: &SyscallFrame) -> usize {
     crate::syscall::dispatch(
-        frame.nr,
-        frame.arg0,
-        frame.arg1,
-        frame.arg2,
-        frame.arg3,
-        frame.arg4,
-        frame.arg5,
+        frame.nr, frame.arg0, frame.arg1, frame.arg2, frame.arg3, frame.arg4, frame.arg5,
     )
 }
 

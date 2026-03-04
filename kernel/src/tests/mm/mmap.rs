@@ -1,9 +1,9 @@
 use super::{fail, mm_step, pass};
-use crate::{kprintln, warn};
 use crate::fs;
 use crate::mm;
 use crate::syscall;
 use crate::syscall::handlers::{sys_mmap, sys_munmap};
+use crate::{kprintln, warn};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const TLB_OLD_VALUE: u64 = 0x1111_2222_3333_4444;
@@ -26,21 +26,25 @@ fn ret_errno(ret: usize) -> i32 {
 #[inline]
 fn expect_errno(case: &str, ret: usize, expect: i32) -> Result<(), &'static str> {
     if !ret_is_err(ret) {
-        kprintln!(
-            "[test/mm][mmap][{}] expected errno={} actual=ok ret={:#x}",
-            case,
-            expect,
-            ret
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/mm][mmap][{}] expected errno={} actual=ok ret={:#x}",
+                case,
+                expect,
+                ret
+            );
+        }
         return Err("expected syscall error but got success");
     }
     let got = ret_errno(ret);
-    kprintln!(
-        "[test/mm][mmap][{}] expected errno={} actual_errno={}",
-        case,
-        expect,
-        got
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/mm][mmap][{}] expected errno={} actual_errno={}",
+            case,
+            expect,
+            got
+        );
+    }
     if got != expect {
         return Err("unexpected errno");
     }
@@ -127,7 +131,10 @@ fn run_in_task_context() {
     )
     .is_err()
     {
-        return fail("mmap", "file-backed mmap with invalid fd must fail with EBADF");
+        return fail(
+            "mmap",
+            "file-backed mmap with invalid fd must fail with EBADF",
+        );
     }
 
     mm_step("mmap: case=file_backed_private_read_map_and_access");
@@ -137,13 +144,17 @@ fn run_in_task_context() {
             None => return fail("mmap", "file-backed mmap setup missing current pid"),
         };
         if let Err(errno) = fs::register_static_file(MMAP_FILE_PATH, MMAP_FILE_DATA) {
-            kprintln!("[test/mm][mmap][file-backed] register errno={}", errno);
+            if crate::config::DEBUG_VERBOSE {
+                kprintln!("[test/mm][mmap][file-backed] register errno={}", errno);
+            }
             return fail("mmap", "file-backed mmap setup register_static_file failed");
         }
         let fd = match fs::open_for_pid(pid, MMAP_FILE_PATH, 0, 0) {
             Ok(fd) => fd,
             Err(errno) => {
-                kprintln!("[test/mm][mmap][file-backed] open errno={}", errno);
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!("[test/mm][mmap][file-backed] open errno={}", errno);
+                }
                 return fail("mmap", "file-backed mmap setup open_for_pid failed");
             }
         };
@@ -157,10 +168,12 @@ fn run_in_task_context() {
             0,
         );
         if ret_is_err(map_ret) {
-            kprintln!(
-                "[test/mm][mmap][file-backed] map errno={}",
-                ret_errno(map_ret)
-            );
+            if crate::config::DEBUG_VERBOSE {
+                kprintln!(
+                    "[test/mm][mmap][file-backed] map errno={}",
+                    ret_errno(map_ret)
+                );
+            }
             let _ = fs::close_for_pid(pid, fd);
             return fail("mmap", "file-backed mmap should succeed with valid fd");
         }
@@ -170,12 +183,14 @@ fn run_in_task_context() {
             let p = map_addr as *const u8;
             let b0 = core::ptr::read(p);
             let b1 = core::ptr::read(p.add(1));
-            kprintln!(
-                "[test/mm][mmap][file-backed] addr={:#x} first_bytes=[{:#x}, {:#x}]",
-                map_addr,
-                b0,
-                b1
-            );
+            if crate::config::DEBUG_VERBOSE {
+                kprintln!(
+                    "[test/mm][mmap][file-backed] addr={:#x} first_bytes=[{:#x}, {:#x}]",
+                    map_addr,
+                    b0,
+                    b1
+                );
+            }
             if b0 != MMAP_FILE_DATA[0] || b1 != MMAP_FILE_DATA[1] {
                 let _ = do_munmap(map_addr as usize, page);
                 let _ = fs::close_for_pid(pid, fd);
@@ -185,10 +200,12 @@ fn run_in_task_context() {
 
         let unmap_ret = do_munmap(map_addr as usize, page);
         if ret_is_err(unmap_ret) {
-            kprintln!(
-                "[test/mm][mmap][file-backed] munmap errno={}",
-                ret_errno(unmap_ret)
-            );
+            if crate::config::DEBUG_VERBOSE {
+                kprintln!(
+                    "[test/mm][mmap][file-backed] munmap errno={}",
+                    ret_errno(unmap_ret)
+                );
+            }
             let _ = fs::close_for_pid(pid, fd);
             return fail("mmap", "file-backed mmap munmap failed");
         }
@@ -224,24 +241,28 @@ fn run_in_task_context() {
         local_mm.brk = heap_base;
 
         if local_mm.find_vma(heap_base).is_some() {
-            return fail("mmap", "brk bootstrap precondition failed: heap vma already exists");
+            return fail(
+                "mmap",
+                "brk bootstrap precondition failed: heap vma already exists",
+            );
         }
 
         match local_mm.do_brk(heap_new) {
             Ok(actual) if actual == heap_new => {}
             Ok(actual) => {
-                kprintln!(
-                    "[test/mm][mmap][brk-bootstrap] unexpected brk value expected={:#x} actual={:#x}",
-                    heap_new,
-                    actual
-                );
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!(
+                        "[test/mm][mmap][brk-bootstrap] unexpected brk value expected={:#x} actual={:#x}",
+                        heap_new,
+                        actual
+                    );
+                }
                 return fail("mmap", "do_brk returned unexpected value");
             }
             Err(e) => {
-                kprintln!(
-                    "[test/mm][mmap][brk-bootstrap] do_brk failed err={}",
-                    e
-                );
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!("[test/mm][mmap][brk-bootstrap] do_brk failed err={}", e);
+                }
                 return fail("mmap", "do_brk should create heap vma when missing");
             }
         }
@@ -252,12 +273,14 @@ fn run_in_task_context() {
         let Some(flags) = local_mm.find_vma_flags(heap_base) else {
             return fail("mmap", "heap VMA flags missing after do_brk");
         };
-        kprintln!(
-            "[test/mm][mmap][brk-bootstrap] vma=[{:#x}, {:#x}) flags={:#x}",
-            vma.vm_start,
-            vma.vm_end,
-            flags.bits()
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/mm][mmap][brk-bootstrap] vma=[{:#x}, {:#x}) flags={:#x}",
+                vma.vm_start,
+                vma.vm_end,
+                flags.bits()
+            );
+        }
         if vma.vm_start != heap_base || vma.vm_end != heap_new {
             return fail("mmap", "heap VMA range mismatch after do_brk bootstrap");
         }
@@ -285,7 +308,10 @@ fn run_in_task_context() {
         stack_flags.set(mm::VmFlags::ANONYMOUS);
         stack_flags.set(mm::VmFlags::GROWSDOWN);
         if !local_mm.insert_vma(stack_start, stack_top, mm::VmaInfo::new(stack_flags)) {
-            return fail("mmap", "stack expand regression setup failed: insert stack vma");
+            return fail(
+                "mmap",
+                "stack expand regression setup failed: insert stack vma",
+            );
         }
 
         let too_low = stack_top
@@ -294,18 +320,26 @@ fn run_in_task_context() {
         let allowed = stack_top.saturating_sub(2 * mm::PAGE_SIZE);
 
         if local_mm.expand_stack_for_fault(too_low).is_some() {
-            return fail("mmap", "stack expansion must reject addresses below stack size limit");
+            return fail(
+                "mmap",
+                "stack expansion must reject addresses below stack size limit",
+            );
         }
 
         let Some(expanded_vma) = local_mm.expand_stack_for_fault(allowed) else {
-            return fail("mmap", "stack expansion should succeed within stack size limit");
+            return fail(
+                "mmap",
+                "stack expansion should succeed within stack size limit",
+            );
         };
-        kprintln!(
-            "[test/mm][mmap][stack-expand] old_start={:#x} new_start={:#x} limit_bottom={:#x}",
-            stack_start,
-            expanded_vma.vm_start,
-            stack_top.saturating_sub(mm::USER_STACK_SIZE)
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/mm][mmap][stack-expand] old_start={:#x} new_start={:#x} limit_bottom={:#x}",
+                stack_start,
+                expanded_vma.vm_start,
+                stack_top.saturating_sub(mm::USER_STACK_SIZE)
+            );
+        }
         if expanded_vma.vm_start != allowed || expanded_vma.vm_end != stack_top {
             return fail("mmap", "stack expansion produced unexpected VMA range");
         }
@@ -349,7 +383,10 @@ fn run_in_task_context() {
         };
 
         if candidate_va == 0 {
-            return fail("mmap", "current-mm routing: unable to find free MAP_FIXED address");
+            return fail(
+                "mmap",
+                "current-mm routing: unable to find free MAP_FIXED address",
+            );
         }
 
         let local_mm_ptr = (&mut local_mm as *mut mm::Mm) as usize;
@@ -360,7 +397,9 @@ fn run_in_task_context() {
             }
 
             if crate::task::current_mm_ptr() as usize != local_mm_ptr {
-                return Err("current-mm routing: task::current_mm_ptr did not follow process.mm override");
+                return Err(
+                    "current-mm routing: task::current_mm_ptr did not follow process.mm override",
+                );
             }
 
             let map_ret = do_mmap(
@@ -372,11 +411,13 @@ fn run_in_task_context() {
                 0,
             );
             if ret_is_err(map_ret) {
-                kprintln!(
-                    "[test/mm][mmap][current-mm] mmap errno={} va={:#x}",
-                    ret_errno(map_ret),
-                    candidate_va
-                );
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!(
+                        "[test/mm][mmap][current-mm] mmap errno={} va={:#x}",
+                        ret_errno(map_ret),
+                        candidate_va
+                    );
+                }
                 return Err("current-mm routing: mmap failed after mm switch");
             }
 
@@ -395,11 +436,13 @@ fn run_in_task_context() {
 
             let unmap_ret = do_munmap(candidate_va as usize, page);
             if ret_is_err(unmap_ret) {
-                kprintln!(
-                    "[test/mm][mmap][current-mm] munmap errno={} va={:#x}",
-                    ret_errno(unmap_ret),
-                    candidate_va
-                );
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!(
+                        "[test/mm][mmap][current-mm] munmap errno={} va={:#x}",
+                        ret_errno(unmap_ret),
+                        candidate_va
+                    );
+                }
                 return Err("current-mm routing: munmap failed after mm switch");
             }
             if local_mm.find_vma(candidate_va).is_some() {
@@ -424,26 +467,32 @@ fn run_in_task_context() {
         let pt_mgr = unsafe { crate::mm::PageTableManager::new(cr3, crate::mm::DIRECT_MAP_OFFSET) };
         pt_mgr.translate_addr(low_hint).is_some()
     };
-    kprintln!(
-        "[test/mm][mmap][precheck] low_hint={:#x} mapped_before={}",
-        low_hint,
-        low_hint_mapped_before
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/mm][mmap][precheck] low_hint={:#x} mapped_before={}",
+            low_hint,
+            low_hint_mapped_before
+        );
+    }
     let map_ret = do_mmap(0, page * 2, prot_rw, map_flags, usize::MAX, 0);
     if ret_is_err(map_ret) {
-        kprintln!(
-            "[test/mm][mmap][map] expected success actual_errno={}",
-            ret_errno(map_ret)
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/mm][mmap][map] expected success actual_errno={}",
+                ret_errno(map_ret)
+            );
+        }
         return fail("mmap", "anonymous private mmap failed");
     }
     let map_addr = map_ret as u64;
-    kprintln!(
-        "[test/mm][mmap][map] addr={:#x} len={} page_size={}",
-        map_addr,
-        page * 2,
-        page
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/mm][mmap][map] addr={:#x} len={} page_size={}",
+            map_addr,
+            page * 2,
+            page
+        );
+    }
     if (map_addr & (crate::mm::PAGE_SIZE - 1)) != 0 {
         let _ = do_munmap(map_addr as usize, page * 2);
         return fail("mmap", "mmap returned non page-aligned address");
@@ -465,11 +514,9 @@ fn run_in_task_context() {
         core::ptr::write(p1, 0x8877_6655_4433_2211);
         let r0 = core::ptr::read(p0);
         let r1 = core::ptr::read(p1);
-        kprintln!(
-            "[test/mm][mmap][rw] p0={:#x} p1={:#x}",
-            r0,
-            r1
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!("[test/mm][mmap][rw] p0={:#x} p1={:#x}", r0, r1);
+        }
         if r0 != 0x1122_3344_5566_7788 || r1 != 0x8877_6655_4433_2211 {
             let _ = do_munmap(map_addr as usize, page * 2);
             return fail("mmap", "mapped memory readback mismatch");
@@ -486,10 +533,12 @@ fn run_in_task_context() {
         0,
     );
     if ret_is_err(replace_ret) {
-        kprintln!(
-            "[test/mm][mmap][map-fixed-replace] errno={}",
-            ret_errno(replace_ret)
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/mm][mmap][map-fixed-replace] errno={}",
+                ret_errno(replace_ret)
+            );
+        }
         let _ = do_munmap(map_addr as usize, page * 2);
         return fail("mmap", "MAP_FIXED should replace existing mapping");
     }
@@ -501,10 +550,12 @@ fn run_in_task_context() {
     mm_step("mmap: case=munmap_partial_second_page");
     let unmap_second = do_munmap((map_addr as usize) + page, page);
     if ret_is_err(unmap_second) {
-        kprintln!(
-            "[test/mm][mmap][munmap-second] errno={}",
-            ret_errno(unmap_second)
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/mm][mmap][munmap-second] errno={}",
+                ret_errno(unmap_second)
+            );
+        }
         let _ = do_munmap(map_addr as usize, page * 2);
         return fail("mmap", "munmap second page failed");
     }
@@ -512,10 +563,12 @@ fn run_in_task_context() {
     mm_step("mmap: case=munmap_remaining_first_page");
     let unmap_first = do_munmap(map_addr as usize, page);
     if ret_is_err(unmap_first) {
-        kprintln!(
-            "[test/mm][mmap][munmap-first] errno={}",
-            ret_errno(unmap_first)
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/mm][mmap][munmap-first] errno={}",
+                ret_errno(unmap_first)
+            );
+        }
         let _ = do_munmap(map_addr as usize, page);
         return fail("mmap", "munmap first page failed");
     }
@@ -523,15 +576,23 @@ fn run_in_task_context() {
     mm_step("mmap: case=munmap_hole_idempotent");
     let unmap_hole = do_munmap(map_addr as usize, page);
     if ret_is_err(unmap_hole) {
-        kprintln!(
-            "[test/mm][mmap][munmap-hole] errno={}",
-            ret_errno(unmap_hole)
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/mm][mmap][munmap-hole] errno={}",
+                ret_errno(unmap_hole)
+            );
+        }
         return fail("mmap", "munmap hole should be a no-op success");
     }
 
     mm_step("mmap: case=invalid_munmap_zero_length");
-    if expect_errno("munmap-zero-len", do_munmap(map_addr as usize, 0), syscall::EINVAL).is_err() {
+    if expect_errno(
+        "munmap-zero-len",
+        do_munmap(map_addr as usize, 0),
+        syscall::EINVAL,
+    )
+    .is_err()
+    {
         return fail("mmap", "munmap(len=0) must fail with EINVAL");
     }
 
@@ -566,7 +627,10 @@ fn run_in_task_context() {
         probe = probe.saturating_sub(mm::PAGE_SIZE);
     }
     let Some(fault_addr) = found else {
-        return fail("mmap", "unable to find unmapped user page for file-fault regression");
+        return fail(
+            "mmap",
+            "unable to find unmapped user page for file-fault regression",
+        );
     };
 
     let vma_start = fault_addr;
@@ -581,14 +645,19 @@ fn run_in_task_context() {
     let mm_ptr: *mut mm::Mm = &mut local_mm;
     let mut fault_ctx = mm::FaultContext::new(fault_addr, 0, mm_ptr, mm::DIRECT_MAP_OFFSET);
     let result = mm::handle_page_fault(&mut fault_ctx);
-    kprintln!(
-        "[test/mm][mmap][file-fault] addr={:#x} result={:?} expected={:?}",
-        fault_addr,
-        result,
-        mm::FaultResult::Sigbus
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/mm][mmap][file-fault] addr={:#x} result={:?} expected={:?}",
+            fault_addr,
+            result,
+            mm::FaultResult::Sigbus
+        );
+    }
     if result != mm::FaultResult::Sigbus {
-        return fail("mmap", "file-backed fault fallback must return Sigbus without backend");
+        return fail(
+            "mmap",
+            "file-backed fault fallback must return Sigbus without backend",
+        );
     }
 
     mm_step("mmap: case=munmap_cross_cpu_visibility");
@@ -662,7 +731,10 @@ fn run_in_task_context() {
                 mm::free_page(&mut *new_page_ptr);
                 mm::free_page(&mut *old_page_ptr);
             }
-            return fail("mmap", "cross-cpu munmap visibility: initial map_page failed");
+            return fail(
+                "mmap",
+                "cross-cpu munmap visibility: initial map_page failed",
+            );
         }
 
         let mut vma_flags = mm::VmFlags::empty();
@@ -690,17 +762,21 @@ fn run_in_task_context() {
             );
             case_error = Some("cross-cpu munmap visibility: no remote probe targets");
         } else {
-            kprintln!(
-                "[test/mm][mmap][cross-cpu][pre] va={:#x} targets={} handled={} matched_old={}",
-                test_va,
-                targets_old,
-                handled_old,
-                matched_old,
-            );
+            if crate::config::DEBUG_VERBOSE {
+                kprintln!(
+                    "[test/mm][mmap][cross-cpu][pre] va={:#x} targets={} handled={} matched_old={}",
+                    test_va,
+                    targets_old,
+                    handled_old,
+                    matched_old,
+                );
+            }
             if handled_old != targets_old {
-                case_error = Some("cross-cpu munmap visibility: pre probe IPI not handled on all targets");
+                case_error =
+                    Some("cross-cpu munmap visibility: pre probe IPI not handled on all targets");
             } else if matched_old == 0 {
-                case_error = Some("cross-cpu munmap visibility: pre probe did not observe old mapping");
+                case_error =
+                    Some("cross-cpu munmap visibility: pre probe did not observe old mapping");
             }
         }
 
@@ -740,19 +816,24 @@ fn run_in_task_context() {
             if case_error.is_none() {
                 let (targets_new, handled_new, matched_new) =
                     mm::paging::run_tlb_probe_on_other_cpus(test_va, TLB_NEW_VALUE);
-                kprintln!(
-                    "[test/mm][mmap][cross-cpu][post] va={:#x} targets={} handled={} matched_new={}",
-                    test_va,
-                    targets_new,
-                    handled_new,
-                    matched_new,
-                );
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!(
+                        "[test/mm][mmap][cross-cpu][post] va={:#x} targets={} handled={} matched_new={}",
+                        test_va,
+                        targets_new,
+                        handled_new,
+                        matched_new,
+                    );
+                }
                 if targets_new == 0 {
                     case_error = Some("cross-cpu munmap visibility: no probe targets after remap");
                 } else if handled_new != targets_new {
-                    case_error = Some("cross-cpu munmap visibility: probe IPI not handled on all targets");
+                    case_error =
+                        Some("cross-cpu munmap visibility: probe IPI not handled on all targets");
                 } else if matched_new != targets_new {
-                    case_error = Some("cross-cpu munmap visibility: remote CPUs did not observe new mapping");
+                    case_error = Some(
+                        "cross-cpu munmap visibility: remote CPUs did not observe new mapping",
+                    );
                 }
             }
         }
@@ -770,18 +851,22 @@ fn run_in_task_context() {
             if (*new_page_ptr).refcount() > 0 {
                 mm::free_page(&mut *new_page_ptr);
             } else {
-                kprintln!(
-                    "[test/mm][mmap][cleanup] skip free new_page (already released) pfn={}",
-                    mm::page_to_pfn(&*new_page_ptr),
-                );
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!(
+                        "[test/mm][mmap][cleanup] skip free new_page (already released) pfn={}",
+                        mm::page_to_pfn(&*new_page_ptr),
+                    );
+                }
             }
             if (*old_page_ptr).refcount() > 0 {
                 mm::free_page(&mut *old_page_ptr);
             } else {
-                kprintln!(
-                    "[test/mm][mmap][cleanup] skip free old_page (already released) pfn={}",
-                    mm::page_to_pfn(&*old_page_ptr),
-                );
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!(
+                        "[test/mm][mmap][cleanup] skip free old_page (already released) pfn={}",
+                        mm::page_to_pfn(&*old_page_ptr),
+                    );
+                }
             }
         }
 

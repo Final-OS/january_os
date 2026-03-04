@@ -34,7 +34,9 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
     }
 
     extern "C" fn usermode_entry_thread() {
-        kprintln!("[test/task] usermode_entry: begin path={}", TEST_EXEC_PATH);
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!("[test/task] usermode_entry: begin path={}", TEST_EXEC_PATH);
+        }
 
         let load_plan = match task::build_elf_load_plan(USERMODE_TEST_ELF) {
             Ok(plan) => plan,
@@ -43,24 +45,31 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
                 fail_and_exit_current_task(127);
             }
         };
-        kprintln!(
-            "[test/task] usermode_entry: load_plan ready entry={:#x} stack_top={:#x} segs={}",
-            load_plan.entry,
-            load_plan.stack_top,
-            load_plan.segments.len()
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/task] usermode_entry: load_plan ready entry={:#x} stack_top={:#x} segs={}",
+                load_plan.entry,
+                load_plan.stack_top,
+                load_plan.segments.len()
+            );
+        }
 
         let staged_mappings = match task::stage_pt_load_mappings(USERMODE_TEST_ELF, &load_plan) {
             Ok(mappings) => mappings,
             Err(errno) => {
-                error!("task: usermode FAIL (stage_pt_load_mappings errno={})", errno);
+                error!(
+                    "task: usermode FAIL (stage_pt_load_mappings errno={})",
+                    errno
+                );
                 fail_and_exit_current_task(127);
             }
         };
-        kprintln!(
-            "[test/task] usermode_entry: staged mappings count={}",
-            staged_mappings.len()
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/task] usermode_entry: staged mappings count={}",
+                staged_mappings.len()
+            );
+        }
 
         if task::record_current_exec_request(TEST_EXEC_PATH, 1, 0).is_none() {
             error!("task: usermode FAIL (record_current_exec_request)");
@@ -72,32 +81,42 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
             error!("task: usermode FAIL (set_current_exec_mappings)");
             fail_and_exit_current_task(127);
         }
-        kprintln!("[test/task] usermode_entry: mappings installed");
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!("[test/task] usermode_entry: mappings installed");
+        }
 
         let frame = task::arch::build_user_enter_frame(load_plan.entry, load_plan.stack_top);
-        kprintln!(
-            "[test/task] usermode_entry: enter ring3 rip={:#x} rsp={:#x}",
-            frame.rip,
-            frame.rsp
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/task] usermode_entry: enter ring3 rip={:#x} rsp={:#x}",
+                frame.rip,
+                frame.rsp
+            );
+        }
         unsafe {
             task::arch::enter_user_mode_iret(&frame);
         }
     }
 
     extern "C" fn usermode_parent_thread() {
-        kprintln!("[test/task] usermode_parent: spawn usermode child");
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!("[test/task] usermode_parent: spawn usermode child");
+        }
         let user_task = task::spawn_kernel_thread("task_usermode_child", usermode_entry_thread);
         let user_pid = user_task.lock().pid;
-        kprintln!("[test/task] usermode_parent: child pid={}", user_pid.0);
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!("[test/task] usermode_parent: child pid={}", user_pid.0);
+        }
 
         for _ in 0..256 {
             if let Some((reaped_pid, exit_code)) = task::wait_child(Some(user_pid)) {
-                kprintln!(
-                    "[test/task] usermode_parent: reaped pid={} code={}",
-                    reaped_pid.0,
-                    exit_code
-                );
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!(
+                        "[test/task] usermode_parent: reaped pid={} code={}",
+                        reaped_pid.0,
+                        exit_code
+                    );
+                }
                 USERMODE_REAPED_PID.store(reaped_pid.0, Ordering::SeqCst);
                 USERMODE_REAPED_CODE.store(exit_code as usize, Ordering::SeqCst);
                 return;
@@ -105,10 +124,12 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
             task::scheduler::schedule();
         }
 
-        kprintln!(
-            "[test/task] usermode_parent: timeout waiting pid={}",
-            user_pid.0
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/task] usermode_parent: timeout waiting pid={}",
+                user_pid.0
+            );
+        }
         USERMODE_REAPED_PID.store(user_pid.0, Ordering::SeqCst);
         USERMODE_REAPED_CODE.store(USERMODE_WAIT_TIMEOUT, Ordering::SeqCst);
     }
@@ -124,16 +145,17 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
         let reaped_code = USERMODE_REAPED_CODE.load(Ordering::SeqCst);
         if reaped_code != usize::MAX {
             let reaped_pid = USERMODE_REAPED_PID.load(Ordering::SeqCst);
-            kprintln!(
-                "[test/task] usermode final result: pid={} code={}",
-                reaped_pid,
-                reaped_code
-            );
+            if crate::config::DEBUG_VERBOSE {
+                kprintln!(
+                    "[test/task] usermode final result: pid={} code={}",
+                    reaped_pid,
+                    reaped_code
+                );
+            }
             if reaped_code == USERMODE_WAIT_TIMEOUT {
                 error!(
                     "task: {} FAIL (timeout waiting pid={})",
-                    result_label,
-                    reaped_pid
+                    result_label, reaped_pid
                 );
                 return false;
             } else if reaped_code == 0 {
@@ -147,9 +169,7 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
             } else {
                 error!(
                     "task: {} FAIL (pid={}, code={}, expected code=0)",
-                    result_label,
-                    reaped_pid,
-                    reaped_code
+                    result_label, reaped_pid, reaped_code
                 );
                 return false;
             }

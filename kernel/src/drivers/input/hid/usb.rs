@@ -228,12 +228,12 @@ impl UsbEndpointDescriptor {
     pub fn endpoint_number(&self) -> u8 {
         self.endpoint_address & 0x0F
     }
-    
+
     /// 获取传输方向
     pub fn direction(&self) -> UsbDirection {
         UsbDirection::from_endpoint_addr(self.endpoint_address)
     }
-    
+
     /// 获取传输类型
     pub fn transfer_type(&self) -> UsbTransferType {
         UsbTransferType::from_endpoint_attr(self.attributes)
@@ -269,7 +269,7 @@ impl UsbDevice {
             parent_port: 0,
         }
     }
-    
+
     /// 检查是否是 HID 设备
     pub fn is_hid_device(&self) -> bool {
         self.device_desc.device_class == USB_CLASS_HID
@@ -344,7 +344,7 @@ impl UsbSetupPacket {
             length,
         }
     }
-    
+
     /// 创建 SET_CONFIGURATION 请求
     pub fn set_configuration(config: u8) -> Self {
         Self {
@@ -355,45 +355,45 @@ impl UsbSetupPacket {
             length: 0,
         }
     }
-    
+
     /// 创建 HID GET_REPORT 请求
     pub fn hid_get_report(report_type: u8, report_id: u8, interface: u16, length: u16) -> Self {
         Self {
             request_type: 0xA1, // Device-to-host, Class, Interface
-            request: 0x01, // GET_REPORT
+            request: 0x01,      // GET_REPORT
             value: ((report_type as u16) << 8) | (report_id as u16),
             index: interface,
             length,
         }
     }
-    
+
     /// 创建 HID SET_REPORT 请求
     pub fn hid_set_report(report_type: u8, report_id: u8, interface: u16, length: u16) -> Self {
         Self {
             request_type: 0x21, // Host-to-device, Class, Interface
-            request: 0x09, // SET_REPORT
+            request: 0x09,      // SET_REPORT
             value: ((report_type as u16) << 8) | (report_id as u16),
             index: interface,
             length,
         }
     }
-    
+
     /// 创建 HID SET_IDLE 请求
     pub fn hid_set_idle(duration: u8, report_id: u8, interface: u16) -> Self {
         Self {
             request_type: 0x21, // Host-to-device, Class, Interface
-            request: 0x0A, // SET_IDLE
+            request: 0x0A,      // SET_IDLE
             value: ((duration as u16) << 8) | (report_id as u16),
             index: interface,
             length: 0,
         }
     }
-    
+
     /// 创建 HID SET_PROTOCOL 请求
     pub fn hid_set_protocol(protocol: u8, interface: u16) -> Self {
         Self {
             request_type: 0x21, // Host-to-device, Class, Interface
-            request: 0x0B, // SET_PROTOCOL
+            request: 0x0B,      // SET_PROTOCOL
             value: protocol as u16,
             index: interface,
             length: 0,

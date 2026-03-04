@@ -1,4 +1,4 @@
-use super::tables::{SdtHeader, AcpiTable};
+use super::tables::{AcpiTable, SdtHeader};
 use core::mem;
 
 /// MADT (Multiple APIC Description Table)
@@ -33,9 +33,12 @@ impl Madt {
     pub fn entries(&self) -> MadtEntryIter {
         let start = (self as *const _ as usize + mem::size_of::<Madt>()) as *const u8;
         let end = (self as *const _ as usize + self.header.length as usize) as *const u8;
-        MadtEntryIter { current: start, end }
+        MadtEntryIter {
+            current: start,
+            end,
+        }
     }
-    
+
     pub fn get_multiprocessor_wakeup(&self) -> Option<&MultiprocessorWakeup> {
         for entry in self.entries() {
             if let MadtEntry::MultiprocessorWakeup(w) = entry {
@@ -59,24 +62,28 @@ impl Iterator for MadtEntryIter {
         if self.current >= self.end {
             return None;
         }
-        
+
         unsafe {
             let entry_type = *self.current;
             let entry_len = *self.current.add(1);
-            
+
             if entry_len == 0 {
                 return None; // Prevent infinite loop on bad data
             }
-            
+
             let entry = match entry_type {
                 0 => MadtEntry::LocalApic(&*(self.current as *const LocalApic)),
                 1 => MadtEntry::IoApic(&*(self.current as *const IoApic)),
-                2 => MadtEntry::InterruptSourceOverride(&*(self.current as *const InterruptSourceOverride)),
+                2 => MadtEntry::InterruptSourceOverride(
+                    &*(self.current as *const InterruptSourceOverride),
+                ),
                 4 => MadtEntry::Nmi(&*(self.current as *const Nmi)),
-                16 => MadtEntry::MultiprocessorWakeup(&*(self.current as *const MultiprocessorWakeup)),
+                16 => {
+                    MadtEntry::MultiprocessorWakeup(&*(self.current as *const MultiprocessorWakeup))
+                }
                 _ => MadtEntry::Unknown(entry_type),
             };
-            
+
             self.current = self.current.add(entry_len as usize);
             Some(entry)
         }
@@ -212,7 +219,11 @@ pub fn parse_madt(madt: &Madt) -> MadtInfo {
         cpu_count: 0,
         local_apic_address: madt.local_apic_addr(),
         ioapic_count: 0,
-        ioapics: [IoApicInfo { id: 0, address: 0, gsi_base: 0 }; 16],
+        ioapics: [IoApicInfo {
+            id: 0,
+            address: 0,
+            gsi_base: 0,
+        }; 16],
         irq_override_count: 0,
         irq_overrides: [IrqOverrideInfo {
             source: 0,
@@ -228,7 +239,7 @@ pub fn parse_madt(madt: &Madt) -> MadtInfo {
                 if lapic.is_enabled() || lapic.is_online_capable() {
                     info.cpu_count += 1;
                 }
-            },
+            }
             MadtEntry::IoApic(ioapic) => {
                 if info.ioapic_count < 16 {
                     info.ioapics[info.ioapic_count] = IoApicInfo {
@@ -238,7 +249,7 @@ pub fn parse_madt(madt: &Madt) -> MadtInfo {
                     };
                     info.ioapic_count += 1;
                 }
-            },
+            }
             MadtEntry::InterruptSourceOverride(iso) => {
                 if info.irq_override_count < 16 {
                     // 仅处理 ISA 总线 override（bus=0）。
@@ -269,11 +280,11 @@ pub fn parse_madt(madt: &Madt) -> MadtInfo {
             _ => {}
         }
     }
-    
+
     // Ensure at least 1 CPU
     if info.cpu_count == 0 {
         info.cpu_count = 1;
     }
-    
+
     info
 }

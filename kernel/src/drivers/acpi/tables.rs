@@ -18,7 +18,7 @@ pub struct Rsdp {
     pub revision: u8,
     /// RSDT 物理地址（ACPI 1.0）
     pub rsdt_address: u32,
-    
+
     // === ACPI 2.0+ 扩展字段 ===
     /// 结构长度
     pub length: u32,
@@ -35,12 +35,12 @@ impl Rsdp {
     pub unsafe fn from_addr(phys_addr: u64) -> Result<&'static Self, &'static str> {
         let virt_addr = phys_addr + crate::config::DIRECT_MAP_OFFSET;
         let rsdp = &*(virt_addr as *const Rsdp);
-        
+
         // 验证签名
         if &rsdp.signature != b"RSD PTR " {
             return Err("Invalid RSDP signature");
         }
-        
+
         // 验证校验和（前 20 字节）
         let mut sum: u8 = 0;
         let bytes = core::slice::from_raw_parts(virt_addr as *const u8, 20);
@@ -50,7 +50,7 @@ impl Rsdp {
         if sum != 0 {
             return Err("Invalid RSDP checksum");
         }
-        
+
         // ACPI 2.0+ 额外验证
         if rsdp.revision >= 2 {
             let rsdp_len = rsdp.length as usize;
@@ -63,10 +63,7 @@ impl Rsdp {
             }
 
             let mut ext_sum: u8 = 0;
-            let ext_bytes = core::slice::from_raw_parts(
-                virt_addr as *const u8,
-                rsdp_len
-            );
+            let ext_bytes = core::slice::from_raw_parts(virt_addr as *const u8, rsdp_len);
             for &b in ext_bytes {
                 ext_sum = ext_sum.wrapping_add(b);
             }
@@ -74,7 +71,7 @@ impl Rsdp {
                 return Err("Invalid RSDP extended checksum");
             }
         }
-        
+
         Ok(rsdp)
     }
 }
@@ -110,7 +107,7 @@ impl SdtHeader {
     pub fn signature_str(&self) -> &str {
         core::str::from_utf8(&self.signature).unwrap_or("????")
     }
-    
+
     /// 获取 OEM ID 字符串
     pub fn oem_id_str(&self) -> &str {
         core::str::from_utf8(&self.oem_id).unwrap_or("??????")
@@ -143,14 +140,14 @@ impl Xsdt {
         let entries_size = total_size - header_size;
         entries_size / 8
     }
-    
+
     /// 获取表条目
     pub unsafe fn entry(&self, index: usize) -> u64 {
         if index >= self.entry_count() {
             return 0;
         }
-        let entries = (self as *const _ as *const u8)
-            .add(core::mem::size_of::<SdtHeader>()) as *const u64;
+        let entries =
+            (self as *const _ as *const u8).add(core::mem::size_of::<SdtHeader>()) as *const u64;
         *entries.add(index)
     }
 }
@@ -175,14 +172,14 @@ impl Rsdt {
         let entries_size = total_size - header_size;
         entries_size / 4
     }
-    
+
     /// 获取表条目
     pub unsafe fn entry(&self, index: usize) -> u32 {
         if index >= self.entry_count() {
             return 0;
         }
-        let entries = (self as *const _ as *const u8)
-            .add(core::mem::size_of::<SdtHeader>()) as *const u32;
+        let entries =
+            (self as *const _ as *const u8).add(core::mem::size_of::<SdtHeader>()) as *const u32;
         *entries.add(index)
     }
 }

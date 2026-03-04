@@ -174,33 +174,39 @@ fn user_zero_gfp() -> mm::GfpFlags {
 
 fn log_mapping_conflict(pt_mgr: &mm::PageTableManager, virt: u64, tag: &str) {
     if let Some((entry, level, page_size)) = pt_mgr.translate(virt) {
-        crate::kprintln!(
-            "[diag][execve] map conflict tag={} virt={:#x} phys={:#x} level={:?} page_size={:#x} flags={:#x}",
-            tag,
-            virt,
-            entry.phys_addr(),
-            level,
-            page_size,
-            entry.flags(),
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][execve] map conflict tag={} virt={:#x} phys={:#x} level={:?} page_size={:#x} flags={:#x}",
+                tag,
+                virt,
+                entry.phys_addr(),
+                level,
+                page_size,
+                entry.flags(),
+            );
+        }
         return;
     }
 
     if let Some(phys) = pt_mgr.translate_addr(virt) {
-        crate::kprintln!(
-            "[diag][execve] map conflict tag={} virt={:#x} phys={:#x} (translate_addr fallback)",
-            tag,
-            virt,
-            phys,
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][execve] map conflict tag={} virt={:#x} phys={:#x} (translate_addr fallback)",
+                tag,
+                virt,
+                phys,
+            );
+        }
         return;
     }
 
-    crate::kprintln!(
-        "[diag][execve] map conflict tag={} virt={:#x} (translation unavailable)",
-        tag,
-        virt,
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][execve] map conflict tag={} virt={:#x} (translation unavailable)",
+            tag,
+            virt,
+        );
+    }
 }
 
 fn validate_target_unmapped(
@@ -213,13 +219,15 @@ fn validate_target_unmapped(
             let page_offset = page_idx.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
             let virt = segment.page_start.checked_add(page_offset).ok_or(E2BIG)?;
             if pt_mgr.translate_addr(virt).is_some() {
-                crate::kprintln!(
-                    "[diag][execve] segment page already mapped seg={} page_idx={} range=[{:#x}, {:#x})",
-                    segment_idx,
-                    page_idx,
-                    segment.page_start,
-                    segment.page_end,
-                );
+                if crate::config::DEBUG_VERBOSE {
+                    crate::kprintln!(
+                        "[diag][execve] segment page already mapped seg={} page_idx={} range=[{:#x}, {:#x})",
+                        segment_idx,
+                        page_idx,
+                        segment.page_start,
+                        segment.page_end,
+                    );
+                }
                 log_mapping_conflict(pt_mgr, virt, "segment");
                 return Err(EBUSY);
             }
@@ -230,12 +238,14 @@ fn validate_target_unmapped(
         let page_offset = page_idx.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
         let virt = stack_bottom.checked_add(page_offset).ok_or(E2BIG)?;
         if pt_mgr.translate_addr(virt).is_some() {
-            crate::kprintln!(
-                "[diag][execve] stack page already mapped page_idx={} range=[{:#x}, {:#x})",
-                page_idx,
-                stack_bottom,
-                plan.stack_top,
-            );
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "[diag][execve] stack page already mapped page_idx={} range=[{:#x}, {:#x})",
+                    page_idx,
+                    stack_bottom,
+                    plan.stack_top,
+                );
+            }
             log_mapping_conflict(pt_mgr, virt, "stack");
             return Err(EBUSY);
         }
@@ -263,42 +273,48 @@ fn map_zero_page(
         } else {
             unsafe { (page as *const mm::Page).offset_from(vmemmap_base as *const mm::Page) }
         };
-        crate::kprintln!(
-            "[diag][execve] map_zero_page invalid page metadata kind={:?} virt={:#x} page_ptr={:#x} pfn={} max_pfn={} vmemmap_base={:#x} raw_offset={}",
-            kind,
-            virt,
-            page_ptr,
-            pfn,
-            max_pfn,
-            vmemmap_base as usize,
-            raw_offset,
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][execve] map_zero_page invalid page metadata kind={:?} virt={:#x} page_ptr={:#x} pfn={} max_pfn={} vmemmap_base={:#x} raw_offset={}",
+                kind,
+                virt,
+                page_ptr,
+                pfn,
+                max_pfn,
+                vmemmap_base as usize,
+                raw_offset,
+            );
+        }
         return Err(E2BIG);
     }
 
     let phys = match pfn.checked_mul(mm::PAGE_SIZE) {
         Some(v) => v,
         None => {
-            crate::kprintln!(
-                "[diag][execve] map_zero_page pfn overflow kind={:?} virt={:#x} page_ptr={:#x} pfn={} page_size={:#x}",
-                kind,
-                virt,
-                page_ptr,
-                pfn,
-                mm::PAGE_SIZE,
-            );
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "[diag][execve] map_zero_page pfn overflow kind={:?} virt={:#x} page_ptr={:#x} pfn={} page_size={:#x}",
+                    kind,
+                    virt,
+                    page_ptr,
+                    pfn,
+                    mm::PAGE_SIZE,
+                );
+            }
             return Err(E2BIG);
         }
     };
 
     let mapped_ok = unsafe { pt_mgr.map_page(virt, phys, flags) };
     if !mapped_ok {
-        crate::kprintln!(
-            "[diag][execve] map_zero_page map_page failed kind={:?} virt={:#x} phys={:#x}",
-            kind,
-            virt,
-            phys,
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][execve] map_zero_page map_page failed kind={:?} virt={:#x} phys={:#x}",
+                kind,
+                virt,
+                phys,
+            );
+        }
         unsafe {
             mm::free_page(page);
         }
@@ -629,11 +645,13 @@ pub fn stage_pt_load_mappings(
     })();
 
     if let Err(errno) = stage_result {
-        crate::kprintln!(
-            "[diag][execve] stage map rollback errno={} mapped_pages={}",
-            errno,
-            mapped_pages.len()
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][execve] stage map rollback errno={} mapped_pages={}",
+                errno,
+                mapped_pages.len()
+            );
+        }
         rollback_exec_mappings(&mapped_pages);
         return Err(errno);
     }

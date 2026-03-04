@@ -13,7 +13,9 @@ static MM_STEP_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) fn mm_step(msg: &str) {
     let seq = MM_STEP_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-    kprintln!("[test/mm][step {}] {}", seq, msg);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/mm][step {}] {}", seq, msg);
+    }
 }
 
 pub fn run() {
@@ -24,7 +26,9 @@ pub fn run_with_filter(filter: Option<&str>) {
     MM_STEP_SEQ.store(0, Ordering::SeqCst);
     kprintln!("=== MM Subsystem Tests ===");
     mm_step("start mm test suite");
-    kprintln!("[test/mm] filter={:?}", filter);
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/mm] filter={:?}", filter);
+    }
 
     match filter {
         None | Some("all") => {

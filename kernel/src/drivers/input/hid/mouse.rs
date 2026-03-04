@@ -2,9 +2,9 @@
 //!
 //! 支持 USB HID 鼠标设备
 
-use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
-use crate::sync::{IrqSpinLock, Once};
 use super::hid::{BootMouseReport, HidProtocol};
+use crate::sync::{IrqSpinLock, Once};
+use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
 
 // ============================================================================
 // 鼠标按钮
@@ -72,7 +72,7 @@ impl MouseEvent {
             buttons,
         }
     }
-    
+
     /// 创建按钮按下事件
     pub fn button_down(button: MouseButton, buttons: u8) -> Self {
         Self {
@@ -84,7 +84,7 @@ impl MouseEvent {
             buttons,
         }
     }
-    
+
     /// 创建按钮释放事件
     pub fn button_up(button: MouseButton, buttons: u8) -> Self {
         Self {
@@ -96,7 +96,7 @@ impl MouseEvent {
             buttons,
         }
     }
-    
+
     /// 创建滚轮事件
     pub fn scroll_event(scroll: i32, buttons: u8) -> Self {
         Self {
@@ -142,14 +142,14 @@ impl UsbMouse {
             active: false,
         }
     }
-    
+
     /// 处理 Boot 协议报告
     pub fn process_report(&mut self, report: &BootMouseReport) {
         let buttons = report.buttons;
-        
+
         // 检测按钮变化
         let changed = buttons ^ self.last_buttons;
-        
+
         // 左键
         if changed & 0x01 != 0 {
             if buttons & 0x01 != 0 {
@@ -158,7 +158,7 @@ impl UsbMouse {
                 push_mouse_event(MouseEvent::button_up(MouseButton::Left, buttons));
             }
         }
-        
+
         // 右键
         if changed & 0x02 != 0 {
             if buttons & 0x02 != 0 {
@@ -167,7 +167,7 @@ impl UsbMouse {
                 push_mouse_event(MouseEvent::button_up(MouseButton::Right, buttons));
             }
         }
-        
+
         // 中键
         if changed & 0x04 != 0 {
             if buttons & 0x04 != 0 {
@@ -176,7 +176,7 @@ impl UsbMouse {
                 push_mouse_event(MouseEvent::button_up(MouseButton::Middle, buttons));
             }
         }
-        
+
         // 移动
         if report.x != 0 || report.y != 0 {
             push_mouse_event(MouseEvent::move_event(
@@ -184,17 +184,17 @@ impl UsbMouse {
                 report.y as i32,
                 buttons,
             ));
-            
+
             // 更新累积位置
             MOUSE_X.fetch_add(report.x as i32, Ordering::Relaxed);
             MOUSE_Y.fetch_add(report.y as i32, Ordering::Relaxed);
         }
-        
+
         // 滚轮
         if report.wheel != 0 {
             push_mouse_event(MouseEvent::scroll_event(report.wheel as i32, buttons));
         }
-        
+
         self.last_buttons = buttons;
     }
 }
@@ -212,7 +212,7 @@ pub fn handle_boot_report(report: BootMouseReport) {
         // 初始化默认实例
         *mouse = Some(UsbMouse::new(0, 0, 0));
     }
-    
+
     if let Some(mouse) = mouse.as_mut() {
         mouse.process_report(&report);
     }
@@ -222,14 +222,16 @@ pub fn handle_boot_report(report: BootMouseReport) {
 const EVENT_BUFFER_SIZE: usize = 64;
 
 /// 鼠标事件缓冲区
-static MOUSE_EVENT_BUFFER: IrqSpinLock<[MouseEvent; EVENT_BUFFER_SIZE]> = IrqSpinLock::new([MouseEvent {
-    event_type: MouseEventType::Move,
-    dx: 0,
-    dy: 0,
-    scroll: 0,
-    button: None,
-    buttons: 0,
-}; EVENT_BUFFER_SIZE]);
+static MOUSE_EVENT_BUFFER: IrqSpinLock<[MouseEvent; EVENT_BUFFER_SIZE]> = IrqSpinLock::new(
+    [MouseEvent {
+        event_type: MouseEventType::Move,
+        dx: 0,
+        dy: 0,
+        scroll: 0,
+        button: None,
+        buttons: 0,
+    }; EVENT_BUFFER_SIZE],
+);
 
 static MOUSE_EVENT_HEAD: AtomicUsize = AtomicUsize::new(0);
 static MOUSE_EVENT_TAIL: AtomicUsize = AtomicUsize::new(0);
@@ -272,12 +274,12 @@ pub fn buffer_status() -> (usize, usize) {
 fn push_mouse_event(event: MouseEvent) {
     let head = MOUSE_EVENT_HEAD.load(Ordering::Relaxed);
     let next_head = (head + 1) % EVENT_BUFFER_SIZE;
-    
+
     if next_head != MOUSE_EVENT_TAIL.load(Ordering::Relaxed) {
         MOUSE_EVENT_BUFFER.lock()[head] = event;
         MOUSE_EVENT_HEAD.store(next_head, Ordering::Relaxed);
     }
-    
+
     // 始终更新按钮状态
     MOUSE_BUTTONS.store(event.buttons, Ordering::Relaxed);
 }
@@ -286,11 +288,11 @@ fn push_mouse_event(event: MouseEvent) {
 pub fn read_event() -> Option<MouseEvent> {
     let tail = MOUSE_EVENT_TAIL.load(Ordering::Relaxed);
     let head = MOUSE_EVENT_HEAD.load(Ordering::Relaxed);
-    
+
     if tail == head {
         return None;
     }
-    
+
     let event = MOUSE_EVENT_BUFFER.lock()[tail];
     MOUSE_EVENT_TAIL.store((tail + 1) % EVENT_BUFFER_SIZE, Ordering::Relaxed);
     Some(event)

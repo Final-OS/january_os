@@ -35,32 +35,26 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 
-pub mod serial;
 pub mod console;
-pub mod pty;
 pub mod fbcon;
+pub mod pty;
+pub mod serial;
 
 // 导出串口接口
 pub use serial::{
-    Serial, COM1_PORT,
-    serial_write, serial_read,
-    serial_enable_rx_interrupt, serial_interrupt_handler,
-    serial_read_char, serial_has_input, serial_try_read,
-    SerialWriter,
+    serial_enable_rx_interrupt, serial_has_input, serial_interrupt_handler, serial_read,
+    serial_read_char, serial_try_read, serial_write, Serial, SerialWriter, COM1_PORT,
 };
 
 // 导出控制台接口
 pub use console::{
-    VtParser, VtState, VtAction,
-    ANSI_COLORS, ansi_to_rgb,
-    MAX_CONSOLES, DEFAULT_FG, DEFAULT_BG,
+    ansi_to_rgb, VtAction, VtParser, VtState, ANSI_COLORS, DEFAULT_BG, DEFAULT_FG, MAX_CONSOLES,
 };
 
 // 导出 PTY 接口
 pub use pty::{
-    PtyPair, PtyManager, RingBuffer,
-    Termios, WinSize, InputFlags, OutputFlags, LocalFlags, ControlChar,
-    MAX_PTYS, PTY_BUFFER_SIZE,
+    ControlChar, InputFlags, LocalFlags, OutputFlags, PtyManager, PtyPair, RingBuffer, Termios,
+    WinSize, MAX_PTYS, PTY_BUFFER_SIZE,
 };
 
 /// 初始化 TTY 子系统

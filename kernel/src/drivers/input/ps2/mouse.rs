@@ -4,7 +4,9 @@
 
 use core::sync::atomic::{AtomicI16, AtomicU8, AtomicUsize, Ordering};
 
-use super::{read_data as ps2_read_data, wait_input_ready, wait_output_ready, write_data, send_command};
+use super::{
+    read_data as ps2_read_data, send_command, wait_input_ready, wait_output_ready, write_data,
+};
 
 // ============================================================================
 // PS/2 鼠标命令
@@ -95,7 +97,7 @@ pub fn init() {
     // 3. 修改配置:
     //    - Bit 1: Enable IRQ 12 (Mouse)
     //    - Bit 5: Disable Mouse Clock (0 = Enabled) -> 清除该位以启用时钟
-    config |= 0x02;  // Enable IRQ 12
+    config |= 0x02; // Enable IRQ 12
     config &= !0x20; // Enable Mouse Clock
 
     // 4. 写回配置字节
@@ -146,27 +148,30 @@ pub fn handle_interrupt(data: u8) {
     }
 
     let state = PACKET_STATE.load(Ordering::Relaxed);
-    
+
     // 简单的状态机
     match state {
-        0 => { // Idle -> Byte1
-             // 检查 Byte 1 的 Bit 3 是否为 1 (Always 1)
-             // 这有助于同步
-             if (data & 0x08) != 0 {
-                 PACKET_BYTE1.store(data, Ordering::Relaxed);
-                 PACKET_STATE.store(PacketState::Byte2 as u8, Ordering::Relaxed);
-             }
+        0 => {
+            // Idle -> Byte1
+            // 检查 Byte 1 的 Bit 3 是否为 1 (Always 1)
+            // 这有助于同步
+            if (data & 0x08) != 0 {
+                PACKET_BYTE1.store(data, Ordering::Relaxed);
+                PACKET_STATE.store(PacketState::Byte2 as u8, Ordering::Relaxed);
+            }
         }
-        1 => { // Byte1 -> Byte2
+        1 => {
+            // Byte1 -> Byte2
             PACKET_BYTE2.store(data, Ordering::Relaxed);
             PACKET_STATE.store(PacketState::Byte3 as u8, Ordering::Relaxed);
         }
-        2 => { // Byte2 -> Byte3
+        2 => {
+            // Byte2 -> Byte3
             PACKET_BYTE3.store(data, Ordering::Relaxed);
-            
+
             // 处理完整数据包
             process_packet();
-            
+
             // 回到等待 Byte1
             PACKET_STATE.store(PacketState::Idle as u8, Ordering::Relaxed);
         }
@@ -194,7 +199,7 @@ fn process_packet() {
     // 解析 X/Y 增量
     let x_sign = (byte1 & 0x10) != 0;
     let y_sign = (byte1 & 0x20) != 0;
-    
+
     let mut dx = byte2 as i16;
     let mut dy = byte3 as i16;
 
@@ -204,10 +209,10 @@ fn process_packet() {
     if y_sign {
         dy |= 0xFF00u16 as i16;
     }
-    
+
     // PS/2 Y 轴向上为正，屏幕向下为正
     // 许多系统在这里取反 Y 轴
-    
+
     MOUSE_DELTA_X.store(dx, Ordering::Relaxed);
     MOUSE_DELTA_Y.store(dy, Ordering::Relaxed);
 
@@ -319,13 +324,13 @@ pub fn set_resolution(res: u8) -> bool {
 pub fn read_mouse_data() -> (bool, bool, bool, i16, i16) {
     // 此函数在中断驱动模式下通常不使用
     // 但如果处于远程模式，可以主动查询
-    
+
     // 简单实现：返回最后一次中断更新的数据
     let left = left_button();
     let middle = middle_button();
     let right = right_button();
     let dx = delta_x();
     let dy = delta_y();
-    
+
     (left, middle, right, dx, dy)
 }

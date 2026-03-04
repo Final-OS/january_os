@@ -1,8 +1,8 @@
 pub mod trampoline;
 
-use crate::mm;
-use crate::interrupt;
 use crate::drivers::acpi::{Madt, MadtEntry, MultiprocessorWakeupMailbox};
+use crate::interrupt;
+use crate::mm;
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -19,7 +19,8 @@ static MAILBOX_VIRT_ADDR: AtomicU64 = AtomicU64::new(0);
 static AP_STARTED: AtomicBool = AtomicBool::new(false);
 const AP_START_TIMEOUT_SPINS: u64 = 10_000_000;
 
-global_asm!(r#"
+global_asm!(
+    r#"
 .section .text
 .global acpi_wakeup_entry
 .extern ap_entry
@@ -36,7 +37,8 @@ acpi_wakeup_entry:
     
     // Jump to Rust entry
     jmp ap_entry
-"#);
+"#
+);
 
 unsafe extern "C" {
     fn acpi_wakeup_entry();
@@ -52,7 +54,7 @@ fn read_cr3() -> u64 {
 }
 
 /// Prepare SMP environment
-/// 
+///
 /// Checks for ACPI Multiprocessor Wakeup support.
 /// If available, sets up the mailbox.
 /// If not, prepares the Legacy Trampoline.
@@ -93,12 +95,14 @@ pub fn boot_ap(apic_id: u32, direct_map_base: u64) -> bool {
     let stack = mm::alloc_pages(stack_order, mm::GFP_KERNEL).expect("Failed to alloc AP stack");
     let stack_top = direct_map_base + (mm::page_to_pfn(stack) as u64) * 4096 + stack_pages * 4096;
 
-    crate::kprintln!(
-        "[diag][smp] apic_id={} ap_stack_top={:#x} ap_stack_pfn={:#x}",
-        apic_id,
-        stack_top,
-        mm::page_to_pfn(stack),
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][smp] apic_id={} ap_stack_top={:#x} ap_stack_pfn={:#x}",
+            apic_id,
+            stack_top,
+            mm::page_to_pfn(stack),
+        );
+    }
 
     // Save stack for ACPI Wakeup (if used)
     NEXT_AP_STACK_VAL.store(stack_top, Ordering::Release);
@@ -157,11 +161,19 @@ unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) -> bool {
 
     // 1. Setup Mailbox
     core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.apic_id), apic_id);
-    core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.wakeup_vector), acpi_wakeup_entry as *const () as u64);
+    core::ptr::write_volatile(
+        core::ptr::addr_of_mut!(mailbox.wakeup_vector),
+        acpi_wakeup_entry as *const () as u64,
+    );
     // 内存屏障确保 apic_id 和 wakeup_vector 在 command 之前可见
     core::sync::atomic::fence(Ordering::Release);
-    core::ptr::write_volatile(core::ptr::addr_of_mut!(mailbox.command), MultiprocessorWakeupMailbox::COMMAND_WAKEUP);
-    crate::kprintln!("[diag][smp] acpi wakeup sent apic_id={}", apic_id);
+    core::ptr::write_volatile(
+        core::ptr::addr_of_mut!(mailbox.command),
+        MultiprocessorWakeupMailbox::COMMAND_WAKEUP,
+    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!("[diag][smp] acpi wakeup sent apic_id={}", apic_id);
+    }
 
     // 2. 等待 AP 启动并读取完数据
     let mut timeout = 0u64;
@@ -196,16 +208,28 @@ unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) -> 
     *(data_base.sub(trampoline::OFFSET_RSP as usize) as *mut u64) = stack_top;
     *(data_base.sub(trampoline::OFFSET_ENTRY as usize) as *mut u64) = ap_entry as *const () as u64;
     // Copy GDTR and IDTR (10 bytes each)
-    core::ptr::copy_nonoverlapping(gdtr.as_ptr(), data_base.sub(trampoline::OFFSET_GDTR as usize), 10);
-    core::ptr::copy_nonoverlapping(idtr.as_ptr(), data_base.sub(trampoline::OFFSET_IDTR as usize), 10);
-    
+    core::ptr::copy_nonoverlapping(
+        gdtr.as_ptr(),
+        data_base.sub(trampoline::OFFSET_GDTR as usize),
+        10,
+    );
+    core::ptr::copy_nonoverlapping(
+        idtr.as_ptr(),
+        data_base.sub(trampoline::OFFSET_IDTR as usize),
+        10,
+    );
+
     // Send INIT-SIPI-SIPI
     interrupt::send_init_ipi(apic_id);
-    crate::kprintln!("[diag][smp] INIT sent apic_id={}", apic_id);
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!("[diag][smp] INIT sent apic_id={}", apic_id);
+    }
     delay_ms(10);
-    
+
     let vector = (trampoline::TRAMPOLINE_BASE >> 12) as u8; // 0x08
-    crate::kprintln!("[diag][smp] SIPI vector={:#x} apic_id={}", vector, apic_id);
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!("[diag][smp] SIPI vector={:#x} apic_id={}", vector, apic_id);
+    }
     interrupt::send_sipi(apic_id, vector);
     delay_us(200);
     interrupt::send_sipi(apic_id, vector);
@@ -267,17 +291,17 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
     let cpu_id = crate::smp::alloc_cpu_id();
     crate::smp::ap_boot_probe_set_cpu(cpu_id);
     crate::smp::ap_boot_probe_set_stage(2);
-    
+
     // Init AP interrupts
     // We need kernel_stack_top. It is current RSP.
     let kernel_stack_top: u64;
     unsafe {
         core::arch::asm!("mov {}, rsp", out(reg) kernel_stack_top);
     }
-    
+
     let local_apic_base = 0xFEE00000; // Default address
     crate::smp::ap_boot_probe_set_stage(3);
-    
+
     unsafe {
         interrupt::init_ap(cpu_id, kernel_stack_top, local_apic_base, direct_map_base).unwrap();
     }
@@ -291,14 +315,16 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
     let online_cpus = crate::smp::mark_cpu_online();
     crate::smp::ap_boot_probe_set_stage(7);
 
-    crate::kprintln!(
-        "[diag][smp] ap_entry cpu_id={} local_apic_id={} if={} online_cpus={}",
-        cpu_id,
-        interrupt::local_apic_id(),
-        interrupt::interrupts_enabled(),
-        online_cpus,
-    );
-    
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][smp] ap_entry cpu_id={} local_apic_id={} if={} online_cpus={}",
+            cpu_id,
+            interrupt::local_apic_id(),
+            interrupt::interrupts_enabled(),
+            online_cpus,
+        );
+    }
+
     crate::kprintln!("      [SMP] AP Started (CPU {})", cpu_id);
 
     crate::task::scheduler::run_idle()

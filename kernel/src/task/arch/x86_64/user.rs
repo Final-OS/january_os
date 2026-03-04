@@ -50,12 +50,14 @@ pub unsafe fn enter_user_mode_iret(frame: &UserEnterFrame) -> ! {
     );
 
     crate::arch::syscall::set_syscall_kernel_rsp(kernel_rsp);
-    crate::kprintln!(
-        "[diag][user] arm syscall stack k_rsp={:#x} rip={:#x} rsp={:#x}",
-        kernel_rsp,
-        frame_rip,
-        frame_rsp,
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][user] arm syscall stack k_rsp={:#x} rip={:#x} rsp={:#x}",
+            kernel_rsp,
+            frame_rip,
+            frame_rsp,
+        );
+    }
 
     asm!(
         "push {ss}",

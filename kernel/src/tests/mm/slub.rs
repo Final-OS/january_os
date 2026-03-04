@@ -3,8 +3,8 @@ use crate::config;
 use crate::kprintln;
 
 pub(super) fn run() {
-    use crate::mm::slub::{kfree, kmalloc};
     use crate::mm::page::page::pfn_to_page;
+    use crate::mm::slub::{kfree, kmalloc};
     use crate::mm::GFP_KERNEL;
     use core::ptr;
 
@@ -13,30 +13,41 @@ pub(super) fn run() {
     unsafe {
         kfree(ptr::null_mut());
     }
-    kprintln!("[test/mm][slub][null-free] expected=no panic actual=ok");
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/mm][slub][null-free] expected=no panic actual=ok");
+    }
 
     // 2) 非法输入：kfree(非 direct-map 指针) 必须是 no-op
     mm_step("slub: case=kfree_non_direct_map_noop");
     unsafe {
         kfree(0x12345usize as *mut u8);
     }
-    kprintln!("[test/mm][slub][non-direct-map-free] expected=no panic actual=ok");
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!("[test/mm][slub][non-direct-map-free] expected=no panic actual=ok");
+    }
 
     // 3) 边界输入：kmalloc(0) 允许返回 NULL 或最小可用对象（实现相关）
     mm_step("slub: case=kmalloc_zero_size");
     let zero = kmalloc(0, GFP_KERNEL);
     if zero.is_null() {
-        kprintln!(
-            "[test/mm][slub][zero] input size=0 expected=(null or valid ptr) actual_ptr=0x0"
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/mm][slub][zero] input size=0 expected=(null or valid ptr) actual_ptr=0x0"
+            );
+        }
     } else {
-        kprintln!(
-            "[test/mm][slub][zero] input size=0 expected=(null or valid ptr) actual_ptr={:#x}",
-            zero as usize
-        );
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[test/mm][slub][zero] input size=0 expected=(null or valid ptr) actual_ptr={:#x}",
+                zero as usize
+            );
+        }
         if (zero as u64) < config::DIRECT_MAP_OFFSET {
             unsafe { kfree(zero) };
-            return fail("slub", "kmalloc(0) returned non-null ptr outside direct-map range");
+            return fail(
+                "slub",
+                "kmalloc(0) returned non-null ptr outside direct-map range",
+            );
         }
     }
 
@@ -52,17 +63,22 @@ pub(super) fn run() {
             kfree(small);
             kfree(zero);
         }
-        return fail("slub", "small allocation is not in direct-map virtual range");
+        return fail(
+            "slub",
+            "small allocation is not in direct-map virtual range",
+        );
     }
 
     // 5) 同类对象并发分配：两个 64B 指针不应相同
     mm_step("slub: case=small_alloc_uniqueness");
     let small2 = kmalloc(64, GFP_KERNEL);
-    kprintln!(
-        "[test/mm][slub][small-uniq] ptr1={:#x} ptr2={:#x}",
-        small as usize,
-        small2 as usize
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/mm][slub][small-uniq] ptr1={:#x} ptr2={:#x}",
+            small as usize,
+            small2 as usize
+        );
+    }
     if small2.is_null() {
         unsafe {
             kfree(small);
@@ -145,7 +161,10 @@ pub(super) fn run() {
             kfree(small);
             kfree(zero);
         }
-        return fail("slub", "large allocation is not in direct-map virtual range");
+        return fail(
+            "slub",
+            "large allocation is not in direct-map virtual range",
+        );
     }
 
     // 8) 非法输入：对大块分配传入非页对齐地址给 kfree，必须是 no-op
@@ -157,12 +176,14 @@ pub(super) fn run() {
         kfree(large.add(16));
     }
     let page_after = unsafe { (&*pfn_to_page(large_pfn)).refcount() };
-    kprintln!(
-        "[test/mm][slub][unaligned-free] pfn={} ref_before={} ref_after={}",
-        large_pfn,
-        page_before,
-        page_after
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/mm][slub][unaligned-free] pfn={} ref_before={} ref_after={}",
+            large_pfn,
+            page_before,
+            page_after
+        );
+    }
     if page_after != page_before {
         unsafe {
             kfree(large);
@@ -178,15 +199,17 @@ pub(super) fn run() {
         );
     }
 
-    kprintln!(
-        "[test/mm][slub] ptrs zero={:#x} small={:#x} small2={:#x} 8192={:#x} 8193={:#x} 16k={:#x}",
-        zero as usize,
-        small as usize,
-        small2 as usize,
-        boundary_in as usize,
-        boundary_out as usize,
-        large as usize
-    );
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[test/mm][slub] ptrs zero={:#x} small={:#x} small2={:#x} 8192={:#x} 8193={:#x} 16k={:#x}",
+            zero as usize,
+            small as usize,
+            small2 as usize,
+            boundary_in as usize,
+            boundary_out as usize,
+            large as usize
+        );
+    }
 
     unsafe {
         mm_step("slub: cleanup all allocations");

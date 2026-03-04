@@ -95,7 +95,7 @@ impl VtParser {
             intermediate: 0,
         }
     }
-    
+
     /// 重置解析器
     pub fn reset(&mut self) {
         self.state = VtState::Ground;
@@ -104,11 +104,11 @@ impl VtParser {
         self.private_mode = false;
         self.intermediate = 0;
     }
-    
+
     /// 输入字符，返回动作迭代器
     pub fn feed(&mut self, ch: char) -> VtActionIter {
         let mut actions = VtActionIter::new();
-        
+
         match self.state {
             VtState::Ground => {
                 match ch {
@@ -225,7 +225,8 @@ impl VtParser {
             VtState::CsiParam => {
                 match ch {
                     '0'..='9' => {
-                        self.current_param = self.current_param
+                        self.current_param = self
+                            .current_param
                             .saturating_mul(10)
                             .saturating_add((ch as u16) - ('0' as u16));
                     }
@@ -279,10 +280,10 @@ impl VtParser {
                 }
             }
         }
-        
+
         actions
     }
-    
+
     /// 推送参数
     fn push_param(&mut self) {
         if self.param_count < self.params.len() {
@@ -291,7 +292,7 @@ impl VtParser {
         }
         self.current_param = 0;
     }
-    
+
     /// 获取参数 (带默认值)
     fn get_param(&self, index: usize, default: u16) -> u16 {
         if index < self.param_count && self.params[index] > 0 {
@@ -300,7 +301,7 @@ impl VtParser {
             default
         }
     }
-    
+
     /// 执行 CSI 序列
     fn execute_csi(&self, ch: char, actions: &mut VtActionIter) {
         match ch {
@@ -436,7 +437,7 @@ impl VtActionIter {
             index: 0,
         }
     }
-    
+
     fn push(&mut self, action: VtAction) {
         if self.count < self.actions.len() {
             self.actions[self.count] = Some(action);
@@ -447,7 +448,7 @@ impl VtActionIter {
 
 impl Iterator for VtActionIter {
     type Item = VtAction;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.index < self.count {
             let action = self.actions[self.index].take();

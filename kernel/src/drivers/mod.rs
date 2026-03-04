@@ -12,7 +12,8 @@
 //! ```
 
 pub mod acpi;
-pub mod pci;
-pub mod usb;
+pub mod block;
 pub mod input;
+pub mod pci;
 pub mod tty;
+pub mod usb;

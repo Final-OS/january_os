@@ -265,11 +265,13 @@ fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
 
         // 注册到地址空间跟踪
         data.ensure_addr_space();
-        crate::kprintln!(
-            "[diag][ioremap] addr_space insert [{:#x}, {:#x})",
-            vaddr,
-            end
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][ioremap] addr_space insert [{:#x}, {:#x})",
+                vaddr,
+                end
+            );
+        }
         if data
             .addr_space
             .as_mut()
@@ -288,11 +290,13 @@ fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
             caller: Some(Location::caller()),
         };
         data.areas.insert(vaddr, area);
-        crate::kprintln!(
-            "[diag][ioremap] area inserted vaddr={:#x} pages={}",
-            vaddr,
-            nr_pages
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][ioremap] area inserted vaddr={:#x} pages={}",
+                vaddr,
+                nr_pages
+            );
+        }
 
         vaddr
     };
@@ -379,11 +383,13 @@ unsafe fn __vfree(addr: u64, area: &VmArea) {
 
 /// 映射 vmalloc 页面
 fn map_vmalloc_page(virt: u64, phys: u64, flags: u64) -> bool {
-    crate::kprintln!(
-        "[diag][vmalloc] map_page enter virt={:#x} phys={:#x}",
-        virt,
-        phys
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][vmalloc] map_page enter virt={:#x} phys={:#x}",
+            virt,
+            phys
+        );
+    }
     let state = match VMALLOC_STATE.get() {
         Some(s) => s,
         None => return false,
@@ -408,9 +414,13 @@ fn map_vmalloc_page(virt: u64, phys: u64, flags: u64) -> bool {
             return false;
         }
 
-        crate::kprintln!("[diag][vmalloc] calling pt_mgr.map_page");
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!("[diag][vmalloc] calling pt_mgr.map_page");
+        }
         let ok = pt_mgr.map_page(virt, phys, flags);
-        crate::kprintln!("[diag][vmalloc] pt_mgr.map_page -> {}", ok);
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!("[diag][vmalloc] pt_mgr.map_page -> {}", ok);
+        }
         if ok {
             // map_page 对“新增映射”仅做本地刷新；vmalloc/ioremap 为低频路径，
             // 这里追加一次跨核 TLB shootdown 保障内核映射可见性一致。
@@ -473,7 +483,9 @@ const fn page_align_up(size: u64) -> u64 {
 /// 将物理地址映射到 vmalloc 区域 (IO 重映射)
 #[track_caller]
 pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
-    crate::kprintln!("[diag][ioremap] enter phys={:#x} size={}", phys_addr, size);
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!("[diag][ioremap] enter phys={:#x} size={}", phys_addr, size);
+    }
     if size == 0 {
         return ptr::null_mut();
     }
@@ -501,7 +513,9 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
 
     // 分配虚拟地址空间并注册区域 (持有锁)
     let vaddr = {
-        crate::kprintln!("[diag][ioremap] lock vmalloc_data");
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!("[diag][ioremap] lock vmalloc_data");
+        }
         let mut data = VMALLOC_DATA.lock();
 
         let alloc_size = match page_align_size.checked_add(PAGE_SIZE) {
@@ -518,7 +532,9 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
                 return ptr::null_mut();
             }
         };
-        crate::kprintln!("[diag][ioremap] find_gap alloc_size={:#x}", alloc_size);
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!("[diag][ioremap] find_gap alloc_size={:#x}", alloc_size);
+        }
         data.ensure_addr_space();
         let vaddr = match data.addr_space.as_mut().unwrap().find_gap(
             alloc_size_usize,
@@ -526,7 +542,9 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
             VMALLOC_END as usize,
         ) {
             Some(addr) => {
-                crate::kprintln!("[diag][ioremap] find_gap ok vaddr={:#x}", addr as u64);
+                if crate::config::DEBUG_VERBOSE {
+                    crate::kprintln!("[diag][ioremap] find_gap ok vaddr={:#x}", addr as u64);
+                }
                 addr as u64
             }
             None => {
@@ -551,11 +569,13 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
         };
 
         data.ensure_addr_space();
-        crate::kprintln!(
-            "[diag][ioremap] addr_space insert [{:#x}, {:#x})",
-            vaddr,
-            end
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][ioremap] addr_space insert [{:#x}, {:#x})",
+                vaddr,
+                end
+            );
+        }
         if data
             .addr_space
             .as_mut()
@@ -577,28 +597,34 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
             caller: Some(Location::caller()),
         };
         data.areas.insert(vaddr, area);
-        crate::kprintln!(
-            "[diag][ioremap] area inserted vaddr={:#x} pages={}",
-            vaddr,
-            nr_pages
-        );
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[diag][ioremap] area inserted vaddr={:#x} pages={}",
+                vaddr,
+                nr_pages
+            );
+        }
 
         vaddr
     };
     // 锁已释放
 
     // 映射每一页 (不持有 VMALLOC_DATA 锁)
-    crate::kprintln!("[diag][ioremap] mapping pages count={}", nr_pages_u64);
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!("[diag][ioremap] mapping pages count={}", nr_pages_u64);
+    }
     for i in 0..nr_pages_u64 {
         let phys = phys_base + i * PAGE_SIZE;
         let virt = vaddr + i * PAGE_SIZE;
 
         if i == 0 {
-            crate::kprintln!(
-                "[diag][ioremap] map first virt={:#x} phys={:#x}",
-                virt,
-                phys
-            );
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "[diag][ioremap] map first virt={:#x} phys={:#x}",
+                    virt,
+                    phys
+                );
+            }
         }
 
         if !map_vmalloc_page(virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NO_CACHE) {
@@ -612,11 +638,13 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
         }
     }
 
-    crate::kprintln!(
-        "[diag][ioremap] success vaddr={:#x} offset={:#x}",
-        vaddr,
-        offset
-    );
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[diag][ioremap] success vaddr={:#x} offset={:#x}",
+            vaddr,
+            offset
+        );
+    }
     unsafe { (vaddr as *mut u8).add(offset as usize) }
 }
 

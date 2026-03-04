@@ -408,24 +408,26 @@ pub fn handle_boot_report(report: BootKeyboardReport) {
 const EVENT_BUFFER_SIZE: usize = 64;
 
 /// 按键事件缓冲区
-static KEY_EVENT_BUFFER: IrqSpinLock<[KeyEvent; EVENT_BUFFER_SIZE]> = IrqSpinLock::new([KeyEvent {
-    keycode: KeyCode::None,
-    event_type: KeyEventType::Press,
-    modifiers: Modifiers {
-        left_ctrl: false,
-        left_shift: false,
-        left_alt: false,
-        left_gui: false,
-        right_ctrl: false,
-        right_shift: false,
-        right_alt: false,
-        right_gui: false,
-        caps_lock: false,
-        num_lock: false,
-        scroll_lock: false,
-    },
-    ascii: None,
-}; EVENT_BUFFER_SIZE]);
+static KEY_EVENT_BUFFER: IrqSpinLock<[KeyEvent; EVENT_BUFFER_SIZE]> = IrqSpinLock::new(
+    [KeyEvent {
+        keycode: KeyCode::None,
+        event_type: KeyEventType::Press,
+        modifiers: Modifiers {
+            left_ctrl: false,
+            left_shift: false,
+            left_alt: false,
+            left_gui: false,
+            right_ctrl: false,
+            right_shift: false,
+            right_alt: false,
+            right_gui: false,
+            caps_lock: false,
+            num_lock: false,
+            scroll_lock: false,
+        },
+        ascii: None,
+    }; EVENT_BUFFER_SIZE],
+);
 
 static KEY_EVENT_HEAD: AtomicUsize = AtomicUsize::new(0);
 static KEY_EVENT_TAIL: AtomicUsize = AtomicUsize::new(0);

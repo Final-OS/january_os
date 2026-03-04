@@ -36,10 +36,21 @@ macro_rules! error {
     }};
 }
 
+/// Diagnostic output - only shown when DEBUG_VERBOSE is enabled
+#[macro_export]
+macro_rules! diag {
+    ($($arg:tt)*) => {{
+        if $crate::config::DEBUG_VERBOSE {
+            $crate::kprintln!("\x1b[90m[diag]\x1b[0m {}", format_args!($($arg)*));
+        }
+    }};
+}
+
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)*) => {{
-        // Gray [ DEBG ]
-        $crate::kprintln!("\x1b[90m[ DEBG ]\x1b[0m {}", format_args!($($arg)*));
+        if $crate::config::DEBUG_VERBOSE {
+            $crate::kprintln!("\x1b[90m[ DEBG ]\x1b[0m {}", format_args!($($arg)*));
+        }
     }};
 }

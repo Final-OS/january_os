@@ -2,8 +2,8 @@ pub mod arch;
 
 use crate::drivers::acpi::{Madt, MadtEntry};
 use crate::interrupt;
+use crate::{info, kprint, kprintln, ok, warn};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use crate::{info, ok, warn, kprint, kprintln};
 
 const APIC_ID_MAP_SLOTS: usize = if crate::config::MAX_APIC_IDS > 0 {
     crate::config::MAX_APIC_IDS
@@ -100,21 +100,24 @@ pub fn detected_cpu_count() -> usize {
 
 /// 自动检测并启动其他 CPU 核心
 pub fn init(direct_map_base: u64, expected_cpus: usize) {
-    let capped_expected = expected_cpus
-        .clamp(1, crate::config::MAX_CPUS.max(1));
+    let capped_expected = expected_cpus.clamp(1, crate::config::MAX_CPUS.max(1));
     DETECTED_CPU_COUNT.store(capped_expected, Ordering::SeqCst);
     register_current_cpu(0);
 
     if expected_cpus > capped_expected {
         warn!(
             "SMP: capped expected CPUs from {} to {} by config MAX_CPUS",
-            expected_cpus,
-            capped_expected
+            expected_cpus, capped_expected
         );
     }
 
     if capped_expected <= 1 {
-        kprintln!("[diag][smp] skip smp init: expected_cpus={}", capped_expected);
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!(
+                "[diag][smp] skip smp init: expected_cpus={}",
+                capped_expected
+            );
+        }
         return;
     }
 
@@ -133,12 +136,14 @@ pub fn init(direct_map_base: u64, expected_cpus: usize) {
 /// * `expected_cpus` - 期望启动的 CPU 总数 (包括 BSP)
 fn boot_aps(madt: &Madt, direct_map_base: u64, expected_cpus: usize) {
     let bsp_lapic_id = interrupt::local_apic_id();
-    kprintln!(
-        "[diag][smp] boot_aps begin bsp_apic_id={} expected_cpus={}",
-        bsp_lapic_id,
-        expected_cpus,
-    );
-    
+    if crate::config::DEBUG_VERBOSE {
+        kprintln!(
+            "[diag][smp] boot_aps begin bsp_apic_id={} expected_cpus={}",
+            bsp_lapic_id,
+            expected_cpus,
+        );
+    }
+
     // 1. Prepare SMP environment (Trampoline or ACPI Wakeup)
     unsafe {
         arch::prepare_smp(madt, direct_map_base);
@@ -149,24 +154,32 @@ fn boot_aps(madt: &Madt, direct_map_base: u64, expected_cpus: usize) {
     let mut launch_aborted = false;
     for entry in madt.entries() {
         if let MadtEntry::LocalApic(lapic) = entry {
-            kprintln!(
-                "[diag][smp] lapic entry apic_id={} enabled={} online_capable={}",
-                lapic.apic_id,
-                lapic.is_enabled(),
-                lapic.is_online_capable(),
-            );
+            if crate::config::DEBUG_VERBOSE {
+                kprintln!(
+                    "[diag][smp] lapic entry apic_id={} enabled={} online_capable={}",
+                    lapic.apic_id,
+                    lapic.is_enabled(),
+                    lapic.is_online_capable(),
+                );
+            }
             if lapic.apic_id as u32 == bsp_lapic_id {
-                kprintln!("[diag][smp] skip bsp apic_id={}", lapic.apic_id);
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!("[diag][smp] skip bsp apic_id={}", lapic.apic_id);
+                }
                 continue;
             }
             if !lapic.is_enabled() && !lapic.is_online_capable() {
-                kprintln!("[diag][smp] skip disabled apic_id={}", lapic.apic_id);
+                if crate::config::DEBUG_VERBOSE {
+                    kprintln!("[diag][smp] skip disabled apic_id={}", lapic.apic_id);
+                }
                 continue;
             }
 
             // Boot this AP
             let apic_id = lapic.apic_id;
-            kprintln!("[diag][smp] booting apic_id={} ...", apic_id);
+            if crate::config::DEBUG_VERBOSE {
+                kprintln!("[diag][smp] booting apic_id={} ...", apic_id);
+            }
             if arch::boot_ap(apic_id as u32, direct_map_base) {
                 target_online_cpus += 1;
             } else {
@@ -177,14 +190,16 @@ fn boot_aps(madt: &Madt, direct_map_base: u64, expected_cpus: usize) {
                 launch_aborted = true;
                 break;
             }
-            kprintln!(
-                "[diag][smp] boot_ap returned apic_id={} online_cpus_now={}",
-                apic_id,
-                cpu_count(),
-            );
+            if crate::config::DEBUG_VERBOSE {
+                kprintln!(
+                    "[diag][smp] boot_ap returned apic_id={} online_cpus_now={}",
+                    apic_id,
+                    cpu_count(),
+                );
+            }
         }
     }
-    
+
     // 3. Wait for APs to become fully online
     let mut retries = 0;
     while cpu_count() < target_online_cpus {
@@ -193,8 +208,13 @@ fn boot_aps(madt: &Madt, direct_map_base: u64, expected_cpus: usize) {
             core::hint::spin_loop();
         }
         retries += 1;
-        if retries > 100000 { // Timeout
-            warn!("SMP: Timeout! Only {}/{} CPUs became online.", cpu_count(), target_online_cpus);
+        if retries > 100000 {
+            // Timeout
+            warn!(
+                "SMP: Timeout! Only {}/{} CPUs became online.",
+                cpu_count(),
+                target_online_cpus
+            );
             return;
         }
     }

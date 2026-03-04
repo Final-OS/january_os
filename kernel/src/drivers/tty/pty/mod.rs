@@ -32,8 +32,8 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use crate::sync::Once;
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 // ============================================================================
 // 常量
@@ -142,17 +142,17 @@ impl LocalFlags {
 #[derive(Debug, Clone, Copy)]
 #[repr(usize)]
 pub enum ControlChar {
-    VINTR = 0,   // ^C
-    VQUIT = 1,   // ^\
-    VERASE = 2,  // ^?
-    VKILL = 3,   // ^U
-    VEOF = 4,    // ^D
+    VINTR = 0,  // ^C
+    VQUIT = 1,  // ^\
+    VERASE = 2, // ^?
+    VKILL = 3,  // ^U
+    VEOF = 4,   // ^D
     VTIME = 5,
     VMIN = 6,
     VSWTC = 7,
-    VSTART = 8,  // ^Q
-    VSTOP = 9,   // ^S
-    VSUSP = 10,  // ^Z
+    VSTART = 8, // ^Q
+    VSTOP = 9,  // ^S
+    VSUSP = 10, // ^Z
     VEOL = 11,
     VREPRINT = 12,
     VDISCARD = 13,
@@ -188,23 +188,27 @@ pub struct Termios {
 impl Default for Termios {
     fn default() -> Self {
         let mut c_cc = [0u8; NCCS];
-        c_cc[ControlChar::VINTR as usize] = 0x03;  // ^C
-        c_cc[ControlChar::VQUIT as usize] = 0x1C;  // ^\
+        c_cc[ControlChar::VINTR as usize] = 0x03; // ^C
+        c_cc[ControlChar::VQUIT as usize] = 0x1C; // ^\
         c_cc[ControlChar::VERASE as usize] = 0x7F; // DEL
-        c_cc[ControlChar::VKILL as usize] = 0x15;  // ^U
-        c_cc[ControlChar::VEOF as usize] = 0x04;   // ^D
+        c_cc[ControlChar::VKILL as usize] = 0x15; // ^U
+        c_cc[ControlChar::VEOF as usize] = 0x04; // ^D
         c_cc[ControlChar::VSTART as usize] = 0x11; // ^Q
-        c_cc[ControlChar::VSTOP as usize] = 0x13;  // ^S
-        c_cc[ControlChar::VSUSP as usize] = 0x1A;  // ^Z
+        c_cc[ControlChar::VSTOP as usize] = 0x13; // ^S
+        c_cc[ControlChar::VSUSP as usize] = 0x1A; // ^Z
         c_cc[ControlChar::VMIN as usize] = 1;
-        
+
         Self {
             c_iflag: InputFlags::ICRNL | InputFlags::IXON,
             c_oflag: OutputFlags::OPOST | OutputFlags::ONLCR,
             c_cflag: 0o0060, // CS8
-            c_lflag: LocalFlags::ISIG | LocalFlags::ICANON | LocalFlags::ECHO 
-                   | LocalFlags::ECHOE | LocalFlags::ECHOK | LocalFlags::ECHOCTL
-                   | LocalFlags::IEXTEN,
+            c_lflag: LocalFlags::ISIG
+                | LocalFlags::ICANON
+                | LocalFlags::ECHO
+                | LocalFlags::ECHOE
+                | LocalFlags::ECHOK
+                | LocalFlags::ECHOCTL
+                | LocalFlags::IEXTEN,
             c_line: 0,
             c_cc,
             c_ispeed: 38400,
@@ -256,7 +260,7 @@ impl RingBuffer {
             count: 0,
         }
     }
-    
+
     /// 写入数据
     pub fn write(&mut self, data: &[u8]) -> usize {
         let mut written = 0;
@@ -271,7 +275,7 @@ impl RingBuffer {
         }
         written
     }
-    
+
     /// 读取数据
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         let mut read = 0;
@@ -286,27 +290,27 @@ impl RingBuffer {
         }
         read
     }
-    
+
     /// 是否为空
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
-    
+
     /// 是否已满
     pub fn is_full(&self) -> bool {
         self.count >= PTY_BUFFER_SIZE
     }
-    
+
     /// 可用空间
     pub fn available(&self) -> usize {
         PTY_BUFFER_SIZE - self.count
     }
-    
+
     /// 数据量
     pub fn len(&self) -> usize {
         self.count
     }
-    
+
     /// 清空
     pub fn clear(&mut self) {
         self.read_pos = 0;
@@ -371,7 +375,7 @@ impl PtyPair {
             line_len: 0,
         }
     }
-    
+
     /// 分配
     pub fn allocate(&mut self) {
         self.allocated = true;
@@ -380,14 +384,14 @@ impl PtyPair {
         self.to_master.clear();
         self.line_len = 0;
     }
-    
+
     /// 释放
     pub fn release(&mut self) {
         self.allocated = false;
         self.master_open = false;
         self.slave_open = false;
     }
-    
+
     /// Master 写入 (发送到 Slave)
     pub fn master_write(&mut self, data: &[u8]) -> usize {
         // 输入处理
@@ -402,12 +406,12 @@ impl PtyPair {
         }
         processed
     }
-    
+
     /// Master 读取 (接收 Slave 输出)
     pub fn master_read(&mut self, buf: &mut [u8]) -> usize {
         self.to_master.read(buf)
     }
-    
+
     /// Slave 写入 (发送到 Master)
     pub fn slave_write(&mut self, data: &[u8]) -> usize {
         // 输出处理
@@ -425,11 +429,11 @@ impl PtyPair {
         }
         written
     }
-    
+
     /// Slave 读取 (接收 Master 输入)
     pub fn slave_read(&mut self, buf: &mut [u8]) -> usize {
         let canonical = self.termios.c_lflag & LocalFlags::ICANON != 0;
-        
+
         if canonical {
             // 规范模式：返回完整行
             self.canonical_read(buf)
@@ -438,7 +442,7 @@ impl PtyPair {
             self.to_slave.read(buf)
         }
     }
-    
+
     /// 规范模式读取
     fn canonical_read(&mut self, buf: &mut [u8]) -> usize {
         // 检查行缓冲区是否有完整行
@@ -447,7 +451,7 @@ impl PtyPair {
             let mut temp = [0u8; 1];
             while self.to_slave.read(&mut temp) > 0 {
                 let c = temp[0];
-                
+
                 // 检查行结束
                 if c == b'\n' || c == self.termios.c_cc[ControlChar::VEOF as usize] {
                     if c == b'\n' {
@@ -456,7 +460,7 @@ impl PtyPair {
                     }
                     break;
                 }
-                
+
                 // 处理退格
                 if c == self.termios.c_cc[ControlChar::VERASE as usize] {
                     if self.line_len > 0 {
@@ -464,13 +468,13 @@ impl PtyPair {
                     }
                     continue;
                 }
-                
+
                 // 处理 KILL
                 if c == self.termios.c_cc[ControlChar::VKILL as usize] {
                     self.line_len = 0;
                     continue;
                 }
-                
+
                 // 添加到行缓冲区
                 if self.line_len < self.line_buffer.len() {
                     self.line_buffer[self.line_len] = c;
@@ -478,24 +482,24 @@ impl PtyPair {
                 }
             }
         }
-        
+
         // 返回行缓冲区内容
         let to_copy = self.line_len.min(buf.len());
         buf[..to_copy].copy_from_slice(&self.line_buffer[..to_copy]);
-        
+
         // 移动剩余数据
         if to_copy < self.line_len {
             self.line_buffer.copy_within(to_copy..self.line_len, 0);
         }
         self.line_len -= to_copy;
-        
+
         to_copy
     }
-    
+
     /// 输入处理
     fn process_input(&self, byte: u8) -> Option<u8> {
         let iflag = self.termios.c_iflag;
-        
+
         // CR/NL 转换
         if byte == b'\r' {
             if iflag & InputFlags::IGNCR != 0 {
@@ -509,33 +513,33 @@ impl PtyPair {
                 return Some(b'\r');
             }
         }
-        
+
         // 去除第 8 位
         if iflag & InputFlags::ISTRIP != 0 {
             return Some(byte & 0x7F);
         }
-        
+
         Some(byte)
     }
-    
+
     /// 输出处理
     fn process_output(&self, byte: u8) -> [u8; 2] {
         let oflag = self.termios.c_oflag;
-        
+
         if oflag & OutputFlags::OPOST == 0 {
             return [byte, 0];
         }
-        
+
         // NL -> CR-NL
         if byte == b'\n' && oflag & OutputFlags::ONLCR != 0 {
             return [b'\r', b'\n'];
         }
-        
+
         // CR -> NL
         if byte == b'\r' && oflag & OutputFlags::OCRNL != 0 {
             return [b'\n', 0];
         }
-        
+
         [byte, 0]
     }
 }
@@ -560,29 +564,29 @@ impl PtyManager {
             allocated_count: AtomicUsize::new(0),
         }
     }
-    
+
     /// 分配新的 PTY
     pub fn allocate(&self) -> Option<u32> {
         let count = self.allocated_count.load(Ordering::Relaxed);
         if count >= MAX_PTYS {
             return None;
         }
-        
+
         let index = self.next_index.fetch_add(1, Ordering::Relaxed);
         if index as usize >= MAX_PTYS {
             self.next_index.fetch_sub(1, Ordering::Relaxed);
             return None;
         }
-        
+
         self.allocated_count.fetch_add(1, Ordering::Relaxed);
         Some(index)
     }
-    
+
     /// 释放 PTY
     pub fn release(&self, _index: u32) {
         self.allocated_count.fetch_sub(1, Ordering::Relaxed);
     }
-    
+
     /// 获取已分配数量
     pub fn count(&self) -> usize {
         self.allocated_count.load(Ordering::Relaxed)
