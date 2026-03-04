@@ -648,12 +648,11 @@ impl VtdUnit {
     
     /// 分配一个物理页面
     fn alloc_page(&self) -> Result<u64, &'static str> {
-        // 使用 memblock 分配
-        let phys = crate::mm::page::memblock::memblock_alloc(PAGE_SIZE, PAGE_SIZE);
-        if phys == 0 {
+        // IOMMU 初始化发生在 Buddy/SLUB 就绪之后，优先走标准页分配路径。
+        let Some(page) = crate::mm::alloc_pages(0, crate::mm::GFP_KERNEL_ZERO) else {
             return Err("Failed to allocate page for VT-d");
-        }
-        Ok(phys)
+        };
+        Ok(crate::mm::page_to_pfn(page) * PAGE_SIZE)
     }
     
     /// 刷新写缓冲

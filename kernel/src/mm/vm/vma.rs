@@ -6,7 +6,6 @@
 // ============================================================================
 
 use super::layout::{
-    DIRECT_MAP_OFFSET,
     KERNEL_BASE,
     PAGE_SIZE,
     USER_MMAP_BASE,
@@ -18,7 +17,7 @@ use super::layout::{
 use alloc::boxed::Box;
 use core::ptr;
 use crate::libs::mptree::MapleTree;
-use crate::mm::arch::{PageTable, PageTableEntry, PageTableManager, pml4_index};
+use crate::mm::arch::{PageTable, PageTableEntry, PageTableManager, level_index};
 use crate::mm::page::buddy::{alloc_page, free_page};
 use crate::mm::page::page::{PageFlags, max_pfn, page_to_pfn, pfn_to_page};
 use crate::mm::page::zone::{GFP_KERNEL_ZERO, GFP_USER};
@@ -355,7 +354,10 @@ impl Mm {
 
     /// 初始化 Mm
     pub fn init(&mut self, pgd: u64) {
-        self.vma_tree = MapleTree::new();
+        debug_assert!(
+            self.vma_tree.is_empty(),
+            "Mm::init expects an empty vma_tree from Mm::uninit"
+        );
         self.vma_count = 0;
         self.mm_count.store(1, Ordering::Relaxed);
         self.mm_users.store(1, Ordering::Relaxed);
@@ -689,11 +691,19 @@ pub fn mmap_flags_to_vm_flags(prot: u32, flags: u32) -> VmFlags {
 // 初始化
 // ============================================================================
 
-const USER_PML4_ENTRY_COUNT: usize = pml4_index(KERNEL_BASE);
-
 #[inline]
 unsafe fn phys_to_table_mut(phys: u64) -> *mut PageTable {
-    (DIRECT_MAP_OFFSET + (phys & crate::mm::PTE_ADDR_MASK)) as *mut PageTable
+    crate::mm::phys_to_virt(phys & crate::mm::PTE_ADDR_MASK) as *mut PageTable
+}
+
+#[inline]
+fn runtime_page_levels() -> u8 {
+    crate::mm::page_levels()
+}
+
+#[inline]
+fn user_root_entry_count() -> usize {
+    level_index(KERNEL_BASE, runtime_page_levels())
 }
 
 #[inline]
@@ -725,61 +735,59 @@ unsafe fn free_page_table_page(phys: u64) {
     }
 }
 
-unsafe fn teardown_user_page_tables(pgd_phys: u64) {
-    let pml4 = &mut *phys_to_table_mut(pgd_phys);
+unsafe fn teardown_table_level(table_phys: u64, level: u8) {
+    let table = &mut *phys_to_table_mut(table_phys);
 
-    for pml4_idx in 0..USER_PML4_ENTRY_COUNT {
-        let pml4e = pml4.entry_mut(pml4_idx);
-        if !pml4e.is_present() {
+    if level == 1 {
+        for idx in 0..512 {
+            let pte = table.entry_mut(idx);
+            if !pte.is_present() {
+                continue;
+            }
+            release_user_mapped_phys(pte.phys_addr());
+            *pte = PageTableEntry::empty();
+        }
+        return;
+    }
+
+    for idx in 0..512 {
+        let entry = table.entry_mut(idx);
+        if !entry.is_present() {
             continue;
         }
 
-        let pdpt_phys = pml4e.phys_addr();
-        let pdpt = &mut *phys_to_table_mut(pdpt_phys);
-        for pdpt_idx in 0..512 {
-            let pdpte = pdpt.entry_mut(pdpt_idx);
-            if !pdpte.is_present() {
-                continue;
-            }
-            if pdpte.is_huge() {
-                *pdpte = PageTableEntry::empty();
-                continue;
-            }
-
-            let pd_phys = pdpte.phys_addr();
-            let pd = &mut *phys_to_table_mut(pd_phys);
-            for pd_idx in 0..512 {
-                let pde = pd.entry_mut(pd_idx);
-                if !pde.is_present() {
-                    continue;
-                }
-                if pde.is_huge() {
-                    *pde = PageTableEntry::empty();
-                    continue;
-                }
-
-                let pt_phys = pde.phys_addr();
-                let pt = &mut *phys_to_table_mut(pt_phys);
-                for pt_idx in 0..512 {
-                    let pte = pt.entry_mut(pt_idx);
-                    if !pte.is_present() {
-                        continue;
-                    }
-
-                    release_user_mapped_phys(pte.phys_addr());
-                    *pte = PageTableEntry::empty();
-                }
-
-                *pde = PageTableEntry::empty();
-                free_page_table_page(pt_phys);
-            }
-
-            *pdpte = PageTableEntry::empty();
-            free_page_table_page(pd_phys);
+        if (level == 3 || level == 2) && entry.is_huge() {
+            *entry = PageTableEntry::empty();
+            continue;
         }
 
-        *pml4e = PageTableEntry::empty();
-        free_page_table_page(pdpt_phys);
+        let child_phys = entry.phys_addr();
+        teardown_table_level(child_phys, level - 1);
+        *entry = PageTableEntry::empty();
+        free_page_table_page(child_phys);
+    }
+}
+
+unsafe fn teardown_user_page_tables(pgd_phys: u64) {
+    let root = &mut *phys_to_table_mut(pgd_phys);
+    let levels = runtime_page_levels();
+    let user_entries = user_root_entry_count();
+
+    for idx in 0..user_entries {
+        let entry = root.entry_mut(idx);
+        if !entry.is_present() {
+            continue;
+        }
+
+        if levels <= 1 {
+            *entry = PageTableEntry::empty();
+            continue;
+        }
+
+        let child_phys = entry.phys_addr();
+        teardown_table_level(child_phys, levels - 1);
+        *entry = PageTableEntry::empty();
+        free_page_table_page(child_phys);
     }
 }
 
@@ -794,18 +802,20 @@ fn init_mm_pgd_phys() -> u64 {
     mm.pgd
 }
 
-unsafe fn clone_kernel_pml4_entries(src_pgd: u64, dst_pgd: u64) {
+unsafe fn clone_kernel_root_entries(src_pgd: u64, dst_pgd: u64) {
     let src = &*phys_to_table_mut(src_pgd);
     let dst = &mut *phys_to_table_mut(dst_pgd);
+    let kernel_root_start = user_root_entry_count();
 
-    for idx in USER_PML4_ENTRY_COUNT..512 {
+    for idx in kernel_root_start..512 {
         *dst.entry_mut(idx) = *src.entry(idx);
     }
 }
 
 unsafe fn clone_user_present_pages(src: &Mm, dst: &mut Mm) -> bool {
-    let src_pt = PageTableManager::new(src.pgd, DIRECT_MAP_OFFSET);
-    let dst_pt = PageTableManager::new(dst.pgd, DIRECT_MAP_OFFSET);
+    let direct_map = crate::mm::direct_map_offset();
+    let src_pt = PageTableManager::new(src.pgd, direct_map);
+    let dst_pt = PageTableManager::new(dst.pgd, direct_map);
 
     for (start, end, info) in src.vma_tree.iter() {
         let mut va = start as u64;
@@ -842,8 +852,8 @@ unsafe fn clone_user_present_pages(src: &Mm, dst: &mut Mm) -> bool {
 
                 let new_phys = page_to_pfn(new_page) * PAGE_SIZE;
                 ptr::copy_nonoverlapping(
-                    (DIRECT_MAP_OFFSET + old_phys) as *const u8,
-                    (DIRECT_MAP_OFFSET + new_phys) as *mut u8,
+                    crate::mm::phys_to_virt(old_phys) as *const u8,
+                    crate::mm::phys_to_virt(new_phys) as *mut u8,
                     PAGE_SIZE as usize,
                 );
 
@@ -938,7 +948,7 @@ pub fn mm_clone(mm: *mut Mm) -> *mut Mm {
     dst.data_vm = src.data_vm;
 
     unsafe {
-        clone_kernel_pml4_entries(src.pgd, new_pgd_phys);
+        clone_kernel_root_entries(src.pgd, new_pgd_phys);
     }
 
     let mut inserted = 0u32;

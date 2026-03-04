@@ -26,6 +26,9 @@ This skill enforces post-change information hygiene. It maps changed code/config
 - Keep tests/demo functionally complete: cover main paths, key branches, failure paths, and recovery paths with explicit assertions.
 - Keep tests/demo logs detailed and step-level: include action, input, expected result, actual result, and failure location.
 - Keep tests/demo coverage comprehensive: include invalid input, unexpected input, and boundary-condition cases.
+- Every minimum-scope implementation (minimal set / temporary subset) must add or update an item in `docs/progress/tech-debt.md` in the same change.
+- Every minimum-scope debt item must include current gap, full target, repayment version, and clear closure signal.
+- When repayment is implemented in a later version, update `docs/progress/tech-debt.md` and related docs/api pages in the same change.
 - If no docs/skills update is needed, explain exactly why in final report.
 - Do not leave `docs/.vitepress/config.ts` stale when adding/renaming docs pages.
 - Keep skill metadata (`SKILL.md` frontmatter and `agents/openai.yaml`) consistent.
@@ -38,9 +41,11 @@ Use `git status --short` and `git diff --name-only` to list modified files.
 
 2. Map change set to required information updates.
 Apply `references/update-matrix.md` to decide required docs/skills updates.
+Explicitly decide whether the change introduces/extends/repays any minimum-scope implementation debt.
 
 3. Update docs.
 Edit relevant pages in `docs/` and update `docs/.vitepress/config.ts` nav/sidebar entries when paths or topics changed.
+If minimum-scope behavior is introduced or changed, update `docs/progress/tech-debt.md` in the same change.
 
 4. Update skills.
 If workflow, architecture assumptions, or verification commands changed, update:

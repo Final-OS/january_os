@@ -18,6 +18,7 @@ use uefi::prelude::*;
 mod boot_services;
 mod bootinfo;
 mod buffers;
+mod cfg;
 mod console;
 mod handoff;
 mod paging;

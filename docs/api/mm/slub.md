@@ -21,8 +21,8 @@ const SLAB_SIZES: &[usize] = &[
 ### 基本分配
 
 ```rust
-pub fn kmalloc(size: usize, gfp_flags: GfpFlags) -> Option<*mut u8>
-pub fn kzalloc(size: usize, gfp_flags: GfpFlags) -> Option<*mut u8>
+pub fn kmalloc(size: usize, gfp_flags: GfpFlags) -> *mut u8
+pub fn kzalloc(size: usize, gfp_flags: GfpFlags) -> *mut u8
 pub fn kfree(ptr: *mut u8)
 ```
 
@@ -30,20 +30,22 @@ pub fn kfree(ptr: *mut u8)
 - `size`: 分配大小（字节）
 - `gfp_flags`: 分配标志
 
-**返回值**：分配的指针，失败返回 `None`
+**返回值**：分配的指针，失败返回空指针 `null`
 
 **示例**：
 ```rust
 use kernel::mm::{kmalloc, kfree, kzalloc, GFP_KERNEL};
 
 // 分配 64 字节
-if let Some(ptr) = kmalloc(64, GFP_KERNEL) {
+let ptr = kmalloc(64, GFP_KERNEL);
+if !ptr.is_null() {
     // 使用内存...
     kfree(ptr);
 }
 
 // 分配并清零
-if let Some(ptr) = kzalloc(128, GFP_KERNEL) {
+let ptr = kzalloc(128, GFP_KERNEL);
+if !ptr.is_null() {
     // 内存已清零...
     kfree(ptr);
 }
@@ -94,7 +96,10 @@ kprintln!("Objects per slab: {}", cache.objects_per_slab());
 
 ```rust
 pub fn slub_initialized() -> bool
+pub fn kmalloc_stats() -> KmallocStats
 ```
+
+`kmalloc_stats()` 聚合所有 `kmalloc-*` 缓存与大块分配（`alloc_pages` 路径）状态，供 `mm status` 使用。
 
 ## 数据结构
 

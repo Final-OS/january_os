@@ -220,14 +220,14 @@ fn handle_kernel_fault(ctx: &FaultContext) -> FaultResult {
     let address = ctx.address;
 
     // vmalloc 区域
-    if address >= crate::mm::vmalloc::VMALLOC_START && address < crate::mm::vmalloc::VMALLOC_END {
+    if crate::mm::is_vmalloc_addr(address) {
         // vmalloc 区域的页错误通常是 bug
         return FaultResult::KernelOops;
     }
 
     // 直接映射区域
     let direct_map_start = ctx.direct_map_offset;
-    let direct_map_end = direct_map_start + 0x100_0000_0000; // 1TB
+    let direct_map_end = crate::mm::direct_map_end();
     if address >= direct_map_start && address < direct_map_end {
         // 直接映射应该始终存在
         return FaultResult::KernelOops;

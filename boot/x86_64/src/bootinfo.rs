@@ -115,6 +115,32 @@ pub struct DiskInfo {
 
 /// 主引导信息结构体 - 传递给内核的所有信息
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct KernelVaLayout {
+    /// 虚拟地址有效位宽（48 或 57）
+    pub va_bits: u8,
+    /// 页表层级（4 或 5）
+    pub page_levels: u8,
+    pub _reserved0: [u8; 6],
+    /// 直接映射窗口 [start, end)
+    pub direct_map_start: u64,
+    pub direct_map_end: u64,
+    /// vmalloc 窗口 [start, end)
+    pub vmalloc_start: u64,
+    pub vmalloc_end: u64,
+    /// vmemmap 窗口 [start, end)
+    pub vmemmap_start: u64,
+    pub vmemmap_end: u64,
+    /// modules 窗口 [start, end)
+    pub modules_start: u64,
+    pub modules_end: u64,
+    /// fixmap 窗口 [start, end)
+    pub fixmap_start: u64,
+    pub fixmap_end: u64,
+}
+
+/// 主引导信息结构体 - 传递给内核的所有信息
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BootInfo {
     /// 魔数，用于验证结构体有效性 (应为 0x4A414E5F4F530000 "JAN_OS\0\0")
@@ -178,6 +204,8 @@ pub struct BootInfo {
     pub pml4_phys_addr: u64,
     /// 直接映射区偏移
     pub direct_map_offset: u64,
+    /// 运行时内核虚拟地址布局
+    pub kernel_layout: KernelVaLayout,
 
     // ========== 命令行 ==========
     /// 命令行字符串地址（虚拟地址，通过直接映射）
@@ -185,18 +213,20 @@ pub struct BootInfo {
     /// 命令行长度
     pub cmdline_len: u32,
     pub _cmdline_reserved: u32,
+    /// 根页表物理地址（v4+，4-level 为 PML4，5-level 为 PML5）
+    pub root_table_phys_addr: u64,
 }
 
 /// BootInfo 魔数: "JAN_OS\0\0" 的 ASCII 值
 pub const BOOTINFO_MAGIC: u64 = 0x4A414E5F4F530000;
 /// BootInfo 版本
-pub const BOOTINFO_VERSION: u32 = 2;
+pub const BOOTINFO_VERSION: u32 = 4;
 /// 内核加载的物理地址
 pub const KERNEL_PHYS_ADDR: u64 = 0x100000;
 /// 内核运行的虚拟地址（高半部分）
 pub const KERNEL_VIRT_ADDR: u64 = 0xFFFF_8000_0010_0000;
 /// 直接映射区偏移（物理地址 + 此偏移 = 虚拟地址）
-pub const DIRECT_MAP_OFFSET: u64 = 0xFFFF_8800_0000_0000;
+pub const DIRECT_MAP_OFFSET: u64 = crate::cfg::DIRECT_MAP_OFFSET;
 /// 最大磁盘数
 pub const MAX_DISKS: usize = 32;
 /// 最大内存区域数

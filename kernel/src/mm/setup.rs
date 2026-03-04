@@ -313,7 +313,7 @@ pub fn memblock_used_memory() -> u64 {
 /// 物理地址转虚拟地址（通过直接映射）
 #[inline]
 fn phys_to_virt(phys: u64) -> u64 {
-    phys + crate::config::DIRECT_MAP_OFFSET
+    crate::mm::phys_to_virt(phys)
 }
 
 #[inline]

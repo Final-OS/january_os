@@ -11,7 +11,7 @@ pub use paging::{
     PTE_PRESENT, PTE_WRITABLE, PTE_USER, PTE_WRITE_THROUGH,
     PTE_NO_CACHE, PTE_ACCESSED, PTE_DIRTY, PTE_HUGE,
     PTE_GLOBAL, PTE_NO_EXECUTE, PTE_ADDR_MASK,
-    pml4_index, pdpt_index, pd_index, pt_index, page_offset,
+    pml5_index, pml4_index, pdpt_index, pd_index, pt_index, page_offset, level_index,
 };
 
 pub use tlb::{

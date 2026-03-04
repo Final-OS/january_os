@@ -23,6 +23,7 @@ Return a concise Intel Report with these sections:
 - Module Map: boot/kernel/tools/docs ownership and arch split.
 - Change Impact: touched paths, likely subsystems, runtime risk points.
 - Docs+Skills Coverage: what docs/skills files already cover the area and what is missing.
+- Minimum-Set Debt Check: whether any minimal implementation is recorded in `docs/progress/tech-debt.md` with repayment version.
 - Action Plan: concrete next edits and verification commands.
 
 ## Workflow
@@ -40,6 +41,7 @@ Always inspect at least:
 
 3. Build a scope-specific subsystem map.
 Use `references/source-map.md` and `references/intel-checklist.md` to connect changed paths to subsystem responsibilities.
+Identify any minimum-scope implementation in current scope and verify debt tracking + repayment target in `docs/progress/tech-debt.md`.
 
 4. Run minimum verification signal.
 If code/build-related context changed, run at least one relevant command (`make build`, `make config`, or docs build for docs-only changes).
@@ -53,6 +55,7 @@ If there are edits, hand off to `$january-os-docs-skills-sync`.
 - If info is missing, mark uncertainty explicitly and propose the next file/command to resolve it.
 - Keep the report structured and actionable; avoid narrative-only summaries.
 - Flag any API/behavior change that is not reflected in `docs/api/**`.
+- Flag any minimum-scope implementation that is not tracked in `docs/progress/tech-debt.md` with a later-version repayment target.
 - Flag any architecture-specific logic implemented outside `boot/<arch>/` or `kernel/src/**/arch/<arch>/`, and require either relocation or explicit temporary rationale.
 
 ## Resources

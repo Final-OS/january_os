@@ -814,6 +814,5 @@ const fn align_down(addr: u64, align: u64) -> u64 {
 /// 物理地址转虚拟地址（通过直接映射）
 #[inline]
 fn phys_to_virt(phys: u64) -> u64 {
-    // 使用配置的直接映射偏移
-    phys + crate::config::DIRECT_MAP_OFFSET
+    crate::mm::phys_to_virt(phys)
 }

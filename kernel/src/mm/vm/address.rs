@@ -2,7 +2,7 @@
 //!
 //! 提供类型安全的地址操作。
 
-use super::layout::{DIRECT_MAP_OFFSET, PAGE_SIZE};
+use super::layout::PAGE_SIZE;
 use core::fmt;
 
 // =============================================================================
@@ -60,8 +60,8 @@ impl PhysAddr {
 
     /// 转换为直接映射区的虚拟地址
     #[inline]
-    pub const fn to_virt(&self) -> VirtAddr {
-        VirtAddr::new(self.0 + DIRECT_MAP_OFFSET)
+    pub fn to_virt(&self) -> VirtAddr {
+        VirtAddr::new(crate::mm::phys_to_virt(self.0))
     }
 
     /// 地址加法
@@ -113,18 +113,41 @@ impl From<PhysAddr> for u64 {
 pub struct VirtAddr(u64);
 
 impl VirtAddr {
+    #[inline]
+    const fn canonicalize_48(addr: u64) -> u64 {
+        if addr & (1 << 47) != 0 {
+            addr | 0xFFFF_0000_0000_0000
+        } else {
+            addr & 0x0000_FFFF_FFFF_FFFF
+        }
+    }
+
+    #[inline]
+    fn canonicalize_runtime(addr: u64) -> u64 {
+        let va_bits = crate::mm::va_bits();
+        if va_bits == 57 {
+            if addr & (1 << 56) != 0 {
+                addr | (!0u64 << 57)
+            } else {
+                addr & ((1u64 << 57) - 1)
+            }
+        } else {
+            Self::canonicalize_48(addr)
+        }
+    }
+
     /// 创建新的虚拟地址
     ///
     /// x86_64 要求虚拟地址符合规范形式（canonical form）。
     #[inline]
     pub const fn new(addr: u64) -> Self {
-        // 规范化地址：如果第 47 位是 1，则高位应全为 1
-        let canonical = if addr & (1 << 47) != 0 {
-            addr | 0xFFFF_0000_0000_0000
-        } else {
-            addr & 0x0000_FFFF_FFFF_FFFF
-        };
-        Self(canonical)
+        Self(Self::canonicalize_48(addr))
+    }
+
+    /// 按当前运行时页表模式（48/57-bit）创建虚拟地址。
+    #[inline]
+    pub fn new_runtime(addr: u64) -> Self {
+        Self(Self::canonicalize_runtime(addr))
     }
 
     /// 创建新的虚拟地址（不检查）
@@ -170,8 +193,8 @@ impl VirtAddr {
 
     /// 向上对齐到页边界
     #[inline]
-    pub const fn page_align_up(&self) -> Self {
-        Self::new((self.0 + PAGE_SIZE - 1) & !(PAGE_SIZE - 1))
+    pub fn page_align_up(&self) -> Self {
+        Self::new_runtime((self.0 + PAGE_SIZE - 1) & !(PAGE_SIZE - 1))
     }
 
     /// 获取页内偏移
@@ -182,14 +205,14 @@ impl VirtAddr {
 
     /// 地址加法
     #[inline]
-    pub const fn add(&self, offset: u64) -> Self {
-        Self::new(self.0 + offset)
+    pub fn add(&self, offset: u64) -> Self {
+        Self::new_runtime(self.0 + offset)
     }
 
     /// 地址减法
     #[inline]
-    pub const fn sub(&self, offset: u64) -> Self {
-        Self::new(self.0 - offset)
+    pub fn sub(&self, offset: u64) -> Self {
+        Self::new_runtime(self.0 - offset)
     }
 
     // =========================================================================
@@ -235,7 +258,7 @@ impl fmt::Display for VirtAddr {
 
 impl From<u64> for VirtAddr {
     fn from(addr: u64) -> Self {
-        Self::new(addr)
+        Self::new_runtime(addr)
     }
 }
 
@@ -247,13 +270,13 @@ impl From<VirtAddr> for u64 {
 
 impl<T> From<*const T> for VirtAddr {
     fn from(ptr: *const T) -> Self {
-        Self::new(ptr as u64)
+        Self::new_runtime(ptr as u64)
     }
 }
 
 impl<T> From<*mut T> for VirtAddr {
     fn from(ptr: *mut T) -> Self {
-        Self::new(ptr as u64)
+        Self::new_runtime(ptr as u64)
     }
 }
 

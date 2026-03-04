@@ -22,7 +22,8 @@ smp = 4
 # CPU 型号:
 # 留空使用 QEMU 默认；"host" 需要 KVM/硬件支持。
 # 常见候选: host, qemu64, Skylake-Client, EPYC。
-cpu = ""
+# 5-level paging (LA57) 探测建议优先使用 host 透传。
+cpu = "host"
 # KVM 加速: "auto" / "on" / "off"
 # "auto" 会在检测到 /dev/kvm 时启用。
 kvm = "auto"
@@ -72,12 +73,29 @@ phys_base = "0x0100000"
 # 直接映射区偏移:
 # 线性映射 = phys + direct_map_offset，用于快速物理内存访问。
 direct_map_offset = "0xFFFF880000000000"
+# vmalloc 虚拟区间（闭区间）:
+# direct-map 会按需扩展，但上限不超过 vmalloc_start，避免地址空间重叠。
+vmalloc_start = "0xFFFFC90000000000"
+vmalloc_end = "0xFFFFE8FFFFFFFFFF"
 # 内核堆初始大小 (字节):
 # 仅为启动时的最小堆，后续可按需扩展。
 heap_init_size = 16777216   # 16 MB
 # 内核栈大小 (字节/每CPU):
 # 栈过小易溢出，过大则浪费内存。
 stack_size = 32768          # 32 KB
+
+[kernel.layout]
+# 内核虚拟地址布局策略:
+# - linux_full: Linux 风格窗口布局（direct-map/vmalloc/vmemmap/modules/fixmap）
+profile = "linux_full"
+# 虚拟地址模式:
+# - la57_prefer: 优先 5-level，当前若无法启用则自动回退到 4-level
+va_mode = "la57_prefer"
+# LA57 回退策略:
+# - 4level: 运行时自动回退到 4-level 并继续启动
+la57_fallback = "4level"
+# KASLR 策略（当前仅支持 off）
+kaslr = "off"
 
 # ==============================================================================
 # 用户空间布局配置

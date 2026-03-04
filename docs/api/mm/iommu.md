@@ -224,6 +224,8 @@ swiotlb_size = 67108864  # 64 MB
 pub const SWIOTLB_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 ```
 
+当前实现中，SWIOTLB bounce buffer 通过 Buddy `GFP_DMA32` 分配低端物理内存。
+
 **工作原理**：
 ```
 设备要访问的物理地址超出 DMA 能力范围

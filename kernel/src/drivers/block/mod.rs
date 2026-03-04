@@ -3,7 +3,19 @@
 use alloc::sync::Arc;
 use core::fmt;
 
+pub mod gpt;
+pub mod mbr;
+pub mod partition;
 pub mod virtio_blk;
+pub use partition::{
+    Partition,
+    PartitionBlockDevice,
+    PartitionError,
+    PartitionTableKind,
+    PartitionType,
+    PartitionedDevice,
+    discover_partitions,
+};
 
 /// Block device error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

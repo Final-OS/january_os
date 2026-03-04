@@ -125,7 +125,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
 
     // 调用 mm 模块的页错误处理。
     // 优先解析当前任务的地址空间，缺失时回退到 init_mm。
-    let direct_map = crate::config::DIRECT_MAP_OFFSET;
+    let direct_map = crate::mm::direct_map_offset();
     let mm_ptr: *mut crate::mm::Mm = crate::task::current_mm_ptr();
     let mut ctx = FaultContext::new(fault_addr, error_code, mm_ptr, direct_map);
     let result = handle_page_fault(&mut ctx);

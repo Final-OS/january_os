@@ -498,11 +498,42 @@ fn execute_mm_command(args: &[&str]) {
                 .map(|z| z.nr_free_pages())
                 .sum();
             let fault_stats = mm::get_fault_stats();
+            let heap = mm::heap::heap_stats();
+            let kmalloc = mm::slub::kmalloc_stats();
+            let layout = mm::snapshot();
             kprintln!("Memory Status:");
             kprintln!("  Free pages:  {}", total_free);
             kprintln!(
-                "  Heap size:   {} MB",
-                config::KERNEL_HEAP_INIT_SIZE / 1024 / 1024
+                "  layout:      direct-map=[{:#x},{:#x}) vmalloc=[{:#x},{:#x}) va_bits={} levels={}",
+                layout.direct_map_start,
+                layout.direct_map_end,
+                layout.vmalloc_start,
+                layout.vmalloc_end,
+                layout.va_bits,
+                layout.page_levels
+            );
+            kprintln!(
+                "  kmalloc:     init={} active_caches={} objs={} (~{} KiB) slabs={} ({} KiB)",
+                kmalloc.initialized,
+                kmalloc.active_caches,
+                kmalloc.total_allocated_objects,
+                kmalloc.total_allocated_bytes / 1024,
+                kmalloc.total_slabs,
+                kmalloc.total_slab_bytes / 1024
+            );
+            kprintln!(
+                "  kmalloc big: allocs={} pages={}",
+                kmalloc.large_allocations,
+                kmalloc.large_alloc_pages
+            );
+            kprintln!(
+                "  heap(fallback): init={} total={} MiB used={} KiB free={} KiB segs={} live={}",
+                heap.initialized,
+                heap.total_size / 1024 / 1024,
+                heap.used_size / 1024,
+                heap.free_size / 1024,
+                heap.segments,
+                heap.live_allocations
             );
             kprintln!(
                 "  Faults:      total={} minor={} major={} cow={} stack_grow={}",

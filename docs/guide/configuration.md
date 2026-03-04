@@ -94,18 +94,35 @@ batch_size = 16
 [kernel]
 phys_base = "0x100000"
 direct_map_offset = "0xFFFF880000000000"
+vmalloc_start = "0xFFFFC90000000000"
+vmalloc_end = "0xFFFFE8FFFFFFFFFF"
 heap_init_size = 16777216   # 16 MB
 stack_size = 32768          # 32 KB
+
+[kernel.layout]
+profile = "linux_full"
+va_mode = "la57_prefer"
+la57_fallback = "4level"
+kaslr = "off"
 ```
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
 | `phys_base` | 内核物理基址 | `"0x100000"` (1MB) |
 | `direct_map_offset` | 直接映射区偏移 | `"0xFFFF880000000000"` |
+| `vmalloc_start` | vmalloc 区域起始地址 | `"0xFFFFC90000000000"` |
+| `vmalloc_end` | vmalloc 区域结束地址 | `"0xFFFFE8FFFFFFFFFF"` |
 | `heap_init_size` | 初始堆大小 | `16777216` (16MB) |
 | `stack_size` | 每栈大小 | `32768` (32KB) |
 
-**地址布局**：直接映射 = 物理地址 + direct_map_offset
+**地址布局**：直接映射 = 物理地址 + direct_map_offset，且上限需小于 vmalloc_start
+
+| 选项 | 说明 | 默认值 |
+|------|------|--------|
+| `layout.profile` | 内核布局策略 | `"linux_full"` |
+| `layout.va_mode` | VA 模式策略 | `"la57_prefer"` |
+| `layout.la57_fallback` | LA57 回退策略 | `"4level"` |
+| `layout.kaslr` | KASLR 开关 | `"off"` |
 
 ---
 

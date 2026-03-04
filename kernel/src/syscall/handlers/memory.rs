@@ -44,7 +44,7 @@ fn mprotect_flags_from_prot(old: mm::VmFlags, prot: u32) -> mm::VmFlags {
 }
 
 fn apply_pte_flags_range(pgd: u64, start: u64, end: u64, pte_flags: u64) -> Result<(), i32> {
-    let pt_mgr = unsafe { mm::PageTableManager::new(pgd, mm::DIRECT_MAP_OFFSET) };
+    let pt_mgr = unsafe { mm::PageTableManager::new(pgd, mm::direct_map_offset()) };
     let mut cursor = start;
     while cursor < end {
         if let Some(phys) = pt_mgr.translate_addr(cursor) {
@@ -141,7 +141,7 @@ fn mmap_select_addr(
     let map_fixed = (flags & mm::mmap_flags::MAP_FIXED) != 0;
     let mm_ptr = task::current_mm_ptr();
     let mm_state = unsafe { &mut *mm_ptr };
-    let pt_mgr = unsafe { mm::PageTableManager::new(mm_state.pgd, mm::DIRECT_MAP_OFFSET) };
+    let pt_mgr = unsafe { mm::PageTableManager::new(mm_state.pgd, mm::direct_map_offset()) };
     if map_fixed {
         let start = req_addr as u64;
         if (start & (mm::PAGE_SIZE - 1)) != 0 {
@@ -208,7 +208,7 @@ fn range_unmapped_in_page_table(pt_mgr: &mm::PageTableManager, start: u64, end: 
 }
 
 unsafe fn unmap_and_release_pages(start: u64, end: u64, pgd: u64) {
-    let pt_mgr = mm::PageTableManager::new(pgd, mm::DIRECT_MAP_OFFSET);
+    let pt_mgr = mm::PageTableManager::new(pgd, mm::direct_map_offset());
 
     let mut cursor = start;
     while cursor < end {

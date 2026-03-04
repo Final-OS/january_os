@@ -14,7 +14,7 @@ pub struct AcpiS5State {
 
 /// Parse DSDT to find _S5_ package
 pub unsafe fn parse_s5(dsdt_addr: u64, dsdt_len: usize) -> Option<AcpiS5State> {
-    let dsdt_ptr = (dsdt_addr + crate::config::DIRECT_MAP_OFFSET) as *const u8;
+    let dsdt_ptr = (dsdt_addr + crate::mm::direct_map_offset()) as *const u8;
     let dsdt_data = core::slice::from_raw_parts(dsdt_ptr, dsdt_len);
 
     // Scan for "_S5_" signature

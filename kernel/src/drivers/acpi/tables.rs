@@ -33,7 +33,7 @@ pub struct Rsdp {
 impl Rsdp {
     /// 从物理地址读取并验证 RSDP
     pub unsafe fn from_addr(phys_addr: u64) -> Result<&'static Self, &'static str> {
-        let virt_addr = phys_addr + crate::config::DIRECT_MAP_OFFSET;
+        let virt_addr = phys_addr + crate::mm::direct_map_offset();
         let rsdp = &*(virt_addr as *const Rsdp);
 
         // 验证签名

@@ -55,6 +55,7 @@ Return a concise architecture report with these sections:
 - Draw at least one architecture diagram in ASCII.
 - Tie plan stages to existing version plan (`v0.2`, `v0.3`, ...).
 - Keep plan executable with concrete acceptance criteria.
+- If any stage uses a minimum-scope implementation, add a matching debt item in `docs/progress/tech-debt.md` with full-target repayment version and closure criteria.
 
 4. If changes are written to docs/skills, sync site navigation.
 - Update `docs/.vitepress/config.ts` if new docs page added.
@@ -72,6 +73,7 @@ Return a concise architecture report with these sections:
 - Use the fixed architecture baseline: modular monolithic kernel + componentized OS.
 - Keep target architecture baseline explicit: x86_64 + aarch64 + riscv64.
 - Include virtualization split: guest support first, host capabilities staged.
+- Treat every minimum-scope implementation as mandatory technical debt and plan a later-version repayment to full functionality.
 - Keep architecture-specific placement rules:
   - `boot/<arch>/`
   - `kernel/src/**/arch/<arch>/`

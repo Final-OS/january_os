@@ -32,7 +32,10 @@ find . -maxdepth 2 -type d \
 echo
 
 echo "== docs pages =="
-find docs -type f -name '*.md' | sort
+find docs \
+  -path 'docs/node_modules' -prune -o \
+  -type f -name '*.md' -print \
+  | sort
 echo
 
 echo "== skills pages =="

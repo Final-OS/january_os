@@ -37,6 +37,7 @@ cd docs && pnpm build
 - Module Map
 - Change Impact
 - Docs+Skills Coverage
+- Minimum-Set Debt Check
 - Action Plan
 
 ## Minimum Quality Bar
@@ -51,3 +52,4 @@ cd docs && pnpm build
 - Explicitly check whether tests/demo scenarios are functionally complete (main path, key branches, fail/recovery paths) with explicit assertions.
 - Explicitly check whether tests/demo logs are step-level and include action/input/expected/actual plus failure location.
 - Explicitly check whether tests/demo include invalid input, unexpected input, and boundary-condition cases.
+- Explicitly check whether every minimum-scope implementation is tracked in `docs/progress/tech-debt.md` with full-target repayment version and closure criteria.

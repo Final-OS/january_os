@@ -59,26 +59,35 @@ pub struct Swiotlb {
 }
 
 impl Swiotlb {
+    /// 在低端内存(<4GB)分配连续弹跳缓冲区。
+    ///
+    /// Buddy 最大块受 `MAX_ORDER` 限制，这里按可用 order 从大到小回退。
+    fn alloc_lowmem_buffer(requested_slots: usize) -> (u64, usize) {
+        if requested_slots == 0 {
+            return (0, 0);
+        }
+
+        let max_order = crate::mm::MAX_ORDER.saturating_sub(1);
+        let wanted_pages = requested_slots.next_power_of_two();
+        let wanted_order = (wanted_pages.trailing_zeros() as usize).min(max_order);
+
+        for order in (0..=wanted_order).rev() {
+            if let Some(page) = crate::mm::alloc_pages(order, crate::mm::GFP_DMA32) {
+                let pages = 1usize << order;
+                let phys = crate::mm::page_to_pfn(page) * PAGE_SIZE;
+                return (phys, pages.min(requested_slots));
+            }
+        }
+
+        (0, 0)
+    }
+
     /// 创建新的 SWIOTLB
     pub fn new(size: usize, direct_map_offset: u64) -> Self {
         // 分配弹跳缓冲区
         let nr_pages = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
         let requested_slots = nr_pages.min(MAX_SLOTS);
-        let alloc_size = requested_slots * PAGE_SIZE as usize;
-
-        // 从低端内存分配 (< 4GB)
-        let buffer_phys = if alloc_size == 0 {
-            0
-        } else {
-            crate::mm::page::memblock::memblock_alloc_range(
-                alloc_size as u64,
-                PAGE_SIZE,
-                0,
-                0x1_0000_0000, // 4GB 以下
-            )
-        };
-
-        let nr_slots = if buffer_phys == 0 { 0 } else { requested_slots };
+        let (buffer_phys, nr_slots) = Self::alloc_lowmem_buffer(requested_slots);
         let buffer_size = nr_slots * PAGE_SIZE as usize;
 
         Self {

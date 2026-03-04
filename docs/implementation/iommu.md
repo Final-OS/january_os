@@ -92,6 +92,10 @@ pub fn init(info: &DmarInfo) -> Result<(), IommuError>
 4. 设置 fault event
 5. 启用 IOMMU
 
+实现说明（当前代码）：
+- VT-d Root/Context/二级页表页由 Buddy 分配（`GFP_KERNEL_ZERO`）。
+- 不再在 IOMMU 初始化阶段使用 memblock 晚期分配。
+
 ```rust
 // 映射寄存器
 let mmio = unsafe { &*(register_address as *const VtdRegisters) };
@@ -116,6 +120,10 @@ mmio.global_command.update(|cmd| {
 ## SWIOTLB
 
 当硬件 IOMMU 不可用时，使用软件 bounce buffer。
+
+实现说明（当前代码）：
+- SWIOTLB 弹跳缓冲区由 Buddy 分配，使用 `GFP_DMA32` 约束在低 4GB。
+- 在 Buddy 连续块受限时会降级到较小的可用连续缓冲区。
 
 ### 初始化
 

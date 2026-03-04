@@ -1,11 +1,23 @@
 //! 引导页表与内存映射转换
 
+use core::arch::{asm, global_asm};
+
 use uefi::boot::MemoryType;
 
-use crate::bootinfo::{KERNEL_PHYS_ADDR, MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionType};
+use crate::bootinfo::{
+    DIRECT_MAP_OFFSET, KERNEL_PHYS_ADDR, KERNEL_VIRT_ADDR, MAX_MEMORY_REGIONS, MemoryRegion,
+    MemoryRegionType,
+};
+use crate::cfg::{KERNEL_LA57_FALLBACK, KERNEL_VA_MODE, VMALLOC_START};
 
 /// 页大小 4KB
 pub const PAGE_SIZE: u64 = 4096;
+/// 1 GiB
+const ONE_GIB: u64 = 0x4000_0000;
+/// 页表条目数量
+const ENTRIES_PER_TABLE: usize = 512;
+/// 页表地址掩码
+const PTE_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 /// 页表项标志：存在
 const PTE_PRESENT: u64 = 1 << 0;
 /// 页表项标志：可写
@@ -14,6 +26,42 @@ const PTE_WRITABLE: u64 = 1 << 1;
 const PTE_HUGE: u64 = 1 << 7;
 /// 页表项标志：全局
 const PTE_GLOBAL: u64 = 1 << 8;
+/// CR4.LA57
+const CR4_LA57: u64 = 1 << 12;
+
+#[derive(Clone, Copy)]
+pub struct PagingModeProbe {
+    pub cpuid_7_0_ecx: u32,
+    pub cr4: u64,
+    pub la57_supported: bool,
+    pub la57_active: bool,
+    pub va_mode_la57_prefer: bool,
+    pub fallback_4level: bool,
+    pub transition_requested: bool,
+    pub selected_page_levels: u8,
+    pub selected_va_bits: u8,
+}
+
+/// 运行时页表布局输出
+#[derive(Clone, Copy)]
+pub struct PageTableSetupResult {
+    /// CR3 应加载的根页表物理地址
+    pub root_phys_addr: u64,
+    /// 兼容字段（4-level 下等于 root；5-level 下为内核高半区对应 PML4）
+    pub pml4_compat_phys: u64,
+    /// 实际页表层级（4 或 5）
+    pub page_levels: u8,
+    /// 规范地址位宽（48 或 57）
+    pub va_bits: u8,
+    /// direct-map 虚拟窗口结束地址（exclusive）
+    pub direct_map_window_end: u64,
+    /// 若非 0，表示应在 handoff 阶段尝试 4->5 级切换（值为 5-level root）
+    pub la57_transition_root_phys: u64,
+    /// 5-level 兼容 PML4（仅在 `la57_transition_root_phys != 0` 时有效）
+    pub la57_transition_pml4_compat_phys: u64,
+    /// 4-level fallback root（仅在 `la57_transition_root_phys != 0` 时有效）
+    pub fallback_root_phys: u64,
+}
 
 /// 页表分配器状态
 struct PageTableAllocator {
@@ -34,88 +82,390 @@ impl PageTableAllocator {
     }
 }
 
-/// 设置内核页表
+#[inline]
+const fn level_index(virt: u64, level: u8) -> usize {
+    let shift = 12 + (level - 1) * 9;
+    ((virt >> shift) & 0x1ff) as usize
+}
+
+#[inline]
+unsafe fn table_entry_mut(table_phys: u64, idx: usize) -> *mut u64 {
+    unsafe { (table_phys as *mut u64).add(idx) }
+}
+
+#[inline]
+unsafe fn ensure_next_table(
+    allocator: &mut PageTableAllocator,
+    table_phys: u64,
+    idx: usize,
+) -> u64 {
+    let entry_ptr = unsafe { table_entry_mut(table_phys, idx) };
+    let entry = unsafe { *entry_ptr };
+    if entry & PTE_PRESENT != 0 {
+        return entry & PTE_ADDR_MASK;
+    }
+
+    let child = unsafe { allocator.alloc_page() };
+    unsafe { *entry_ptr = child | PTE_PRESENT | PTE_WRITABLE };
+    child
+}
+
+unsafe fn map_1g_page(
+    allocator: &mut PageTableAllocator,
+    root_phys: u64,
+    page_levels: u8,
+    virt: u64,
+    phys: u64,
+) {
+    let mut table_phys = root_phys;
+    for level in (4..=page_levels).rev() {
+        let idx = level_index(virt, level);
+        table_phys = unsafe { ensure_next_table(allocator, table_phys, idx) };
+    }
+
+    let pdpt_idx = level_index(virt, 3);
+    let pdpt_entry = unsafe { table_entry_mut(table_phys, pdpt_idx) };
+    unsafe { *pdpt_entry = (phys & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | PTE_GLOBAL };
+}
+
+unsafe fn map_4k_page(
+    allocator: &mut PageTableAllocator,
+    root_phys: u64,
+    page_levels: u8,
+    virt: u64,
+    phys: u64,
+    flags: u64,
+) {
+    let mut table_phys = root_phys;
+    for level in (2..=page_levels).rev() {
+        let idx = level_index(virt, level);
+        table_phys = unsafe { ensure_next_table(allocator, table_phys, idx) };
+    }
+
+    let pt_idx = level_index(virt, 1);
+    let pte = unsafe { table_entry_mut(table_phys, pt_idx) };
+    unsafe { *pte = (phys & PTE_ADDR_MASK) | flags };
+}
+
+unsafe fn kernel_pml4_from_root(root_phys: u64, page_levels: u8) -> u64 {
+    if page_levels == 4 {
+        return root_phys;
+    }
+    let pml5_idx = level_index(KERNEL_VIRT_ADDR, 5);
+    let pml5e = unsafe { *(root_phys as *const u64).add(pml5_idx) };
+    if pml5e & PTE_PRESENT == 0 {
+        0
+    } else {
+        pml5e & PTE_ADDR_MASK
+    }
+}
+
+unsafe fn setup_page_tables_nlevel(
+    allocator: &mut PageTableAllocator,
+    kernel_size: u64,
+    max_phys_addr: u64,
+    page_levels: u8,
+    va_bits: u8,
+) -> PageTableSetupResult {
+    let root = unsafe { allocator.alloc_page() };
+
+    // 1) 恒等映射前 4GiB（4 x 1GiB）
+    for i in 0..4u64 {
+        let addr = i * ONE_GIB;
+        unsafe { map_1g_page(allocator, root, page_levels, addr, addr) };
+    }
+
+    // 2) 内核高半区 bootstrap 映射：
+    //    - 先把 kernel base 对齐到 2MiB 窗口并 identity-map 前 2MiB；
+    //    - 再覆盖内核真实文件页映射。
+    let kernel_window_base = KERNEL_VIRT_ADDR & !((2 * 1024 * 1024) - 1);
+    for i in 0..ENTRIES_PER_TABLE as u64 {
+        let virt = kernel_window_base + i * PAGE_SIZE;
+        let phys = i * PAGE_SIZE;
+        unsafe {
+            map_4k_page(
+                allocator,
+                root,
+                page_levels,
+                virt,
+                phys,
+                PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL,
+            )
+        };
+    }
+
+    let kernel_pages = (kernel_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    for i in 0..kernel_pages {
+        let virt = KERNEL_VIRT_ADDR + i * PAGE_SIZE;
+        let phys = KERNEL_PHYS_ADDR + i * PAGE_SIZE;
+        unsafe {
+            map_4k_page(
+                allocator,
+                root,
+                page_levels,
+                virt,
+                phys,
+                PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL,
+            )
+        };
+    }
+
+    // 3) 直接映射区（1GiB huge pages）
+    let direct_map_max_span = VMALLOC_START.saturating_sub(DIRECT_MAP_OFFSET);
+    let max_to_map = max_phys_addr
+        .max(4 * 1024 * 1024 * 1024)
+        .min(direct_map_max_span);
+    let gb_pages = (max_to_map + ONE_GIB - 1) / ONE_GIB;
+    for i in 0..gb_pages {
+        let phys = i * ONE_GIB;
+        let virt = DIRECT_MAP_OFFSET + phys;
+        unsafe { map_1g_page(allocator, root, page_levels, virt, phys) };
+    }
+
+    let pml4_compat_phys = unsafe { kernel_pml4_from_root(root, page_levels) };
+    PageTableSetupResult {
+        root_phys_addr: root,
+        pml4_compat_phys,
+        page_levels,
+        va_bits,
+        direct_map_window_end: VMALLOC_START,
+        la57_transition_root_phys: 0,
+        la57_transition_pml4_compat_phys: 0,
+        fallback_root_phys: 0,
+    }
+}
+
+unsafe fn setup_page_tables_4l(
+    allocator: &mut PageTableAllocator,
+    kernel_size: u64,
+    max_phys_addr: u64,
+) -> PageTableSetupResult {
+    unsafe { setup_page_tables_nlevel(allocator, kernel_size, max_phys_addr, 4, 48) }
+}
+
+unsafe fn setup_page_tables_5l(
+    allocator: &mut PageTableAllocator,
+    kernel_size: u64,
+    max_phys_addr: u64,
+) -> PageTableSetupResult {
+    unsafe { setup_page_tables_nlevel(allocator, kernel_size, max_phys_addr, 5, 57) }
+}
+
+#[inline]
+pub fn probe_paging_mode() -> PagingModeProbe {
+    let cpuid_leaf = core::arch::x86_64::__cpuid_count(7, 0);
+    let cpuid_7_0_ecx = cpuid_leaf.ecx;
+    let la57_supported = (cpuid_7_0_ecx & (1 << 16)) != 0;
+    let cr4 = read_cr4();
+    let la57_active = (cr4 & CR4_LA57) != 0;
+    let va_mode_la57_prefer = KERNEL_VA_MODE == "la57_prefer";
+    let fallback_4level = KERNEL_LA57_FALLBACK == "4level";
+    let transition_requested = va_mode_la57_prefer && la57_supported && !la57_active;
+
+    let (selected_page_levels, selected_va_bits) =
+        if va_mode_la57_prefer && la57_supported && la57_active {
+            (5, 57)
+        } else {
+            (4, 48)
+        };
+
+    PagingModeProbe {
+        cpuid_7_0_ecx,
+        cr4,
+        la57_supported,
+        la57_active,
+        va_mode_la57_prefer,
+        fallback_4level,
+        transition_requested,
+        selected_page_levels,
+        selected_va_bits,
+    }
+}
+
+/// 设置内核页表并选择 4-level / 5-level 路径。
 ///
-/// 创建以下映射：
-/// 1. 恒等映射: 前 4GB 物理地址 = 虚拟地址 (用于引导过渡)
-/// 2. 内核映射: 0xFFFF_8000_0010_0000 -> 0x100000 (内核代码)
-/// 3. 直接映射: 0xFFFF_8800_0000_0000 + phys -> phys (所有物理内存)
-///
-/// 返回 PML4 物理地址
+/// 说明：
+/// - 当前阶段仅在固件已处于 LA57 模式时启用 5-level；
+/// - 若配置为 `la57_prefer` 但当前未激活 LA57，则按回退策略继续 4-level 启动。
 pub unsafe fn setup_page_tables(
     kernel_size: u64,
     max_phys_addr: u64,
     page_table_start: u64,
-) -> u64 {
+) -> PageTableSetupResult {
+    let probe = probe_paging_mode();
     let mut allocator = PageTableAllocator::new(page_table_start);
-    unsafe {
-        let pml4 = allocator.alloc_page();
-        let pml4_table = pml4 as *mut u64;
 
-        // 1. 恒等映射前 4GB
-        let pdpt_identity = allocator.alloc_page();
-        *pml4_table.add(0) = pdpt_identity | PTE_PRESENT | PTE_WRITABLE;
-
-        let pdpt_identity_table = pdpt_identity as *mut u64;
-        for i in 0..4u64 {
-            *pdpt_identity_table.add(i as usize) =
-                (i * 0x4000_0000) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE;
+    if probe.va_mode_la57_prefer && probe.la57_supported {
+        if probe.la57_active {
+            return unsafe { setup_page_tables_5l(&mut allocator, kernel_size, max_phys_addr) };
         }
 
-        // 2. 内核高半部分映射
-        let pml4_index_kernel = 256usize;
+        if probe.fallback_4level {
+            let base4 =
+                unsafe { setup_page_tables_4l(&mut allocator, kernel_size, max_phys_addr) };
+            let plan5 =
+                unsafe { setup_page_tables_5l(&mut allocator, kernel_size, max_phys_addr) };
 
-        let pdpt_kernel = allocator.alloc_page();
-        *pml4_table.add(pml4_index_kernel) = pdpt_kernel | PTE_PRESENT | PTE_WRITABLE;
-
-        let pdpt_kernel_table = pdpt_kernel as *mut u64;
-
-        let pd_kernel = allocator.alloc_page();
-        *pdpt_kernel_table.add(0) = pd_kernel | PTE_PRESENT | PTE_WRITABLE;
-
-        let pd_kernel_table = pd_kernel as *mut u64;
-
-        let pt_kernel = allocator.alloc_page();
-        *pd_kernel_table.add(0) = pt_kernel | PTE_PRESENT | PTE_WRITABLE;
-
-        let pt_kernel_table = pt_kernel as *mut u64;
-
-        let kernel_pages = (kernel_size + PAGE_SIZE - 1) / PAGE_SIZE;
-        let kernel_start_pt_index = (KERNEL_PHYS_ADDR / PAGE_SIZE) as usize;
-
-        for i in 0..kernel_pages as usize {
-            let phys_addr = KERNEL_PHYS_ADDR + (i as u64) * PAGE_SIZE;
-            *pt_kernel_table.add(kernel_start_pt_index + i) =
-                phys_addr | PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
-        }
-
-        for i in 0..512usize {
-            if *pt_kernel_table.add(i) == 0 {
-                let phys_addr = (i as u64) * PAGE_SIZE;
-                *pt_kernel_table.add(i) = phys_addr | PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
+            if (plan5.root_phys_addr >> 32) != 0 {
+                return base4;
             }
+
+            return PageTableSetupResult {
+                root_phys_addr: base4.root_phys_addr,
+                pml4_compat_phys: base4.pml4_compat_phys,
+                page_levels: 4,
+                va_bits: 48,
+                direct_map_window_end: base4.direct_map_window_end,
+                la57_transition_root_phys: plan5.root_phys_addr,
+                la57_transition_pml4_compat_phys: plan5.pml4_compat_phys,
+                fallback_root_phys: base4.root_phys_addr,
+            };
         }
+    }
 
-        // 3. 直接映射区
-        let pml4_index_direct = 272usize;
+    // 当前固件未激活 LA57 或策略要求回退，统一走 4-level 稳定路径。
+    let _ = probe.fallback_4level;
+    unsafe { setup_page_tables_4l(&mut allocator, kernel_size, max_phys_addr) }
+}
 
-        let pdpt_direct = allocator.alloc_page();
-        *pml4_table.add(pml4_index_direct) = pdpt_direct | PTE_PRESENT | PTE_WRITABLE;
+#[inline]
+fn read_cr4() -> u64 {
+    let cr4: u64;
+    unsafe {
+        asm!("mov {}, cr4", out(reg) cr4, options(nostack, preserves_flags));
+    }
+    cr4
+}
 
-        let pdpt_direct_table = pdpt_direct as *mut u64;
+unsafe extern "C" {
+    fn boot_enter_kernel_with_la57_fallback(
+        la57_root_phys: u64,
+        fallback_root_phys: u64,
+        kernel_stack_top: u64,
+        boot_info_ptr: u64,
+        kernel_entry: u64,
+    ) -> !;
+}
 
-        let max_to_map = max_phys_addr.max(4 * 1024 * 1024 * 1024);
-        let gb_pages_needed = (max_to_map + 0x4000_0000 - 1) / 0x4000_0000;
-        let gb_pages = gb_pages_needed.min(512);
-
-        for i in 0..gb_pages {
-            *pdpt_direct_table.add(i as usize) =
-                (i * 0x4000_0000) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | PTE_GLOBAL;
-        }
-
-        pml4
+/// 启动期 4-level -> 5-level 切换 trampoline（失败即回退 4-level 并继续跳内核）。
+///
+/// # Safety
+/// 调用方必须保证参数地址可用且页表内容有效。
+pub unsafe fn enter_kernel_with_la57_fallback(
+    la57_root_phys: u64,
+    fallback_root_phys: u64,
+    kernel_stack_top: u64,
+    boot_info_ptr: u64,
+    kernel_entry: u64,
+) -> ! {
+    unsafe {
+        boot_enter_kernel_with_la57_fallback(
+            la57_root_phys,
+            fallback_root_phys,
+            kernel_stack_top,
+            boot_info_ptr,
+            kernel_entry,
+        )
     }
 }
+
+global_asm!(
+    r#"
+.section .text
+.global boot_enter_kernel_with_la57_fallback
+boot_enter_kernel_with_la57_fallback:
+    cli
+    mov r12, rdx
+    mov r13, rcx
+    mov r14, r8
+    mov r11, rsi
+    mov rax, rdi
+    shr rax, 32
+    jnz .Lfallback_4l
+    mov eax, 7
+    xor ecx, ecx
+    cpuid
+    bt ecx, 16
+    jnc .Lfallback_4l
+    mov rax, cr4
+    test rax, 0x1000
+    jnz .Lenter_5l_direct
+    mov ebx, edi
+    lea rax, [rip + .Lla57_gdt_desc]
+    lgdt [rax]
+    lea rax, [rip + .Lcompat32]
+    push 0x8
+    push rax
+    retfq
+
+.Lenter_5l_direct:
+    mov cr3, rdi
+    mov rsp, r12
+    mov rdi, r13
+    jmp r14
+
+.Lfallback_4l:
+    mov cr3, r11
+    mov rsp, r12
+    mov rdi, r13
+    jmp r14
+
+.code32
+.Lcompat32:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov fs, ax
+    mov gs, ax
+    mov eax, cr0
+    and eax, 0x7fffffff
+    mov cr0, eax
+
+    mov eax, cr4
+    or eax, (1 << 5) | (1 << 12)
+    mov cr4, eax
+
+    mov eax, ebx
+    mov cr3, eax
+    mov ecx, 0xC0000080
+    rdmsr
+    or eax, (1 << 8)
+    wrmsr
+
+    mov eax, cr0
+    or eax, 0x80000000
+    mov cr0, eax
+    push 0x18
+    push .Llong64
+    retf
+
+.code64
+.Llong64:
+    xor eax, eax
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov fs, ax
+    mov gs, ax
+
+    mov rsp, r12
+    mov rdi, r13
+    jmp r14
+
+.align 8
+.Lla57_gdt:
+    .quad 0x0000000000000000
+    .quad 0x00cf9a000000ffff
+    .quad 0x00cf92000000ffff
+    .quad 0x00209a0000000000
+.Lla57_gdt_end:
+
+.Lla57_gdt_desc:
+    .word .Lla57_gdt_end - .Lla57_gdt - 1
+    .quad .Lla57_gdt
+"#
+);
 
 pub unsafe fn copy_memory_map<'a>(
     mmap: impl Iterator<Item = &'a uefi::mem::memory_map::MemoryDescriptor>,

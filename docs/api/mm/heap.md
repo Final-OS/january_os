@@ -1,128 +1,52 @@
-# heap - 早期堆
+# heap - 内核堆与全局分配器
 
-简单的早期堆分配器，用于内核初始化阶段。
+本模块当前包含两层能力：
+
+1. `SimpleHeap`：分段线性堆（主要用于测试与回退路径）。
+2. `#[global_allocator]`：Rust `Box/Vec/String/Arc` 的全局分配入口，优先走 `kmalloc/kfree`（SLUB），无法使用时回退 `SimpleHeap`。
 
 ## API
 
-### 堆操作
-
 ```rust
-pub fn init_heap(start: usize, size: usize)
+pub unsafe fn init_heap(target_size: usize) -> usize
 pub fn heap_stats() -> HeapStats
 
 pub struct HeapStats {
+    pub initialized: bool,
+    pub segments: usize,
     pub total_size: usize,
     pub used_size: usize,
-    pub free_blocks: usize,
+    pub free_size: usize,
+    pub live_allocations: usize,
 }
 ```
 
-### 分配/释放
+测试接口：
 
 ```rust
-// 堆分配（内部使用）
-#[lang = "global_alloc"]
-fn alloc(layout: Layout) -> *mut u8
-
-#[lang = "dealloc"]
-fn dealloc(ptr: *mut u8, layout: Layout)
+pub unsafe fn heap_alloc_raw(layout: Layout) -> *mut u8
+pub unsafe fn heap_dealloc_raw(ptr: *mut u8, layout: Layout)
 ```
 
-## 实现原理
+## 当前实现要点
 
-**Block 结构**:
-```rust
-struct Block {
-    size: usize,
-    used: bool,
-    next: Option<&'static mut Block>,
-}
-```
+- `init_heap(target_size)` 会按目标容量预热多个段；每段来自 Buddy 页分配。
+- `SimpleHeap` 支持在运行时继续增长段（按需申请更多页）。
+- 全局分配器优先调用 `kmalloc`，释放调用 `kfree`。
+- 为满足 `Layout::align()`，全局分配器在返回地址前写入头部，释放时回收原始 `kmalloc` 指针。
+- 当 SLUB 尚未就绪时，全局分配器回退到 `SimpleHeap`。
+- `mm status` 会同时打印 `kmalloc` 统计（主路径）和 `heap(fallback)` 统计（回退路径）。
 
-**堆布局**:
-```
-堆起始地址
-    │
-    ├─ Block 1 (已用, size: 256)
-    ├─ Block 2 (空闲, size: 512)
-    ├─ Block 3 (已用, size: 128)
-    └─ ...
-```
+## 与其他子系统关系
 
-### 分配策略
+- `Buddy`：提供页级物理页来源。
+- `SLUB/kmalloc`：通用小对象分配主路径。
+- `heap`：回退与测试路径，保留统计能力。
+- `vmalloc`：虚拟连续映射，非 `Box/Vec` 默认路径。
 
-```rust
-fn alloc_heap(size: usize, align: usize) -> *mut u8 {
-    // 首次适配算法
-    let mut current = HEAP_START;
-    while current < HEAP_END {
-        let block = unsafe { &mut *(current as *mut Block) };
+## 配置
 
-        if !block.used && block.size >= size {
-            // 找到合适的块
-            if block.size >= size + BLOCK_MIN_SIZE {
-                // 分割块
-                split_block(block, size);
-            }
-            block.used = true;
-            return current as *mut u8 + BLOCK_HEADER_SIZE;
-        }
-
-        current += BLOCK_HEADER_SIZE + block.size;
-    }
-
-    null_mut()
-}
-```
-
-### 释放策略
-
-```rust
-fn dealloc_heap(ptr: *mut u8, size: usize) {
-    let block = unsafe {
-        &mut *(ptr as *mut Block).sub(1)
-    };
-
-    block.used = false;
-    coalesce_with_neighbors(block);
-}
-```
-
-## 堆配置
-
-```toml
-# os_cfg.toml
-[kernel]
-heap_init_size = 16777216   # 16 MB
-```
-
-## 使用场景
-
-### 初始化堆
-
-```rust
-use kernel::mm::init_heap;
-
-// 分配堆空间
-let heap_page = alloc_pages(8, GFP_KERNEL).unwrap();
-let heap_virt = direct_map + page_to_pfn(heap_page) * 4096;
-let heap_size = 256 * 4096;  // 1 MB
-
-init_heap(heap_virt as usize, heap_size);
-```
-
-### 堆大小
-
-```rust
-pub const HEAP_SIZE: usize = 16777216; // 16 MB
-```
-
-## 注意事项
-
-1. **早期使用**：仅在内存管理完全初始化前使用
-2. **性能**：首次适配算法，性能一般
-3. **碎片**：可能产生外碎片
-4. **替代**：后期使用 SLUB 替代
+`os_cfg.toml` 中通过 `kernel.heap_init_size` 控制预热容量（生成到 `KERNEL_HEAP_INIT_SIZE`）。
 
 ## 相关文档
 

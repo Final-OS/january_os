@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use crate::mm::page::page::{max_pfn, page_to_pfn, pfn_to_page, Page, PageFlags};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::page::buddy::{alloc_pages, free_pages};
-use crate::mm::vm::layout::{DIRECT_MAP_OFFSET, PAGE_SIZE};
+use crate::mm::vm::layout::PAGE_SIZE;
 use crate::sync::IrqSpinLock;
 
 // ============================================================================
@@ -26,6 +26,42 @@ pub const KMALLOC_NUM_CACHES: usize = KMALLOC_SHIFT_HIGH - KMALLOC_SHIFT_LOW + 1
 /// 每个 slab 最大对象数
 pub const MAX_OBJS_PER_SLAB: usize = 512;
 const KMEM_CACHE_MAGIC: u64 = 0x4a4f_534c_5542_4348;
+
+#[derive(Clone, Copy)]
+pub struct KmallocCacheStats {
+    pub name: &'static str,
+    pub object_size: usize,
+    pub allocated_objects: usize,
+    pub slabs: usize,
+    pub allocated_bytes: usize,
+    pub slab_bytes: usize,
+}
+
+impl KmallocCacheStats {
+    const fn empty() -> Self {
+        Self {
+            name: "",
+            object_size: 0,
+            allocated_objects: 0,
+            slabs: 0,
+            allocated_bytes: 0,
+            slab_bytes: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct KmallocStats {
+    pub initialized: bool,
+    pub active_caches: usize,
+    pub total_allocated_objects: usize,
+    pub total_allocated_bytes: usize,
+    pub total_slabs: usize,
+    pub total_slab_bytes: usize,
+    pub large_allocations: usize,
+    pub large_alloc_pages: usize,
+    pub caches: [KmallocCacheStats; KMALLOC_NUM_CACHES],
+}
 
 // ============================================================================
 // Slab 页管理
@@ -247,14 +283,57 @@ impl KmemCache {
         }
         self.partial.store(page as *mut _, Ordering::Relaxed);
     }
+
+    /// 从 partial 链表中摘除一个 slab 页
+    ///
+    /// 调用者必须持有 `self.lock`。
+    fn remove_from_partial(&self, target: *mut Page) -> bool {
+        let mut prev: *mut Page = core::ptr::null_mut();
+        let mut curr = self.partial.load(Ordering::Relaxed);
+
+        while !curr.is_null() {
+            unsafe {
+                let next = (*curr).lru.next as *mut Page;
+                if curr == target {
+                    if prev.is_null() {
+                        self.partial.store(next, Ordering::Relaxed);
+                    } else {
+                        (*prev).lru.next = next as *mut _;
+                    }
+                    (*curr).lru.next = core::ptr::null_mut();
+                    return true;
+                }
+                prev = curr;
+                curr = next;
+            }
+        }
+
+        false
+    }
+
+    /// 统计某个 slab 页当前空闲对象数。
+    ///
+    /// 调用者必须持有 `self.lock`，以保证 freelist 不被并发修改。
+    fn free_objects_in_page(&self, page: *mut Page) -> usize {
+        let mut count = 0usize;
+        unsafe {
+            let mut node = (*page).lru.prev as *mut FreePointer;
+            while !node.is_null() {
+                count = count.saturating_add(1);
+                if count > self.objects_per_slab {
+                    break;
+                }
+                node = (*node).next;
+            }
+        }
+        count
+    }
     
     /// 释放对象
     pub unsafe fn free(&self, ptr: *mut u8) {
         if ptr.is_null() || !self.initialized {
             return;
         }
-
-        let _guard = self.lock.lock();
 
         // 找到对象所属的页
         let addr = ptr as u64;
@@ -264,16 +343,35 @@ impl KmemCache {
         };
         let pfn = phys / PAGE_SIZE;
         let page = pfn_to_page(pfn);
-        
-        // 将对象添加回 freelist
-        let obj = ptr as *mut FreePointer;
-        
-        // 使用 page.lru.prev 作为 freelist 头指针
-        let free_head = (*page).lru.prev as *mut FreePointer;
-        (*obj).next = free_head;
-        (*page).lru.prev = obj as *mut _;
-        
-        self.allocated.fetch_sub(1, Ordering::Relaxed);
+
+        let mut release_slab = false;
+        {
+            let _guard = self.lock.lock();
+
+            // 将对象添加回 freelist
+            let obj = ptr as *mut FreePointer;
+
+            // 使用 page.lru.prev 作为 freelist 头指针
+            let free_head = (*page).lru.prev as *mut FreePointer;
+            (*obj).next = free_head;
+            (*page).lru.prev = obj as *mut _;
+
+            self.allocated.fetch_sub(1, Ordering::Relaxed);
+
+            // 整页对象全部归还后，回收 slab 到 buddy。
+            if self.free_objects_in_page(page) == self.objects_per_slab && self.remove_from_partial(page)
+            {
+                (*page).lru.prev = core::ptr::null_mut();
+                (*page).clear_flag(PageFlags::SLAB);
+                (*page).set_private(core::ptr::null_mut());
+                atomic_saturating_sub(&self.slabs, 1);
+                release_slab = true;
+            }
+        }
+
+        if release_slab {
+            free_pages(&mut *page, self.order);
+        }
     }
     
     /// 获取统计信息
@@ -317,6 +415,8 @@ impl KmallocCaches {
 }
 
 static KMALLOC_CACHES: KmallocCaches = KmallocCaches::new();
+static LARGE_ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+static LARGE_ALLOC_PAGES: AtomicUsize = AtomicUsize::new(0);
 
 /// kmalloc 大小类名称
 const KMALLOC_NAMES: [&str; KMALLOC_NUM_CACHES] = [
@@ -384,6 +484,8 @@ pub fn kmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
     if size > (1 << KMALLOC_SHIFT_HIGH) {
         let order = crate::mm::page::zone::get_order((size as u64 + PAGE_SIZE - 1) / PAGE_SIZE);
         if let Some(page) = alloc_pages(order, gfp) {
+            LARGE_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+            LARGE_ALLOC_PAGES.fetch_add(pages_for_order(order), Ordering::Relaxed);
             let pfn = page_to_pfn(page);
             let phys = pfn * PAGE_SIZE;
             return phys_to_virt(phys) as *mut u8;
@@ -450,6 +552,8 @@ pub unsafe fn kfree(ptr: *mut u8) {
         }
         // 大分配，释放页
         let order = page.order() as usize;
+        atomic_saturating_sub(&LARGE_ALLOC_COUNT, 1);
+        atomic_saturating_sub(&LARGE_ALLOC_PAGES, pages_for_order(order));
         free_pages(&mut *page, order);
     }
 }
@@ -459,13 +563,16 @@ pub unsafe fn kfree(ptr: *mut u8) {
 // ============================================================================
 
 #[inline]
-const fn phys_to_virt(phys: u64) -> u64 {
-    phys + DIRECT_MAP_OFFSET
+fn phys_to_virt(phys: u64) -> u64 {
+    crate::mm::phys_to_virt(phys)
 }
 
 #[inline]
 fn virt_to_phys_direct_map(virt: u64) -> Option<u64> {
-    let phys = virt.checked_sub(DIRECT_MAP_OFFSET)?;
+    let phys = crate::mm::virt_to_phys(virt);
+    if phys == 0 && virt < crate::mm::direct_map_offset() {
+        return None;
+    }
     let max_phys = max_pfn().saturating_mul(PAGE_SIZE);
     if max_phys == 0 || phys >= max_phys {
         None
@@ -513,6 +620,68 @@ const fn align_up(value: usize, align: usize) -> usize {
 /// SLUB 是否已初始化
 pub fn slub_initialized() -> bool {
     kmalloc_caches_ref()[0].initialized
+}
+
+/// 获取 kmalloc/SLUB 统计信息，用于 `mm status` 统一展示分配器状态。
+pub fn kmalloc_stats() -> KmallocStats {
+    let caches = kmalloc_caches_ref();
+    let mut stats = KmallocStats {
+        initialized: slub_initialized(),
+        active_caches: 0,
+        total_allocated_objects: 0,
+        total_allocated_bytes: 0,
+        total_slabs: 0,
+        total_slab_bytes: 0,
+        large_allocations: LARGE_ALLOC_COUNT.load(Ordering::Relaxed),
+        large_alloc_pages: LARGE_ALLOC_PAGES.load(Ordering::Relaxed),
+        caches: [KmallocCacheStats::empty(); KMALLOC_NUM_CACHES],
+    };
+
+    let mut i = 0usize;
+    while i < KMALLOC_NUM_CACHES {
+        let cache = &caches[i];
+        if cache.initialized {
+            let (allocated, slabs) = cache.stats();
+            let slab_bytes = slabs.saturating_mul(
+                pages_for_order(cache.order).saturating_mul(PAGE_SIZE as usize),
+            );
+            let allocated_bytes = allocated.saturating_mul(cache.object_size);
+            if allocated > 0 || slabs > 0 {
+                stats.active_caches += 1;
+            }
+            stats.total_allocated_objects = stats.total_allocated_objects.saturating_add(allocated);
+            stats.total_allocated_bytes = stats.total_allocated_bytes.saturating_add(allocated_bytes);
+            stats.total_slabs = stats.total_slabs.saturating_add(slabs);
+            stats.total_slab_bytes = stats.total_slab_bytes.saturating_add(slab_bytes);
+            stats.caches[i] = KmallocCacheStats {
+                name: cache.name,
+                object_size: cache.object_size,
+                allocated_objects: allocated,
+                slabs,
+                allocated_bytes,
+                slab_bytes,
+            };
+        }
+        i += 1;
+    }
+
+    stats
+}
+
+fn atomic_saturating_sub(target: &AtomicUsize, value: usize) {
+    let mut current = target.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_sub(value);
+        match target.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+#[inline]
+fn pages_for_order(order: usize) -> usize {
+    1usize.checked_shl(order as u32).unwrap_or(0)
 }
 
 #[inline]

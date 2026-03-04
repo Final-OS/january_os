@@ -345,9 +345,9 @@ impl PhysicalMemoryManager {
     ) {
         let inner = &mut *self.inner.get();
 
-        // 1. 计算总物理内存大小（只扫描前 100 个条目，避免潜在问题）
+        // 1. 计算总物理内存大小（扫描全部内存映射条目）
         let mut max_phys_addr: u64 = 0;
-        let entries_to_scan = (memory_map_entries as usize).min(100);
+        let entries_to_scan = memory_map_entries as usize;
         
         for i in 0..entries_to_scan {
             let region = &*memory_map.add(i);
@@ -356,9 +356,6 @@ impl PhysicalMemoryManager {
                 max_phys_addr = end;
             }
         }
-
-        // 限制最大物理地址避免位图过大
-        max_phys_addr = max_phys_addr.min(256 * 1024 * 1024); // 最多 256 MB
 
         // 2. 计算需要的页帧数和位图大小
         let total_frames = max_phys_addr / PAGE_SIZE;
@@ -388,16 +385,15 @@ impl PhysicalMemoryManager {
             let region = &*memory_map.add(i);
             if region.kind() == MemoryRegionType::Usable {
                 let start_frame = region.phys_start / PAGE_SIZE;
-                let frame_count = region.page_count.min(total_frames);
-                
-                let mut j = 0u64;
-                while j < frame_count {
-                    let frame_idx = start_frame + j;
-                    if frame_idx < total_frames && inner.test_bit(frame_idx) {
+                let end_frame = start_frame.saturating_add(region.page_count).min(total_frames);
+
+                let mut frame_idx = start_frame;
+                while frame_idx < end_frame {
+                    if inner.test_bit(frame_idx) {
                         inner.clear_bit(frame_idx);
                         inner.used_frames = inner.used_frames.saturating_sub(1);
                     }
-                    j += 1;
+                    frame_idx += 1;
                 }
             }
         }

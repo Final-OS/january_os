@@ -56,13 +56,13 @@ pub fn run(name: &str) {
             kprintln!("                   Available: rbtree, lru, rdtree, btree, mptree, rcu");
             kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once, sync_blocking");
             kprintln!("  mm [name]      - Memory management tests");
-            kprintln!("                   Available: swiotlb, slub, buddy, pcp, mmap");
+            kprintln!("                   Available: swiotlb, slub, buddy, pcp, heap, mmap");
             kprintln!("  smp [name]     - SMP/IPI tests");
             kprintln!(
                 "                   Available: topology, cpu_id, ipi, irq_route, sched_stats, all"
             );
             kprintln!("  block [name]   - Block device tests");
-            kprintln!("                   Available: virtio");
+            kprintln!("                   Available: virtio, partition");
             kprintln!("  all            - Run all tests");
         }
     }

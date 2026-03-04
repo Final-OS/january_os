@@ -59,6 +59,8 @@ pub use vm::fault;
 pub use vm::fault::*;
 pub use vm::layout;
 pub use vm::layout::*;
+pub use vm::layout_runtime;
+pub use vm::layout_runtime::*;
 
 // 堆分配器
 pub use heap::init_heap;

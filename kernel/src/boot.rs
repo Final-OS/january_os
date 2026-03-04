@@ -30,6 +30,24 @@ pub struct DiskInfo {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct KernelVaLayout {
+    pub va_bits: u8,
+    pub page_levels: u8,
+    pub _reserved0: [u8; 6],
+    pub direct_map_start: u64,
+    pub direct_map_end: u64,
+    pub vmalloc_start: u64,
+    pub vmalloc_end: u64,
+    pub vmemmap_start: u64,
+    pub vmemmap_end: u64,
+    pub modules_start: u64,
+    pub modules_end: u64,
+    pub fixmap_start: u64,
+    pub fixmap_end: u64,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BootInfo {
     pub magic: u64,
@@ -56,9 +74,24 @@ pub struct BootInfo {
     pub kernel_size: u64,
     pub pml4_phys_addr: u64,
     pub direct_map_offset: u64,
+    pub kernel_layout: KernelVaLayout,
     pub cmdline_addr: u64,
     pub cmdline_len: u32,
     pub _cmdline_reserved: u32,
+    pub root_table_phys_addr: u64,
 }
 
 pub const BOOTINFO_MAGIC: u64 = 0x4A414E5F4F530000;
+/// 与 bootloader `boot/x86_64/src/bootinfo.rs::MAX_MEMORY_REGIONS` 保持一致。
+pub const MAX_MEMORY_REGIONS: usize = 256;
+
+impl BootInfo {
+    #[inline]
+    pub fn page_table_root_phys(&self) -> u64 {
+        if self.version >= 4 && self.root_table_phys_addr != 0 {
+            self.root_table_phys_addr
+        } else {
+            self.pml4_phys_addr
+        }
+    }
+}

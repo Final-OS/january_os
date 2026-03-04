@@ -14,8 +14,13 @@ If a file in the left column changes, evaluate and update every target in the ri
 - Tests/demo should be functionally complete and include main path, key branches, failure paths, and recovery paths.
 - Tests/demo should provide detailed step-level logs with action/input/expected/actual and failure location.
 - Tests/demo should cover invalid inputs, unexpected inputs, and boundary conditions.
+- Any minimum-scope implementation (minimal set / temporary subset) must add or update a repayment item in `docs/progress/tech-debt.md`.
+- Minimum-scope debt items must define: current gap, full target, repayment version, and closure criteria.
 
 ## Path -> Required Updates
+
+- `**` (any changed path)
+  - if change introduces/extends/repays minimum-scope behavior, update `docs/progress/tech-debt.md` in the same change
 
 - `boot/**`
   - `docs/implementation/boot.md`

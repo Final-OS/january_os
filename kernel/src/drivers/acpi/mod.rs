@@ -124,7 +124,7 @@ pub fn init(rsdp_addr: u64) -> Result<(), &'static str> {
 /// 查找特定的 ACPI 表
 pub fn find_table<T: AcpiTable>() -> Option<&'static T> {
     let state = ACPI_STATE.get()?;
-    let virt_addr = state.xsdt_addr + crate::config::DIRECT_MAP_OFFSET;
+    let virt_addr = state.xsdt_addr + crate::mm::direct_map_offset();
     let signature = T::signature();
 
     if state.revision >= 2 {
@@ -136,7 +136,7 @@ pub fn find_table<T: AcpiTable>() -> Option<&'static T> {
             if entry_addr == 0 {
                 continue;
             }
-            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let entry_virt = entry_addr + crate::mm::direct_map_offset();
             let header = unsafe { &*(entry_virt as *const SdtHeader) };
             if &header.signature == signature {
                 return unsafe { Some(&*(entry_virt as *const T)) };
@@ -151,7 +151,7 @@ pub fn find_table<T: AcpiTable>() -> Option<&'static T> {
             if entry_addr == 0 {
                 continue;
             }
-            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let entry_virt = entry_addr + crate::mm::direct_map_offset();
             let header = unsafe { &*(entry_virt as *const SdtHeader) };
             if &header.signature == signature {
                 return unsafe { Some(&*(entry_virt as *const T)) };
@@ -170,7 +170,7 @@ pub fn has_table(signature: &[u8; 4]) -> bool {
         return false;
     };
 
-    let virt_addr = state.xsdt_addr + crate::config::DIRECT_MAP_OFFSET;
+    let virt_addr = state.xsdt_addr + crate::mm::direct_map_offset();
 
     if state.revision >= 2 {
         let xsdt = unsafe { &*(virt_addr as *const Xsdt) };
@@ -179,7 +179,7 @@ pub fn has_table(signature: &[u8; 4]) -> bool {
             if entry_addr == 0 {
                 continue;
             }
-            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let entry_virt = entry_addr + crate::mm::direct_map_offset();
             let header = unsafe { &*(entry_virt as *const SdtHeader) };
             if &header.signature == signature {
                 return true;
@@ -192,7 +192,7 @@ pub fn has_table(signature: &[u8; 4]) -> bool {
             if entry_addr == 0 {
                 continue;
             }
-            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let entry_virt = entry_addr + crate::mm::direct_map_offset();
             let header = unsafe { &*(entry_virt as *const SdtHeader) };
             if &header.signature == signature {
                 return true;
@@ -212,12 +212,12 @@ pub fn dump_tables() {
         return;
     };
 
-    let virt_addr = state.xsdt_addr + crate::config::DIRECT_MAP_OFFSET;
+    let virt_addr = state.xsdt_addr + crate::mm::direct_map_offset();
 
     if state.revision >= 2 {
         let xsdt = unsafe { &*(virt_addr as *const Xsdt) };
         crate::info!(
-            "ACPI: XSDT at {:#x}, entries: {}",
+            "[ACPI] XSDT at {:#x}, entries: {}",
             state.xsdt_addr,
             xsdt.entry_count()
         );
@@ -226,7 +226,7 @@ pub fn dump_tables() {
             if entry_addr == 0 {
                 continue;
             }
-            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let entry_virt = entry_addr + crate::mm::direct_map_offset();
             let header = unsafe { &*(entry_virt as *const SdtHeader) };
             let signature = header.signature_str();
             let length = header.length;
@@ -242,7 +242,7 @@ pub fn dump_tables() {
     } else {
         let rsdt = unsafe { &*(virt_addr as *const Rsdt) };
         crate::info!(
-            "ACPI: RSDT at {:#x}, entries: {}",
+            "[ACPI] RSDT at {:#x}, entries: {}",
             state.xsdt_addr,
             rsdt.entry_count()
         );
@@ -251,7 +251,7 @@ pub fn dump_tables() {
             if entry_addr == 0 {
                 continue;
             }
-            let entry_virt = entry_addr + crate::config::DIRECT_MAP_OFFSET;
+            let entry_virt = entry_addr + crate::mm::direct_map_offset();
             let header = unsafe { &*(entry_virt as *const SdtHeader) };
             let signature = header.signature_str();
             let length = header.length;
@@ -356,7 +356,7 @@ fn get_dsdt() -> Option<(&'static SdtHeader, u64)> {
             return None;
         }
 
-        let virt_addr = dsdt_addr + crate::config::DIRECT_MAP_OFFSET;
+        let virt_addr = dsdt_addr + crate::mm::direct_map_offset();
         let header = unsafe { &*(virt_addr as *const SdtHeader) };
         return Some((header, dsdt_addr));
     }
@@ -378,7 +378,7 @@ pub fn acpi_shutdown() -> Result<(), &'static str> {
             slp_typ_b = s5.pm1b_cnt_val;
             s5_found = true;
             crate::info!(
-                "ACPI: Found _S5_ (PM1a_TYP={}, PM1b_TYP={})",
+                "[ACPI] Found _S5_ (PM1a_TYP={}, PM1b_TYP={})",
                 slp_typ_a,
                 slp_typ_b
             );
@@ -386,7 +386,7 @@ pub fn acpi_shutdown() -> Result<(), &'static str> {
     }
 
     if !s5_found {
-        crate::warn!("ACPI: _S5_ not found in DSDT, using default QEMU values (5)");
+        crate::warn!("[ACPI] _S5_ not found in DSDT, using default QEMU values (5)");
     }
 
     // SLP_TYP << 10 | SLP_EN (1 << 13)

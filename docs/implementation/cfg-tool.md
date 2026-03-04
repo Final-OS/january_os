@@ -98,6 +98,14 @@ buddy_max_order = 11
 [kernel]
 phys_base = "0x100000"
 direct_map_offset = "0xFFFF880000000000"
+vmalloc_start = "0xFFFFC90000000000"
+vmalloc_end = "0xFFFFE8FFFFFFFFFF"
+
+[kernel.layout]
+profile = "linux_full"
+va_mode = "la57_prefer"
+la57_fallback = "4level"
+kaslr = "off"
 
 [iommu]
 mode = "auto"
@@ -156,7 +164,14 @@ let mode: IommuMode = table.get("iommu", "mode")?.into();
     │
     ▼
 5. 内核编译时使用生成的常量
+   boot/x86_64 在 build.rs 中读取同一 os_cfg.toml 生成布局常量
 ```
+
+新增布局常量（`kernel/src/generated/config.rs`）：
+- `KERNEL_LAYOUT_PROFILE`
+- `KERNEL_VA_MODE`
+- `KERNEL_LA57_FALLBACK`
+- `KERNEL_KASLR_MODE`
 
 ## 相关文档
 

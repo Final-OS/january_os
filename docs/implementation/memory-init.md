@@ -126,29 +126,23 @@ for &size in SLAB_SIZES {
 }
 ```
 
-## 4. 堆初始化
+## 4. 堆初始化与全局分配器接线
 
 ```rust
-pub fn init_heap(start: usize, size: usize)
+pub unsafe fn init_heap(target_size: usize) -> usize
 ```
 
-**堆布局**:
-```
-堆起始地址
-    │
-    ├─ Block 1 (已用)
-    ├─ Block 2 (空闲)
-    ├─ Block 3 (已用)
-    └─ ...
-```
+当前实现不是单段固定堆，而是“分段预热 + 运行期按需扩展”：
 
-**Block 结构**:
-```rust
-struct Block {
-    size: usize,
-    used: bool,
-}
-```
+- 启动阶段按 `KERNEL_HEAP_INIT_SIZE` 预热多个段；
+- 段内采用线性分配；
+- 段不足时继续向 Buddy 申请新段。
+
+同时，Rust 全局分配器（`Box/Vec/String`）主路径已接到 `kmalloc/kfree`（SLUB），
+`SimpleHeap` 保留为回退与测试通道。
+运行期可通过 `mm status` 同时观察 `kmalloc`（主路径）和 `heap(fallback)`（回退路径）状态。
+
+另外，`max_pfn` 已不再硬编码截断到 4GiB，而是按启动页表 direct-map 当前可覆盖范围确定（上限到 `vmalloc` 起始地址之前）。
 
 ## 5. PCP 初始化
 

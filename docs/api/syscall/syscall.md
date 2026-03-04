@@ -306,22 +306,118 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet
 
 ### I/O 操作
 
-#### sys_write (1)
+#### sys_open (2) / sys_close (3)
 
-写入数据（桩实现）。
+打开或关闭文件描述符。
 
 ```rust
+pub(crate) fn sys_open(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_close(args: &SyscallArgs) -> SyscallRet
+```
+
+**当前实现约束**:
+- `open` 当前只接受只读模式（`O_RDONLY`）；其他访问模式返回 `-EINVAL`。
+- 路径会进行用户指针和长度校验（`PATH_MAX=4096`）。
+
+#### sys_read (0) / sys_write (1)
+
+对文件描述符进行读写。
+
+```rust
+pub(crate) fn sys_read(args: &SyscallArgs) -> SyscallRet
 pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet
 ```
 
-**参数**:
-- `arg0`: 文件描述符
-- `arg1`: 缓冲区指针
-- `arg2`: 字节数
+**当前行为**:
+- `read/write` 会校验用户缓冲区地址范围。
+- `read` 对阻塞 FD 采用协作式调度等待；非阻塞 FD 命中 `EAGAIN` 直接返回。
+- `write` 对 `fd=1/2` 走控制台输出；其他 FD 走 VFS 后端。
 
-**返回**: 写入的字节数或错误码
+#### sys_stat (4) / sys_fstat (5) / sys_lstat (6)
 
-**注意**: 当前是桩实现，只支持写入到控制台。
+查询路径或文件描述符元数据。
+
+```rust
+pub(crate) fn sys_stat(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_fstat(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_lstat(args: &SyscallArgs) -> SyscallRet
+```
+
+**说明**:
+- 当前返回 Linux 风格 `stat` 结构子集，时间戳字段为默认值。
+- `lstat` 当前复用 `stat` 路径语义（未区分符号链接）。
+
+#### sys_poll (7) / sys_select (23)
+
+多路复用等待。
+
+```rust
+pub(crate) fn sys_poll(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_select(args: &SyscallArgs) -> SyscallRet
+```
+
+**当前实现约束**:
+- `poll` 支持基础事件集合（`POLLIN/POLLOUT/POLLERR/POLLHUP/POLLNVAL`），并支持超时轮询。
+- `select` 支持读/写集合，`exceptfds` 当前固定清零返回。
+
+#### sys_pipe (22) / sys_pipe2 (293)
+
+创建管道并返回读写 FD。
+
+```rust
+pub(crate) fn sys_pipe(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_pipe2(args: &SyscallArgs) -> SyscallRet
+```
+
+#### sys_ioctl (16)
+
+设备控制操作（当前为最小子集）。
+
+```rust
+pub(crate) fn sys_ioctl(args: &SyscallArgs) -> SyscallRet
+```
+
+**当前支持**:
+- `TIOCGWINSZ`
+- `TCGETS`
+- `FIONBIO`
+
+未支持请求返回 `-ENOTTY`。
+
+### 内存映射操作
+
+#### sys_mmap (9) / sys_munmap (11) / sys_mprotect (10) / sys_brk (12)
+
+用户地址空间映射和保护控制。
+
+```rust
+pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_munmap(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_mprotect(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_brk(args: &SyscallArgs) -> SyscallRet
+```
+
+**当前行为**:
+- `mmap` 支持匿名映射和基于 FD 的文件映射（最小语义）。
+- `munmap` 支持按页对齐区域解除映射并回收页。
+- `mprotect` 支持已映射区域权限更新并同步页表标志。
+- `brk` 支持进程堆边界查询与增长。
+
+内存映射细节见 [mmap API](../mm/mmap.md)。
+
+### 信号接口
+
+#### sys_rt_sigaction (13) / sys_rt_sigprocmask (14) / sys_rt_sigreturn (15)
+
+```rust
+pub(crate) fn sys_rt_sigaction(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_rt_sigprocmask(args: &SyscallArgs) -> SyscallRet
+pub(crate) fn sys_rt_sigreturn(args: &SyscallArgs) -> SyscallRet
+```
+
+**当前行为**:
+- `rt_sigaction`/`rt_sigprocmask` 已接入最小用户态掩码与处理函数表维护。
+- `rt_sigreturn` 当前返回 `-ENOSYS`（尚未实现完整信号返回帧恢复）。
 
 ---
 
@@ -335,16 +431,29 @@ pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet
 
 | 号码 | 名称 | 状态 |
 |------|------|------|
-| 0 | read | ❌ 未实现 |
-| 1 | write | ⚠️ 桩实现 |
-| 2 | open | ❌ 未实现 |
-| 3 | close | ❌ 未实现 |
-| 9 | mmap | ❌ 未实现 |
+| 0 | read | ⚠️ 已实现（基础读路径） |
+| 1 | write | ⚠️ 已实现（控制台 + VFS 后端） |
+| 2 | open | ⚠️ 已实现（当前仅 O_RDONLY） |
+| 3 | close | ✅ 已实现 |
+| 4 | stat | ⚠️ 已实现（基础元数据） |
+| 5 | fstat | ⚠️ 已实现（基础元数据） |
+| 6 | lstat | ⚠️ 已实现（当前同 stat 语义） |
+| 7 | poll | ⚠️ 已实现（基础事件子集） |
+| 9 | mmap | ⚠️ 已实现（最小语义） |
+| 10 | mprotect | ⚠️ 已实现（页级权限更新） |
+| 11 | munmap | ⚠️ 已实现（页级解除映射） |
+| 12 | brk | ⚠️ 已实现（基础堆边界管理） |
+| 13 | rt_sigaction | ⚠️ 已实现（最小子集） |
+| 14 | rt_sigprocmask | ⚠️ 已实现（最小子集） |
+| 15 | rt_sigreturn | ❌ 未实现（返回 -ENOSYS） |
+| 16 | ioctl | ⚠️ 已实现（请求子集） |
+| 22 | pipe | ⚠️ 已实现 |
+| 23 | select | ⚠️ 已实现（read/write 集） |
 | 39 | getpid | ✅ 已实现 |
 | 56 | clone | ⚠️ 最小实现（受限 flags） |
 | 57 | fork | ⚠️ 最小实现 |
 | 58 | vfork | ⚠️ 最小实现 |
-| 59 | execve | ⚠️ 参数校验+真实映射回滚（返回 -ENOSYS） |
+| 59 | execve | ⚠️ 参数校验+真实映射回滚（当前返回 -ENOENT） |
 | 60 | exit | ✅ 已实现 |
 | 61 | wait4 | ✅ 增强实现 |
 | 62 | kill | ⚠️ 子集实现 |
@@ -357,6 +466,7 @@ pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet
 | 200 | tkill | ⚠️ 子集实现 |
 | 231 | exit_group | ✅ 已实现 |
 | 234 | tgkill | ⚠️ 子集实现 |
+| 293 | pipe2 | ⚠️ 已实现 |
 
 ### 获取系统调用表
 

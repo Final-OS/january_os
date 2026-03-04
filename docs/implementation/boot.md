@@ -128,10 +128,14 @@ unsafe fn setup_page_tables(kernel_size: u64, max_phys_addr: u64) -> u64 {
     *pml4_table.add(pml4_index_kernel) = pdpt_kernel | ...;
 
     // 3. 直接映射区
-    // PML4[272] -> PDPT -> 1GB 大页
+    // 从 PML4[272] 开始按需扩展，跨多个 PML4 槽映射 1GB 大页
+    // 上限到 vmalloc 起始地址之前，避免地址空间重叠
     let pml4_index_direct = 272;
-    let pdpt_direct = allocator.alloc_page();
-    *pml4_table.add(pml4_index_direct) = pdpt_direct | ...;
+    for slot in 0..direct_slots {
+        let pdpt_direct = allocator.alloc_page();
+        *pml4_table.add(pml4_index_direct + slot) = pdpt_direct | ...;
+        // 填充该槽下的 PDPTE（每项 1GiB）
+    }
 
     pml4
 }
@@ -196,6 +200,23 @@ if info.magic != BOOTINFO_MAGIC {
     panic!("Invalid BootInfo magic: {:#x}", info.magic);
 }
 ```
+
+`BootInfo` 现为 v4，除兼容字段 `pml4_phys_addr` / `direct_map_offset` 外，还携带：
+- `root_table_phys_addr`（CR3 根表，4-level=PML4，5-level=PML5）
+- `kernel_layout`
+- `va_bits` / `page_levels`
+- `direct_map`、`vmalloc`、`vmemmap`、`modules`、`fixmap` 窗口边界（`[start, end)`）
+
+内核早期初始化会先校验该布局，再初始化内存子系统。
+
+### 5-level 分页协商（LA57）
+
+- 启动页表构建支持 4-level 与 5-level 两条路径。
+- `os_cfg.toml` 中 `kernel.layout.va_mode=la57_prefer` 时，boot 会先检测：
+  - CPU 是否声明支持 LA57（CPUID.7.0.ECX[16]）
+  - 当前固件是否已激活 LA57（CR4.LA57）
+- 若 CPU 支持但固件未激活，boot 在 handoff 前通过 trampoline 尝试从 4-level 切换到 5-level。
+- 任一步骤不满足时按 `la57_fallback=4level` 回退到 4-level 并继续启动。
 
 #### 3. 内存管理初始化
 
@@ -333,7 +354,7 @@ interrupt::enable_interrupts();
 |----------|----------|----------|------|
 | 恒等映射 | 0x00000000+ | 0x00000000+ | 4GB |
 | 内核高半 | 0xFFFF_8000_0010_0000+ | 0x100000+ | 动态 |
-| 直接映射 | 0xFFFF_8800_0000_0000+ | phys + offset | 64TB |
+| 直接映射 | 0xFFFF_8800_0000_0000+ | phys + offset | 按需扩展（上限到 vmalloc 前） |
 | vmalloc | 0xFFFF_C900_0000_0000+ | 动态 | 64TB |
 
 ## 相关文档

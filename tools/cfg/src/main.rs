@@ -68,8 +68,61 @@ struct PcpConfig {
 struct KernelConfig {
     phys_base: String,
     direct_map_offset: String,
+    #[serde(default = "default_vmalloc_start")]
+    vmalloc_start: String,
+    #[serde(default = "default_vmalloc_end")]
+    vmalloc_end: String,
     heap_init_size: u64,
     stack_size: u64,
+    #[serde(default)]
+    layout: KernelLayoutConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct KernelLayoutConfig {
+    #[serde(default = "default_layout_profile")]
+    profile: String,
+    #[serde(default = "default_va_mode")]
+    va_mode: String,
+    #[serde(default = "default_la57_fallback")]
+    la57_fallback: String,
+    #[serde(default = "default_kaslr_mode")]
+    kaslr: String,
+}
+
+impl Default for KernelLayoutConfig {
+    fn default() -> Self {
+        Self {
+            profile: default_layout_profile(),
+            va_mode: default_va_mode(),
+            la57_fallback: default_la57_fallback(),
+            kaslr: default_kaslr_mode(),
+        }
+    }
+}
+
+fn default_vmalloc_start() -> String {
+    "0xFFFFC90000000000".to_string()
+}
+
+fn default_vmalloc_end() -> String {
+    "0xFFFFE8FFFFFFFFFF".to_string()
+}
+
+fn default_layout_profile() -> String {
+    "linux_full".to_string()
+}
+
+fn default_va_mode() -> String {
+    "la57_prefer".to_string()
+}
+
+fn default_la57_fallback() -> String {
+    "4level".to_string()
+}
+
+fn default_kaslr_mode() -> String {
+    "off".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,8 +259,14 @@ impl Config {
             // kernel
             "kernel.phys_base" => Some(self.kernel.phys_base.clone()),
             "kernel.direct_map_offset" => Some(self.kernel.direct_map_offset.clone()),
+            "kernel.vmalloc_start" => Some(self.kernel.vmalloc_start.clone()),
+            "kernel.vmalloc_end" => Some(self.kernel.vmalloc_end.clone()),
             "kernel.heap_init_size" => Some(self.kernel.heap_init_size.to_string()),
             "kernel.stack_size" => Some(self.kernel.stack_size.to_string()),
+            "kernel.layout.profile" => Some(self.kernel.layout.profile.clone()),
+            "kernel.layout.va_mode" => Some(self.kernel.layout.va_mode.clone()),
+            "kernel.layout.la57_fallback" => Some(self.kernel.layout.la57_fallback.clone()),
+            "kernel.layout.kaslr" => Some(self.kernel.layout.kaslr.clone()),
 
             // user
             "user.space_start" => Some(self.user.space_start.clone()),
@@ -285,8 +344,14 @@ pub const NR_PCP_LISTS: usize = {};
 // [kernel]
 pub const KERNEL_PHYS_BASE: u64 = {};
 pub const DIRECT_MAP_OFFSET: u64 = {};
+pub const VMALLOC_START: u64 = {};
+pub const VMALLOC_END: u64 = {};
 pub const KERNEL_HEAP_INIT_SIZE: u64 = {};
 pub const KERNEL_STACK_SIZE: u64 = {};
+pub const KERNEL_LAYOUT_PROFILE: &str = "{}";
+pub const KERNEL_VA_MODE: &str = "{}";
+pub const KERNEL_LA57_FALLBACK: &str = "{}";
+pub const KERNEL_KASLR_MODE: &str = "{}";
 
 // [user]
 pub const USER_SPACE_START: u64 = {};
@@ -328,8 +393,14 @@ pub const DEBUG_PAGE_ALLOC_TRACE: bool = {};
             self.memory.buddy_max_order, // NR_PCP_LISTS = MAX_ORDER
             self.kernel.phys_base,
             self.kernel.direct_map_offset,
+            self.kernel.vmalloc_start,
+            self.kernel.vmalloc_end,
             self.kernel.heap_init_size,
             self.kernel.stack_size,
+            self.kernel.layout.profile,
+            self.kernel.layout.va_mode,
+            self.kernel.layout.la57_fallback,
+            self.kernel.layout.kaslr,
             self.user.space_start,
             self.user.space_end,
             self.user.stack_top,
@@ -375,8 +446,17 @@ pub const DEBUG_PAGE_ALLOC_TRACE: bool = {};
         println!("[kernel]");
         println!("  phys_base = {}", self.kernel.phys_base);
         println!("  direct_map_offset = {}", self.kernel.direct_map_offset);
+        println!("  vmalloc_start = {}", self.kernel.vmalloc_start);
+        println!("  vmalloc_end = {}", self.kernel.vmalloc_end);
         println!("  heap_init_size = {}", self.kernel.heap_init_size);
         println!("  stack_size = {}", self.kernel.stack_size);
+        println!("  layout.profile = {}", self.kernel.layout.profile);
+        println!("  layout.va_mode = {}", self.kernel.layout.va_mode);
+        println!(
+            "  layout.la57_fallback = {}",
+            self.kernel.layout.la57_fallback
+        );
+        println!("  layout.kaslr = {}", self.kernel.layout.kaslr);
 
         println!("[user]");
         println!("  space_start = {}", self.user.space_start);
