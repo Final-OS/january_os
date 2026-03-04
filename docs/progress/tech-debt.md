@@ -67,7 +67,7 @@
 | Secure Boot | 🔴 | 安全启动验证 | v0.9 |
 | ACPI 表完整传递 | 🟡 | 仅 RSDP，缺完整表 | v0.4 |
 | 引导参数解析 | 🟡 | 缺少内核命令行 | v0.4 |
-| LA57 切换约束 | 🟡 | 已支持启动期 4->5 trampoline + 自动回退；当前实现要求 5-level root 位于 4GiB 内，后续需去除该约束并补充失败可观测性 | v0.4 |
+| LA57 切换约束 | 🟡 | 已支持启动期 4->5 trampoline + 自动回退；aux 页表池优先放在 4GiB 以下并已补齐 root/CR3 失配可观测性，但底层切换仍依赖 5-level root 位于 4GiB 内 | v0.4 |
 
 ---
 
@@ -103,6 +103,7 @@
 | 锁粒度优化 | 🟡 | 当前全局大锁 | v0.5 |
 | TLB Shootdown 优化 | 🟡 | 当前同步等待 | v0.6 |
 | NUMA 调度感知 | 🟡 | SRAT 解析但未使用 | v0.6 |
+| identity-map 回收默认关闭 | 🟡 | 启动后 0..3GiB identity-map 回收已具备入口，但默认仍关闭（`kernel.layout.teardown_identity_map=false`）以兼容潜在低地址访问路径；需完成依赖清理后改为默认开启 | v0.4 |
 | 内存热插拔 | 🟡 | CPU/内存热插拔 | v1.0 |
 
 ---

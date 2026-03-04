@@ -10,32 +10,6 @@
 target = "x86_64"
 
 # ==============================================================================
-# QEMU 虚拟机配置
-# ==============================================================================
-[qemu]
-# 内存大小 (支持 M/G 后缀):
-# 例如 "256M", "1G"。过小会导致内核堆/页分配不足。
-memory = "1G"
-# CPU 核心数:
-# 影响 SMP 启动的 CPU 数量，超过 limits.max_cpus 的部分会被忽略。
-smp = 4
-# CPU 型号:
-# 留空使用 QEMU 默认；"host" 需要 KVM/硬件支持。
-# 常见候选: host, qemu64, Skylake-Client, EPYC。
-# 5-level paging (LA57) 探测建议优先使用 host 透传。
-cpu = "host"
-# KVM 加速: "auto" / "on" / "off"
-# "auto" 会在检测到 /dev/kvm 时启用。
-kvm = "auto"
-# 机器类型: "i440fx" / "q35"
-# q35 支持 PCIe 和 IOMMU，i440fx 是传统 PCI
-machine = "q35"
-# 模拟 IOMMU: true / false
-# 启用后 QEMU 会添加 Intel VT-d IOMMU 设备
-# 需要 machine = "q35"
-iommu = true
-
-# ==============================================================================
 # 内存管理配置
 # ==============================================================================
 [memory]
@@ -96,6 +70,24 @@ va_mode = "la57_prefer"
 la57_fallback = "4level"
 # KASLR 策略（当前仅支持 off）
 kaslr = "off"
+# Linux 风格窗口参数（闭区间）：
+# - vmemmap: struct page 线性映射窗口
+# - modules: 模块/内核扩展窗口
+# - fixmap: 固定映射窗口
+vmemmap_start = "0xFFFFEA0000000000"
+vmemmap_end = "0xFFFFEFFFFFFFFFFF"
+modules_start = "0xFFFFFFFFA0000000"
+modules_end = "0xFFFFFFFFFEFFFFFF"
+fixmap_start = "0xFFFFFFFFFF000000"
+fixmap_end = "0xFFFFFFFFFFFFF000"
+# 是否要求“完整物理内存可管理”：
+# true  = 若可用物理内存超出 direct-map 可覆盖窗口则启动失败
+# false = 允许降级并截断到 direct-map 窗口上限
+manage_full_phys = true
+# 是否在启动阶段回收低地址 identity-map（0..3GiB）：
+# true  = 启用回收（需确保无低地址直接访问依赖）
+# false = 保持兼容映射，优先稳定性
+teardown_identity_map = false
 
 # ==============================================================================
 # 用户空间布局配置

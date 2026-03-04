@@ -1,18 +1,31 @@
 # january_os Makefile
-# Configuration: os_cfg.toml
-# Tools: tools/cfg
+# Configuration: os_cfg.toml + vm_cfg.toml
+# Tools: tools/cfg + tools/vmcfg
 
-.PHONY: all build build-boot build-kernel build-tools run run-gui debug prepare-virtio-blk clean config help iso install-deps
+.PHONY: all build build-boot build-kernel build-tools run run-gui debug prepare-virtio-blk clean config vm-config help iso install-deps
 
 # ==============================================================================
 # 工具路径
 # ==============================================================================
 ROOT_DIR     := $(shell pwd)
+OS_CFG_PATH ?= $(ROOT_DIR)/os_cfg.toml
+VM_CFG_PATH ?= $(ROOT_DIR)/vm_cfg.toml
 BUILD_DIR    := $(ROOT_DIR)/target
 KERNEL_DIR   := $(ROOT_DIR)/kernel
 ESP_DIR      := $(BUILD_DIR)/esp
 TOOLS_BIN    := $(ROOT_DIR)/tools/bin
 CFG          := $(TOOLS_BIN)/cfg
+VMCFG        := $(TOOLS_BIN)/vmcfg
+
+# 从 os_cfg.toml 读取内核构建配置（通过 cfg 工具）
+define oscfg_get
+$(strip $(shell OS_CFG_PATH=$(OS_CFG_PATH) $(CFG) get $(1) 2>/dev/null || true))
+endef
+
+# 从 vm_cfg.toml 读取虚拟机运行配置（通过 vmcfg 工具）
+define vmcfg_get
+$(strip $(shell VM_CFG_PATH=$(VM_CFG_PATH) $(VMCFG) get $(1) 2>/dev/null || true))
+endef
 
 # ==============================================================================
 # 目标
@@ -26,23 +39,39 @@ $(CFG): tools/cfg/src/main.rs tools/cfg/Cargo.toml
 	@cd tools/cfg && CARGO_TARGET_DIR=/tmp/january_os_tools cargo build --release -q
 	@cp /tmp/january_os_tools/release/cfg $(CFG)
 
-# ==============================================================================
-# 从配置文件读取 (需要 cfg 工具)
-# ==============================================================================
-# 架构配置
-ARCH           = $(shell $(CFG) get arch.target)
-BOOT_TARGET    = $(shell $(CFG) get arch.boot_target)
-KERNEL_TARGET  = $(shell $(CFG) get arch.kernel_target)
-QEMU_CMD       = $(shell $(CFG) get arch.qemu_cmd)
-EFI_BOOT_FILE  = $(shell $(CFG) get arch.efi_boot_file)
+$(VMCFG): tools/vmcfg/vmcfg.sh
+	@echo "==> Installing vmcfg tool..."
+	@mkdir -p $(TOOLS_BIN)
+	@cp tools/vmcfg/vmcfg.sh $(VMCFG)
+	@chmod +x $(VMCFG)
 
-# QEMU 配置
-QEMU_MEMORY    = $(shell $(CFG) get qemu.memory)
-QEMU_SMP       = $(shell $(CFG) get qemu.smp)
-QEMU_CPU       = $(shell $(CFG) get qemu.cpu)
-QEMU_KVM       = $(shell $(CFG) get qemu.kvm)
-QEMU_MACHINE   = $(shell $(CFG) get qemu.machine)
-QEMU_IOMMU     = $(shell $(CFG) get qemu.iommu)
+# ==============================================================================
+# 从配置文件读取
+# ==============================================================================
+# 架构配置（cfg -> os_cfg.toml）
+ARCH           = $(if $(strip $(call oscfg_get,arch.target)),$(call oscfg_get,arch.target),x86_64)
+BOOT_TARGET    = $(if $(strip $(call oscfg_get,arch.boot_target)),$(call oscfg_get,arch.boot_target),x86_64-unknown-uefi)
+KERNEL_TARGET  = $(if $(strip $(call oscfg_get,arch.kernel_target)),$(call oscfg_get,arch.kernel_target),x86_64-unknown-none)
+EFI_BOOT_FILE  = $(if $(strip $(call oscfg_get,arch.efi_boot_file)),$(call oscfg_get,arch.efi_boot_file),BOOTX64.EFI)
+QEMU_CMD       = $(if $(filter aarch64,$(ARCH)),qemu-system-aarch64,qemu-system-x86_64)
+
+# QEMU 配置（vmcfg -> vm_cfg.toml）
+QEMU_MEMORY_RAW = $(call vmcfg_get,qemu.memory)
+QEMU_SMP_RAW = $(call vmcfg_get,qemu.smp)
+QEMU_CPU_RAW = $(call vmcfg_get,qemu.cpu)
+QEMU_KVM_RAW = $(call vmcfg_get,qemu.kvm)
+QEMU_MACHINE_RAW = $(call vmcfg_get,qemu.machine)
+QEMU_IOMMU_RAW = $(call vmcfg_get,qemu.iommu)
+QEMU_NUMA_ARGS_RAW = $(call vmcfg_get,qemu.numa_args)
+QEMU_EXTRA_ARGS_RAW = $(call vmcfg_get,qemu.extra_args)
+QEMU_MEMORY    ?= $(if $(strip $(QEMU_MEMORY_RAW)),$(QEMU_MEMORY_RAW),1G)
+QEMU_SMP       ?= $(if $(strip $(QEMU_SMP_RAW)),$(QEMU_SMP_RAW),4)
+QEMU_CPU       ?= $(if $(strip $(QEMU_CPU_RAW)),$(QEMU_CPU_RAW),host)
+QEMU_KVM       ?= $(if $(strip $(QEMU_KVM_RAW)),$(QEMU_KVM_RAW),auto)
+QEMU_MACHINE   ?= $(if $(strip $(QEMU_MACHINE_RAW)),$(QEMU_MACHINE_RAW),i440fx)
+QEMU_IOMMU     ?= $(if $(strip $(QEMU_IOMMU_RAW)),$(QEMU_IOMMU_RAW),false)
+QEMU_NUMA_ARGS ?= $(if $(strip $(QEMU_NUMA_ARGS_RAW)),$(QEMU_NUMA_ARGS_RAW),)
+QEMU_EXTRA_ARGS ?= $(if $(strip $(QEMU_EXTRA_ARGS_RAW)),$(QEMU_EXTRA_ARGS_RAW),)
 
 # ==============================================================================
 # 派生路径
@@ -73,6 +102,8 @@ comma := ,
 
 QEMU_OPTS = -m $(QEMU_MEMORY) -smp $(QEMU_SMP) $(if $(QEMU_CPU),-cpu $(QEMU_CPU),) $(USE_KVM) \
             $(MACHINE_OPTS) $(IOMMU_OPTS) \
+            $(QEMU_NUMA_ARGS) \
+            $(QEMU_EXTRA_ARGS) \
             -device qemu-xhci,id=xhci \
             -device usb-mouse,bus=xhci.0 \
             -device usb-kbd,bus=xhci.0 \
@@ -97,7 +128,7 @@ build: build-boot build-kernel
 	@echo "\\EFI\\BOOT\\$(EFI_BOOT_FILE)" > $(ESP_DIR)/startup.nsh
 	@echo "Build complete. Run 'make run' to start"
 
-build-tools: $(CFG)
+build-tools: $(CFG) $(VMCFG)
 
 build-boot: $(CFG)
 	@echo "==> Building bootloader ($(BOOT_TARGET))..."
@@ -106,7 +137,7 @@ build-boot: $(CFG)
 build-kernel: $(CFG)
 	@echo "==> Generating config..."
 	@mkdir -p $(KERNEL_DIR)/src/generated
-	@$(CFG) generate $(KERNEL_DIR)/src/generated/config.rs
+	@OS_CFG_PATH=$(OS_CFG_PATH) $(CFG) generate $(KERNEL_DIR)/src/generated/config.rs
 	@echo "mod config; pub use config::*;" > $(KERNEL_DIR)/src/generated/mod.rs
 	@if [ "$(ARCH)" = "x86_64" ]; then \
 		echo "==> Compiling trampoline (x86_64)..."; \
@@ -127,17 +158,17 @@ prepare-virtio-blk:
 	@truncate -s $(VIRTIO_BLK_SIZE) $(VIRTIO_BLK_IMG)
 	@echo "==> Created virtio-blk image: $(VIRTIO_BLK_IMG) ($(VIRTIO_BLK_SIZE))"
 
-run: build prepare-virtio-blk
-	@echo "==> $(QEMU_CMD): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, KVM=$(if $(USE_KVM),on,off)"
+run: $(VMCFG) build prepare-virtio-blk
+	@echo "==> $(QEMU_CMD): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, CPU='$(QEMU_CPU)', KVM=$(if $(USE_KVM),on,off), NUMA=$(if $(strip $(QEMU_NUMA_ARGS)),on,off)"
 	@echo "==> Serial console (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -nographic
 
-run-gui: build prepare-virtio-blk
-	@echo "==> $(QEMU_CMD): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, KVM=$(if $(USE_KVM),on,off)"
+run-gui: $(VMCFG) build prepare-virtio-blk
+	@echo "==> $(QEMU_CMD): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, CPU='$(QEMU_CPU)', KVM=$(if $(USE_KVM),on,off), NUMA=$(if $(strip $(QEMU_NUMA_ARGS)),on,off)"
 	@echo "==> GUI console (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -serial stdio
 
-debug: build prepare-virtio-blk
+debug: $(VMCFG) build prepare-virtio-blk
 	@echo "==> GDB server on :1234 (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -nographic -s -S
 
@@ -175,7 +206,7 @@ iso: build
 # ==============================================================================
 install-deps: $(CFG)
 	@echo "==> Installing Rust toolchain for $(ARCH)..."
-	rustup target add $(shell $(CFG) get arch.rustup_target)
+	rustup target add $(if $(strip $(call oscfg_get,arch.rustup_target)),$(call oscfg_get,arch.rustup_target),x86_64-unknown-uefi)
 	rustup component add rust-src llvm-tools-preview
 	cargo install cargo-binutils
 	@echo ""
@@ -224,8 +255,12 @@ install-deps: $(CFG)
 # 配置显示
 # ==============================================================================
 config: $(CFG)
-	@echo "=== january_os configuration ==="
-	@$(CFG) show
+	@echo "=== january_os kernel configuration (os_cfg.toml) ==="
+	@OS_CFG_PATH=$(OS_CFG_PATH) $(CFG) show
+
+vm-config: $(VMCFG)
+	@echo "=== january_os VM configuration (vm_cfg.toml) ==="
+	@VM_CFG_PATH=$(VM_CFG_PATH) $(VMCFG) show
 
 help:
 	@echo "Build:"
@@ -237,13 +272,15 @@ help:
 	@echo "Run:"
 	@echo "  make run           - Run in QEMU (serial console)"
 	@echo "  make run-gui       - Run in QEMU (GUI console)"
+	@echo "  edit vm_cfg.toml   - Set qemu.cpu / qemu.numa_args / qemu.extra_args"
 	@echo ""
 	@echo "Debug:"
 	@echo "  make debug         - Run with GDB server (:1234)"
 	@echo ""
 	@echo "Utility:"
-	@echo "  make config        - Show current configuration"
+	@echo "  make config        - Show current kernel configuration (os_cfg.toml)"
+	@echo "  make vm-config     - Show current VM configuration (vm_cfg.toml)"
 	@echo "  make install-deps  - Install required tools"
 	@echo ""
 	@echo "QEMU: Ctrl+A X to exit"
-	@echo "Configuration: edit os_cfg.toml"
+	@echo "Configuration: edit os_cfg.toml and vm_cfg.toml"

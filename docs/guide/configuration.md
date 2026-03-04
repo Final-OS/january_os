@@ -104,6 +104,14 @@ profile = "linux_full"
 va_mode = "la57_prefer"
 la57_fallback = "4level"
 kaslr = "off"
+vmemmap_start = "0xFFFFEA0000000000"
+vmemmap_end = "0xFFFFEFFFFFFFFFFF"
+modules_start = "0xFFFFFFFFA0000000"
+modules_end = "0xFFFFFFFFFEFFFFFF"
+fixmap_start = "0xFFFFFFFFFF000000"
+fixmap_end = "0xFFFFFFFFFFFFF000"
+manage_full_phys = true
+teardown_identity_map = false
 ```
 
 | 选项 | 说明 | 默认值 |
@@ -123,6 +131,14 @@ kaslr = "off"
 | `layout.va_mode` | VA 模式策略 | `"la57_prefer"` |
 | `layout.la57_fallback` | LA57 回退策略 | `"4level"` |
 | `layout.kaslr` | KASLR 开关 | `"off"` |
+| `layout.vmemmap_start` | vmemmap 窗口起始地址 | `"0xFFFFEA0000000000"` |
+| `layout.vmemmap_end` | vmemmap 窗口结束地址 | `"0xFFFFEFFFFFFFFFFF"` |
+| `layout.modules_start` | modules 窗口起始地址 | `"0xFFFFFFFFA0000000"` |
+| `layout.modules_end` | modules 窗口结束地址 | `"0xFFFFFFFFFEFFFFFF"` |
+| `layout.fixmap_start` | fixmap 窗口起始地址 | `"0xFFFFFFFFFF000000"` |
+| `layout.fixmap_end` | fixmap 窗口结束地址 | `"0xFFFFFFFFFFFFF000"` |
+| `layout.manage_full_phys` | 要求完整物理内存可管理（超窗即失败） | `true` |
+| `layout.teardown_identity_map` | 启动后回收 0..3GiB identity-map | `false` |
 
 ---
 

@@ -32,8 +32,14 @@ protected_mode:
     mov gs, ax
 
     ; Enable PAE (Physical Address Extension) - Bit 5 of CR4
+    ; If BSP runs with 5-level paging, mirror CR4.LA57 on AP before enabling PG.
     mov eax, cr4
     or eax, 1 << 5
+    mov dl, [0x9000 - 33]
+    test dl, dl
+    jz .no_la57
+    or eax, 1 << 12
+.no_la57:
     mov cr4, eax
 
     ; Load CR3 (Page Table)

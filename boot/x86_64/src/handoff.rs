@@ -11,7 +11,10 @@ use crate::bootinfo::{
 use crate::buffers::BootBufferLayout;
 use crate::paging::{PAGE_SIZE, copy_memory_map, enter_kernel_with_la57_fallback, setup_page_tables};
 use crate::stages::StageState;
-use crate::cfg::{VMALLOC_END, VMALLOC_START};
+use crate::cfg::{
+    FIXMAP_END, FIXMAP_START, MODULES_END, MODULES_START, VMALLOC_END, VMALLOC_START, VMEMMAP_END,
+    VMEMMAP_START,
+};
 
 pub unsafe fn handoff_to_kernel(
     mmap: MemoryMapOwned,
@@ -21,8 +24,14 @@ pub unsafe fn handoff_to_kernel(
     let (mem_entries, total_mem, usable_mem, max_phys_addr) =
         unsafe { copy_memory_map(mmap.entries(), buffers.memmap_phys) };
 
-    let paging =
-        unsafe { setup_page_tables(stage.kernel_size, max_phys_addr, buffers.page_table_phys) };
+    let paging = unsafe {
+        setup_page_tables(
+            stage.kernel_size,
+            max_phys_addr,
+            buffers.page_table_phys,
+            buffers.page_table_aux_phys,
+        )
+    };
 
     let mut final_root_phys = paging.root_phys_addr;
     let mut final_pml4_compat = paging.pml4_compat_phys;
@@ -44,13 +53,12 @@ pub unsafe fn handoff_to_kernel(
         direct_map_end: paging.direct_map_window_end,
         vmalloc_start: VMALLOC_START,
         vmalloc_end: VMALLOC_END.saturating_add(1),
-        // Linux 风格窗口：当前先固定默认值，后续再接入可配置化。
-        vmemmap_start: 0xFFFF_EA00_0000_0000,
-        vmemmap_end: 0xFFFF_EFFF_FFFF_FFFFu64.saturating_add(1),
-        modules_start: 0xFFFF_FFFF_A000_0000,
-        modules_end: 0xFFFF_FFFF_FEFF_FFFFu64.saturating_add(1),
-        fixmap_start: 0xFFFF_FFFF_FF00_0000,
-        fixmap_end: 0xFFFF_FFFF_FFFF_F000u64.saturating_add(1),
+        vmemmap_start: VMEMMAP_START,
+        vmemmap_end: VMEMMAP_END.saturating_add(1),
+        modules_start: MODULES_START,
+        modules_end: MODULES_END.saturating_add(1),
+        fixmap_start: FIXMAP_START,
+        fixmap_end: FIXMAP_END.saturating_add(1),
     };
 
     let boot_info_ptr = buffers.bootinfo_phys as *mut BootInfo;
@@ -99,6 +107,7 @@ pub unsafe fn handoff_to_kernel(
 
     let kernel_stack_top =
         DIRECT_MAP_OFFSET + buffers.kernel_stack_phys + (KERNEL_STACK_PAGES as u64 * PAGE_SIZE) - 8;
+    let la57_trampoline_stack_top = buffers.la57_trampoline_phys + (2 * PAGE_SIZE) - 8;
 
     let boot_info_virt = DIRECT_MAP_OFFSET + buffers.bootinfo_phys;
 
@@ -110,6 +119,8 @@ pub unsafe fn handoff_to_kernel(
                 kernel_stack_top,
                 boot_info_virt,
                 KERNEL_PHYS_ADDR,
+                buffers.la57_trampoline_phys,
+                la57_trampoline_stack_top,
             );
         }
     } else {

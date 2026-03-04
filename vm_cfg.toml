@@ -1,0 +1,39 @@
+# ==============================================================================
+# january_os VM Runtime Configuration
+# ==============================================================================
+#
+# 本文件仅用于虚拟机运行参数（QEMU / VMware）。
+# 由 Makefile + tools/vmcfg 解析，不参与内核常量生成。
+
+# ==============================================================================
+# QEMU
+# ==============================================================================
+[qemu]
+# 客户机内存
+memory = "1G"
+# 客户机 vCPU 数量
+smp = 4
+# CPU 型号/特性串（例如: "host", "max,+la57"）
+# LA57 测试建议配合 kvm = "off"。
+cpu = "host"
+# KVM 模式: "auto" / "on" / "off"
+kvm = "auto"
+# 机器类型: "i440fx" / "q35"
+machine = "q35"
+# 是否启用 Intel IOMMU 设备（需要 q35）
+iommu = true
+# 可选 NUMA 参数（原样透传到 QEMU）
+# 示例:
+numa_args = "-object memory-backend-ram,id=n0,size=512M -numa node,nodeid=0,cpus=0-1,memdev=n0 -object memory-backend-ram,id=n1,size=512M -numa node,nodeid=1,cpus=2-3,memdev=n1"
+# numa_args = ""
+# 其他额外参数（原样透传到 QEMU）
+extra_args = ""
+
+# ==============================================================================
+# VMware (预留)
+# ==============================================================================
+[vmware]
+memory = "1G"
+smp = 4
+cpu = "host"
+firmware = "uefi"

@@ -217,10 +217,10 @@ pub fn map(phys_addr: u64, size: usize, dir: DmaDirection) -> DmaAddr {
             if let Some(ref mut swiotlb) = mgr.swiotlb {
                 swiotlb.map(phys_addr, size, dir)
             } else {
-                DmaAddr::new(phys_addr)
+                DmaAddr::NULL
             }
         }
-        _ => DmaAddr::new(phys_addr),
+        _ => DmaAddr::NULL,
     }
 }
 
@@ -369,7 +369,7 @@ fn vtd_map(mgr: &mut IommuManager, phys_addr: u64, size: usize) -> DmaAddr {
         Some(p) => p,
         None => {
             crate::warn!("[IOMMU] invalid DMA map size {}", size);
-            return DmaAddr::new(phys_addr);
+            return DmaAddr::NULL;
         }
     };
 
@@ -383,8 +383,13 @@ fn vtd_map(mgr: &mut IommuManager, phys_addr: u64, size: usize) -> DmaAddr {
         }
     }
     
-    // 映射失败，返回物理地址（可能导致 DMA 错误）
-    DmaAddr::new(phys_addr)
+    crate::warn!(
+        "[IOMMU] VT-d map failed: phys={:#x} size={} mode={:?}",
+        phys_addr,
+        size,
+        mgr.translation_mode
+    );
+    DmaAddr::NULL
 }
 
 /// VT-d 取消映射
@@ -559,8 +564,17 @@ pub fn dma_map_single(virt: *const u8, size: usize, dir: DmaDirection) -> DmaAdd
     }
 
     let phys = virt_addr - direct_map_offset;
-    
-    map(phys, size, dir)
+    let dma = map(phys, size, dir);
+    if dma.is_null() {
+        crate::warn!(
+            "[IOMMU] dma_map_single failed: virt={:#x} phys={:#x} size={} dir={:?}",
+            virt_addr,
+            phys,
+            size,
+            dir
+        );
+    }
+    dma
 }
 
 /// 取消单个缓冲区的 DMA 映射

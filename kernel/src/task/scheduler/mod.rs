@@ -134,6 +134,14 @@ fn switch_to_mm_pgd_if_needed(target_pgd: u64) {
         return;
     }
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        let init_pgd = init_mm_pgd();
+        if target_pgd != init_pgd {
+            crate::mm::arch::sync_kernel_root_entries_from_init(target_pgd);
+        }
+    }
+
     if current_cr3_pgd() != target_pgd {
         unsafe {
             crate::mm::arch::write_cr3(target_pgd);

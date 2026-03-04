@@ -217,6 +217,7 @@ if info.magic != BOOTINFO_MAGIC {
   - 当前固件是否已激活 LA57（CR4.LA57）
 - 若 CPU 支持但固件未激活，boot 在 handoff 前通过 trampoline 尝试从 4-level 切换到 5-level。
 - 任一步骤不满足时按 `la57_fallback=4level` 回退到 4-level 并继续启动。
+- 内核进入后会再以硬件状态（CR4.LA57）校验并修正运行时分页层级，避免 handoff 预期与实际模式不一致。
 
 #### 3. 内存管理初始化
 

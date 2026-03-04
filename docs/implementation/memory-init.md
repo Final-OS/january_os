@@ -142,7 +142,9 @@ pub unsafe fn init_heap(target_size: usize) -> usize
 `SimpleHeap` 保留为回退与测试通道。
 运行期可通过 `mm status` 同时观察 `kmalloc`（主路径）和 `heap(fallback)`（回退路径）状态。
 
-另外，`max_pfn` 已不再硬编码截断到 4GiB，而是按启动页表 direct-map 当前可覆盖范围确定（上限到 `vmalloc` 起始地址之前）。
+另外，`max_pfn` 不再硬编码 4GiB。当前由 `kernel.layout.manage_full_phys` 控制：
+- `true`（默认）：若可用物理内存超出 direct-map 可覆盖窗口，启动直接失败（避免静默截断）；
+- `false`：允许降级并按 direct-map 窗口上限截断。
 
 ## 5. PCP 初始化
 

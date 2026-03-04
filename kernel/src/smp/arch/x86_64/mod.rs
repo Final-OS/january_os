@@ -207,6 +207,8 @@ unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) -> 
     *(data_base.sub(trampoline::OFFSET_CR3 as usize) as *mut u64) = pml4_phys;
     *(data_base.sub(trampoline::OFFSET_RSP as usize) as *mut u64) = stack_top;
     *(data_base.sub(trampoline::OFFSET_ENTRY as usize) as *mut u64) = ap_entry as *const () as u64;
+    *(data_base.sub(trampoline::OFFSET_LA57 as usize) as *mut u8) =
+        if crate::mm::page_levels() == 5 { 1 } else { 0 };
     // Copy GDTR and IDTR (10 bytes each)
     core::ptr::copy_nonoverlapping(
         gdtr.as_ptr(),

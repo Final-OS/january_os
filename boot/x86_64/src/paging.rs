@@ -6,7 +6,7 @@ use uefi::boot::MemoryType;
 
 use crate::bootinfo::{
     DIRECT_MAP_OFFSET, KERNEL_PHYS_ADDR, KERNEL_VIRT_ADDR, MAX_MEMORY_REGIONS, MemoryRegion,
-    MemoryRegionType,
+    MemoryRegionType, PAGE_TABLE_BUFFER_PAGES,
 };
 use crate::cfg::{KERNEL_LA57_FALLBACK, KERNEL_VA_MODE, VMALLOC_START};
 
@@ -28,6 +28,8 @@ const PTE_HUGE: u64 = 1 << 7;
 const PTE_GLOBAL: u64 = 1 << 8;
 /// CR4.LA57
 const CR4_LA57: u64 = 1 << 12;
+/// 启动期 4->5 切换 trampoline 开关。
+const ENABLE_LA57_TRAMPOLINE: bool = true;
 
 #[derive(Clone, Copy)]
 pub struct PagingModeProbe {
@@ -38,8 +40,10 @@ pub struct PagingModeProbe {
     pub va_mode_la57_prefer: bool,
     pub fallback_4level: bool,
     pub transition_requested: bool,
-    pub selected_page_levels: u8,
-    pub selected_va_bits: u8,
+    pub current_page_levels: u8,
+    pub current_va_bits: u8,
+    pub target_page_levels: u8,
+    pub target_va_bits: u8,
 }
 
 /// 运行时页表布局输出
@@ -66,19 +70,26 @@ pub struct PageTableSetupResult {
 /// 页表分配器状态
 struct PageTableAllocator {
     next_page: u64,
+    end_page: u64,
 }
 
 impl PageTableAllocator {
-    fn new(start: u64) -> Self {
-        Self { next_page: start }
+    fn new(start: u64, pages: usize) -> Self {
+        Self {
+            next_page: start,
+            end_page: start + (pages as u64) * PAGE_SIZE,
+        }
     }
 
     /// 分配一个零初始化的页面
-    unsafe fn alloc_page(&mut self) -> u64 {
+    unsafe fn alloc_page(&mut self) -> Option<u64> {
+        if self.next_page + PAGE_SIZE > self.end_page {
+            return None;
+        }
         let page = self.next_page;
         self.next_page += PAGE_SIZE;
         unsafe { core::ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize) };
-        page
+        Some(page)
     }
 }
 
@@ -98,16 +109,16 @@ unsafe fn ensure_next_table(
     allocator: &mut PageTableAllocator,
     table_phys: u64,
     idx: usize,
-) -> u64 {
+) -> Option<u64> {
     let entry_ptr = unsafe { table_entry_mut(table_phys, idx) };
     let entry = unsafe { *entry_ptr };
     if entry & PTE_PRESENT != 0 {
-        return entry & PTE_ADDR_MASK;
+        return Some(entry & PTE_ADDR_MASK);
     }
 
-    let child = unsafe { allocator.alloc_page() };
+    let child = unsafe { allocator.alloc_page()? };
     unsafe { *entry_ptr = child | PTE_PRESENT | PTE_WRITABLE };
-    child
+    Some(child)
 }
 
 unsafe fn map_1g_page(
@@ -116,16 +127,20 @@ unsafe fn map_1g_page(
     page_levels: u8,
     virt: u64,
     phys: u64,
-) {
+) -> bool {
     let mut table_phys = root_phys;
     for level in (4..=page_levels).rev() {
         let idx = level_index(virt, level);
-        table_phys = unsafe { ensure_next_table(allocator, table_phys, idx) };
+        let Some(next) = (unsafe { ensure_next_table(allocator, table_phys, idx) }) else {
+            return false;
+        };
+        table_phys = next;
     }
 
     let pdpt_idx = level_index(virt, 3);
     let pdpt_entry = unsafe { table_entry_mut(table_phys, pdpt_idx) };
     unsafe { *pdpt_entry = (phys & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | PTE_GLOBAL };
+    true
 }
 
 unsafe fn map_4k_page(
@@ -135,16 +150,20 @@ unsafe fn map_4k_page(
     virt: u64,
     phys: u64,
     flags: u64,
-) {
+) -> bool {
     let mut table_phys = root_phys;
     for level in (2..=page_levels).rev() {
         let idx = level_index(virt, level);
-        table_phys = unsafe { ensure_next_table(allocator, table_phys, idx) };
+        let Some(next) = (unsafe { ensure_next_table(allocator, table_phys, idx) }) else {
+            return false;
+        };
+        table_phys = next;
     }
 
     let pt_idx = level_index(virt, 1);
     let pte = unsafe { table_entry_mut(table_phys, pt_idx) };
     unsafe { *pte = (phys & PTE_ADDR_MASK) | flags };
+    true
 }
 
 unsafe fn kernel_pml4_from_root(root_phys: u64, page_levels: u8) -> u64 {
@@ -167,12 +186,34 @@ unsafe fn setup_page_tables_nlevel(
     page_levels: u8,
     va_bits: u8,
 ) -> PageTableSetupResult {
-    let root = unsafe { allocator.alloc_page() };
+    let Some(root) = (unsafe { allocator.alloc_page() }) else {
+        return PageTableSetupResult {
+            root_phys_addr: 0,
+            pml4_compat_phys: 0,
+            page_levels,
+            va_bits,
+            direct_map_window_end: VMALLOC_START,
+            la57_transition_root_phys: 0,
+            la57_transition_pml4_compat_phys: 0,
+            fallback_root_phys: 0,
+        };
+    };
 
     // 1) 恒等映射前 4GiB（4 x 1GiB）
     for i in 0..4u64 {
         let addr = i * ONE_GIB;
-        unsafe { map_1g_page(allocator, root, page_levels, addr, addr) };
+        if !unsafe { map_1g_page(allocator, root, page_levels, addr, addr) } {
+            return PageTableSetupResult {
+                root_phys_addr: 0,
+                pml4_compat_phys: 0,
+                page_levels,
+                va_bits,
+                direct_map_window_end: VMALLOC_START,
+                la57_transition_root_phys: 0,
+                la57_transition_pml4_compat_phys: 0,
+                fallback_root_phys: 0,
+            };
+        }
     }
 
     // 2) 内核高半区 bootstrap 映射：
@@ -182,7 +223,7 @@ unsafe fn setup_page_tables_nlevel(
     for i in 0..ENTRIES_PER_TABLE as u64 {
         let virt = kernel_window_base + i * PAGE_SIZE;
         let phys = i * PAGE_SIZE;
-        unsafe {
+        if !unsafe {
             map_4k_page(
                 allocator,
                 root,
@@ -191,14 +232,25 @@ unsafe fn setup_page_tables_nlevel(
                 phys,
                 PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL,
             )
-        };
+        } {
+            return PageTableSetupResult {
+                root_phys_addr: 0,
+                pml4_compat_phys: 0,
+                page_levels,
+                va_bits,
+                direct_map_window_end: VMALLOC_START,
+                la57_transition_root_phys: 0,
+                la57_transition_pml4_compat_phys: 0,
+                fallback_root_phys: 0,
+            };
+        }
     }
 
     let kernel_pages = (kernel_size + PAGE_SIZE - 1) / PAGE_SIZE;
     for i in 0..kernel_pages {
         let virt = KERNEL_VIRT_ADDR + i * PAGE_SIZE;
         let phys = KERNEL_PHYS_ADDR + i * PAGE_SIZE;
-        unsafe {
+        if !unsafe {
             map_4k_page(
                 allocator,
                 root,
@@ -207,7 +259,18 @@ unsafe fn setup_page_tables_nlevel(
                 phys,
                 PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL,
             )
-        };
+        } {
+            return PageTableSetupResult {
+                root_phys_addr: 0,
+                pml4_compat_phys: 0,
+                page_levels,
+                va_bits,
+                direct_map_window_end: VMALLOC_START,
+                la57_transition_root_phys: 0,
+                la57_transition_pml4_compat_phys: 0,
+                fallback_root_phys: 0,
+            };
+        }
     }
 
     // 3) 直接映射区（1GiB huge pages）
@@ -219,7 +282,18 @@ unsafe fn setup_page_tables_nlevel(
     for i in 0..gb_pages {
         let phys = i * ONE_GIB;
         let virt = DIRECT_MAP_OFFSET + phys;
-        unsafe { map_1g_page(allocator, root, page_levels, virt, phys) };
+        if !unsafe { map_1g_page(allocator, root, page_levels, virt, phys) } {
+            return PageTableSetupResult {
+                root_phys_addr: 0,
+                pml4_compat_phys: 0,
+                page_levels,
+                va_bits,
+                direct_map_window_end: VMALLOC_START,
+                la57_transition_root_phys: 0,
+                la57_transition_pml4_compat_phys: 0,
+                fallback_root_phys: 0,
+            };
+        }
     }
 
     let pml4_compat_phys = unsafe { kernel_pml4_from_root(root, page_levels) };
@@ -260,14 +334,15 @@ pub fn probe_paging_mode() -> PagingModeProbe {
     let la57_active = (cr4 & CR4_LA57) != 0;
     let va_mode_la57_prefer = KERNEL_VA_MODE == "la57_prefer";
     let fallback_4level = KERNEL_LA57_FALLBACK == "4level";
-    let transition_requested = va_mode_la57_prefer && la57_supported && !la57_active;
+    let transition_requested =
+        ENABLE_LA57_TRAMPOLINE && va_mode_la57_prefer && la57_supported && !la57_active;
 
-    let (selected_page_levels, selected_va_bits) =
-        if va_mode_la57_prefer && la57_supported && la57_active {
-            (5, 57)
-        } else {
-            (4, 48)
-        };
+    let (current_page_levels, current_va_bits) = if la57_active { (5, 57) } else { (4, 48) };
+    let (target_page_levels, target_va_bits) = if va_mode_la57_prefer && la57_supported {
+        (5, 57)
+    } else {
+        (4, 48)
+    };
 
     PagingModeProbe {
         cpuid_7_0_ecx,
@@ -277,8 +352,10 @@ pub fn probe_paging_mode() -> PagingModeProbe {
         va_mode_la57_prefer,
         fallback_4level,
         transition_requested,
-        selected_page_levels,
-        selected_va_bits,
+        current_page_levels,
+        current_va_bits,
+        target_page_levels,
+        target_va_bits,
     }
 }
 
@@ -291,22 +368,33 @@ pub unsafe fn setup_page_tables(
     kernel_size: u64,
     max_phys_addr: u64,
     page_table_start: u64,
+    page_table_aux_start: u64,
 ) -> PageTableSetupResult {
     let probe = probe_paging_mode();
-    let mut allocator = PageTableAllocator::new(page_table_start);
+    let mut allocator = PageTableAllocator::new(page_table_start, PAGE_TABLE_BUFFER_PAGES);
 
     if probe.va_mode_la57_prefer && probe.la57_supported {
         if probe.la57_active {
             return unsafe { setup_page_tables_5l(&mut allocator, kernel_size, max_phys_addr) };
         }
 
-        if probe.fallback_4level {
+        if ENABLE_LA57_TRAMPOLINE && probe.fallback_4level {
             let base4 =
                 unsafe { setup_page_tables_4l(&mut allocator, kernel_size, max_phys_addr) };
-            let plan5 =
-                unsafe { setup_page_tables_5l(&mut allocator, kernel_size, max_phys_addr) };
+            if base4.root_phys_addr == 0 {
+                return base4;
+            }
 
-            if (plan5.root_phys_addr >> 32) != 0 {
+            let mut allocator5 =
+                PageTableAllocator::new(page_table_aux_start, PAGE_TABLE_BUFFER_PAGES);
+            let plan5 =
+                unsafe { setup_page_tables_5l(&mut allocator5, kernel_size, max_phys_addr) };
+
+            if plan5.root_phys_addr == 0
+                || plan5.pml4_compat_phys == 0
+                || (plan5.root_phys_addr >> 32) != 0
+                || (page_table_aux_start >> 32) != 0
+            {
                 return base4;
             }
 
@@ -337,14 +425,34 @@ fn read_cr4() -> u64 {
     cr4
 }
 
-unsafe extern "C" {
-    fn boot_enter_kernel_with_la57_fallback(
-        la57_root_phys: u64,
-        fallback_root_phys: u64,
-        kernel_stack_top: u64,
-        boot_info_ptr: u64,
-        kernel_entry: u64,
-    ) -> !;
+unsafe extern "sysv64" {
+    fn boot_enter_kernel_with_la57_fallback_start();
+    fn boot_enter_kernel_with_la57_fallback_end();
+}
+
+type La57TransitionEntry = unsafe extern "sysv64" fn(u64, u64, u64, u64, u64, u64) -> !;
+
+#[inline(never)]
+unsafe fn enter_kernel_4level_fallback(
+    fallback_root_phys: u64,
+    kernel_stack_top: u64,
+    boot_info_ptr: u64,
+    kernel_entry: u64,
+) -> ! {
+    unsafe {
+        asm!(
+            "cli",
+            "mov cr3, {root}",
+            "mov rsp, {stack}",
+            "mov rdi, {boot_info}",
+            "jmp {entry}",
+            root = in(reg) fallback_root_phys,
+            stack = in(reg) kernel_stack_top,
+            boot_info = in(reg) boot_info_ptr,
+            entry = in(reg) kernel_entry,
+            options(noreturn)
+        );
+    }
 }
 
 /// 启动期 4-level -> 5-level 切换 trampoline（失败即回退 4-level 并继续跳内核）。
@@ -357,14 +465,49 @@ pub unsafe fn enter_kernel_with_la57_fallback(
     kernel_stack_top: u64,
     boot_info_ptr: u64,
     kernel_entry: u64,
+    trampoline_phys: u64,
+    trampoline_stack_top: u64,
 ) -> ! {
+    let tramp_start = boot_enter_kernel_with_la57_fallback_start as *const () as usize;
+    let tramp_end = boot_enter_kernel_with_la57_fallback_end as *const () as usize;
+    let tramp_size = tramp_end.saturating_sub(tramp_start);
+    let tramp_capacity = trampoline_stack_top
+        .saturating_add(8)
+        .saturating_sub(trampoline_phys) as usize;
+
+    if trampoline_phys == 0
+        || (trampoline_phys >> 32) != 0
+        || tramp_size == 0
+        || tramp_size > tramp_capacity
+    {
+        unsafe {
+            enter_kernel_4level_fallback(
+                fallback_root_phys,
+                kernel_stack_top,
+                boot_info_ptr,
+                kernel_entry,
+            )
+        };
+    }
+
     unsafe {
-        boot_enter_kernel_with_la57_fallback(
+        core::ptr::copy_nonoverlapping(
+            tramp_start as *const u8,
+            trampoline_phys as *mut u8,
+            tramp_size,
+        );
+    }
+
+    let tramp_fn: La57TransitionEntry =
+        unsafe { core::mem::transmute::<usize, La57TransitionEntry>(trampoline_phys as usize) };
+    unsafe {
+        tramp_fn(
             la57_root_phys,
             fallback_root_phys,
             kernel_stack_top,
             boot_info_ptr,
             kernel_entry,
+            trampoline_stack_top,
         )
     }
 }
@@ -372,12 +515,18 @@ pub unsafe fn enter_kernel_with_la57_fallback(
 global_asm!(
     r#"
 .section .text
+.global boot_enter_kernel_with_la57_fallback_start
 .global boot_enter_kernel_with_la57_fallback
+.global boot_enter_kernel_with_la57_fallback_end
+boot_enter_kernel_with_la57_fallback_start:
+.set LA57_GDT_LIMIT, .Lla57_gdt_end - .Lla57_gdt - 1
+.set LA57_LONG64_DELTA, .Llong64 - .Lnext_eip
 boot_enter_kernel_with_la57_fallback:
     cli
     mov r12, rdx
     mov r13, rcx
     mov r14, r8
+    mov r15, r9
     mov r11, rsi
     mov rax, rdi
     shr rax, 32
@@ -391,8 +540,13 @@ boot_enter_kernel_with_la57_fallback:
     test rax, 0x1000
     jnz .Lenter_5l_direct
     mov ebx, edi
-    lea rax, [rip + .Lla57_gdt_desc]
-    lgdt [rax]
+    sub rsp, 16
+    mov word ptr [rsp], 0x1f
+    lea rax, [rip + .Lla57_gdt]
+    mov qword ptr [rsp + 2], rax
+    lgdt [rsp]
+    add rsp, 16
+    mov esi, r15d
     lea rax, [rip + .Lcompat32]
     push 0x8
     push rax
@@ -421,6 +575,7 @@ boot_enter_kernel_with_la57_fallback:
     mov eax, cr0
     and eax, 0x7fffffff
     mov cr0, eax
+    mov esp, esi
 
     mov eax, cr4
     or eax, (1 << 5) | (1 << 12)
@@ -428,16 +583,16 @@ boot_enter_kernel_with_la57_fallback:
 
     mov eax, ebx
     mov cr3, eax
-    mov ecx, 0xC0000080
-    rdmsr
-    or eax, (1 << 8)
-    wrmsr
 
     mov eax, cr0
     or eax, 0x80000000
     mov cr0, eax
+    call .Lnext_eip
+.Lnext_eip:
+    pop eax
+    add eax, OFFSET LA57_LONG64_DELTA
     push 0x18
-    push .Llong64
+    push eax
     retf
 
 .code64
@@ -460,10 +615,7 @@ boot_enter_kernel_with_la57_fallback:
     .quad 0x00cf92000000ffff
     .quad 0x00209a0000000000
 .Lla57_gdt_end:
-
-.Lla57_gdt_desc:
-    .word .Lla57_gdt_end - .Lla57_gdt - 1
-    .quad .Lla57_gdt
+boot_enter_kernel_with_la57_fallback_end:
 "#
 );
 

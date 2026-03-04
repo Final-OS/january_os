@@ -123,6 +123,28 @@ pub extern "x86-interrupt" fn page_fault_handler(
         asm!("mov {}, cr2", out(reg) fault_addr, options(nostack, preserves_flags));
     }
 
+    let present = error_code & 0x1 != 0;
+    let write = error_code & 0x2 != 0;
+    let user = error_code & 0x4 != 0;
+
+    // 内核态 vmalloc/ioremap 缺页兜底修复：
+    // 保持 I/O 快路径零额外检查，仅在异常路径尝试按元数据重建映射并重试指令。
+    if !present
+        && write
+        && !user
+        && crate::mm::is_vmalloc_addr(fault_addr)
+        && crate::mm::vmalloc::ensure_vmalloc_page_mapped_in_current(fault_addr)
+    {
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[pf] healed vmalloc fault addr={:#x} err={:#x}",
+                fault_addr,
+                error_code
+            );
+        }
+        return;
+    }
+
     // 调用 mm 模块的页错误处理。
     // 优先解析当前任务的地址空间，缺失时回退到 init_mm。
     let direct_map = crate::mm::direct_map_offset();

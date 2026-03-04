@@ -51,6 +51,43 @@ pub fn read_cr3() -> u64 {
     cr3
 }
 
+/// 获取当前 CR4 值
+#[inline]
+pub fn read_cr4() -> u64 {
+    let cr4: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov {}, cr4",
+            out(reg) cr4,
+            options(nostack, preserves_flags)
+        );
+    }
+    cr4
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PagingHardwareState {
+    pub cr3_root: u64,
+    pub cr4: u64,
+    pub la57_active: bool,
+    pub page_levels: u8,
+    pub va_bits: u8,
+}
+
+#[inline]
+pub fn paging_hardware_state() -> PagingHardwareState {
+    let cr3_root = read_cr3() & 0x000F_FFFF_FFFF_F000;
+    let cr4 = read_cr4();
+    let la57_active = (cr4 & (1 << 12)) != 0;
+    PagingHardwareState {
+        cr3_root,
+        cr4,
+        la57_active,
+        page_levels: if la57_active { 5 } else { 4 },
+        va_bits: if la57_active { 57 } else { 48 },
+    }
+}
+
 /// 设置 CR3 值 (切换页表)
 /// 
 /// # Safety

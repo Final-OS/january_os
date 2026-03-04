@@ -12,10 +12,11 @@ pub use paging::{
     PTE_NO_CACHE, PTE_ACCESSED, PTE_DIRTY, PTE_HUGE,
     PTE_GLOBAL, PTE_NO_EXECUTE, PTE_ADDR_MASK,
     pml5_index, pml4_index, pdpt_index, pd_index, pt_index, page_offset, level_index,
+    sync_kernel_root_entries_from_init,
 };
 
 pub use tlb::{
     flush_tlb, flush_tlb_all, flush_tlb_range,
-    read_cr3, write_cr3, read_cr2,
+    paging_hardware_state, read_cr3, read_cr4, write_cr3, read_cr2,
     set_global_pages_enabled,
 };

@@ -1,7 +1,7 @@
 //! Configuration tool for january_os
 //!
 //! Usage:
-//!   cfg get <key>              - Get a config value (dot notation: qemu.memory)
+//!   cfg get <key>              - Get a config value (dot notation: memory.page_size)
 //!   cfg generate <output>      - Generate Rust config module
 //!   cfg show                   - Show all config values
 
@@ -12,7 +12,6 @@ use std::{env, fs, path::Path, process};
 #[derive(Debug, Deserialize)]
 struct Config {
     arch: ArchConfig,
-    qemu: QemuConfig,
     memory: MemoryConfig,
     kernel: KernelConfig,
     user: UserConfig,
@@ -26,22 +25,6 @@ struct Config {
 #[derive(Debug, Deserialize)]
 struct ArchConfig {
     target: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct QemuConfig {
-    memory: String,
-    smp: u32,
-    cpu: String,
-    kvm: String,
-    #[serde(default = "default_machine")]
-    machine: String,
-    #[serde(default)]
-    iommu: bool,
-}
-
-fn default_machine() -> String {
-    "i440fx".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +71,22 @@ struct KernelLayoutConfig {
     la57_fallback: String,
     #[serde(default = "default_kaslr_mode")]
     kaslr: String,
+    #[serde(default = "default_vmemmap_start")]
+    vmemmap_start: String,
+    #[serde(default = "default_vmemmap_end")]
+    vmemmap_end: String,
+    #[serde(default = "default_modules_start")]
+    modules_start: String,
+    #[serde(default = "default_modules_end")]
+    modules_end: String,
+    #[serde(default = "default_fixmap_start")]
+    fixmap_start: String,
+    #[serde(default = "default_fixmap_end")]
+    fixmap_end: String,
+    #[serde(default = "default_manage_full_phys")]
+    manage_full_phys: bool,
+    #[serde(default = "default_teardown_identity_map")]
+    teardown_identity_map: bool,
 }
 
 impl Default for KernelLayoutConfig {
@@ -97,6 +96,14 @@ impl Default for KernelLayoutConfig {
             va_mode: default_va_mode(),
             la57_fallback: default_la57_fallback(),
             kaslr: default_kaslr_mode(),
+            vmemmap_start: default_vmemmap_start(),
+            vmemmap_end: default_vmemmap_end(),
+            modules_start: default_modules_start(),
+            modules_end: default_modules_end(),
+            fixmap_start: default_fixmap_start(),
+            fixmap_end: default_fixmap_end(),
+            manage_full_phys: default_manage_full_phys(),
+            teardown_identity_map: default_teardown_identity_map(),
         }
     }
 }
@@ -123,6 +130,38 @@ fn default_la57_fallback() -> String {
 
 fn default_kaslr_mode() -> String {
     "off".to_string()
+}
+
+fn default_vmemmap_start() -> String {
+    "0xFFFFEA0000000000".to_string()
+}
+
+fn default_vmemmap_end() -> String {
+    "0xFFFFEFFFFFFFFFFF".to_string()
+}
+
+fn default_modules_start() -> String {
+    "0xFFFFFFFFA0000000".to_string()
+}
+
+fn default_modules_end() -> String {
+    "0xFFFFFFFFFEFFFFFF".to_string()
+}
+
+fn default_fixmap_start() -> String {
+    "0xFFFFFFFFFF000000".to_string()
+}
+
+fn default_fixmap_end() -> String {
+    "0xFFFFFFFFFFFFF000".to_string()
+}
+
+fn default_manage_full_phys() -> bool {
+    true
+}
+
+fn default_teardown_identity_map() -> bool {
+    false
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,14 +243,6 @@ impl Config {
         }
     }
 
-    fn arch_qemu_cmd(&self) -> &'static str {
-        match self.arch.target.as_str() {
-            "x86_64" => "qemu-system-x86_64",
-            "aarch64" => "qemu-system-aarch64",
-            _ => "qemu-system-x86_64",
-        }
-    }
-
     fn arch_efi_boot_file(&self) -> &'static str {
         match self.arch.target.as_str() {
             "x86_64" => "BOOTX64.EFI",
@@ -236,17 +267,8 @@ impl Config {
             // arch 派生值
             "arch.boot_target" => Some(self.arch_boot_target().to_string()),
             "arch.kernel_target" => Some(self.arch_kernel_target().to_string()),
-            "arch.qemu_cmd" => Some(self.arch_qemu_cmd().to_string()),
             "arch.efi_boot_file" => Some(self.arch_efi_boot_file().to_string()),
             "arch.rustup_target" => Some(self.arch_rustup_target().to_string()),
-
-            // qemu
-            "qemu.memory" => Some(self.qemu.memory.clone()),
-            "qemu.smp" => Some(self.qemu.smp.to_string()),
-            "qemu.cpu" => Some(self.qemu.cpu.clone()),
-            "qemu.kvm" => Some(self.qemu.kvm.clone()),
-            "qemu.machine" => Some(self.qemu.machine.clone()),
-            "qemu.iommu" => Some(self.qemu.iommu.to_string()),
 
             // memory
             "memory.page_size" => Some(self.memory.page_size.to_string()),
@@ -267,6 +289,18 @@ impl Config {
             "kernel.layout.va_mode" => Some(self.kernel.layout.va_mode.clone()),
             "kernel.layout.la57_fallback" => Some(self.kernel.layout.la57_fallback.clone()),
             "kernel.layout.kaslr" => Some(self.kernel.layout.kaslr.clone()),
+            "kernel.layout.vmemmap_start" => Some(self.kernel.layout.vmemmap_start.clone()),
+            "kernel.layout.vmemmap_end" => Some(self.kernel.layout.vmemmap_end.clone()),
+            "kernel.layout.modules_start" => Some(self.kernel.layout.modules_start.clone()),
+            "kernel.layout.modules_end" => Some(self.kernel.layout.modules_end.clone()),
+            "kernel.layout.fixmap_start" => Some(self.kernel.layout.fixmap_start.clone()),
+            "kernel.layout.fixmap_end" => Some(self.kernel.layout.fixmap_end.clone()),
+            "kernel.layout.manage_full_phys" => {
+                Some(self.kernel.layout.manage_full_phys.to_string())
+            }
+            "kernel.layout.teardown_identity_map" => {
+                Some(self.kernel.layout.teardown_identity_map.to_string())
+            }
 
             // user
             "user.space_start" => Some(self.user.space_start.clone()),
@@ -352,6 +386,14 @@ pub const KERNEL_LAYOUT_PROFILE: &str = "{}";
 pub const KERNEL_VA_MODE: &str = "{}";
 pub const KERNEL_LA57_FALLBACK: &str = "{}";
 pub const KERNEL_KASLR_MODE: &str = "{}";
+pub const VMEMMAP_START: u64 = {};
+pub const VMEMMAP_END: u64 = {};
+pub const MODULES_START: u64 = {};
+pub const MODULES_END: u64 = {};
+pub const FIXMAP_START: u64 = {};
+pub const FIXMAP_END: u64 = {};
+pub const KERNEL_MANAGE_FULL_PHYS: bool = {};
+pub const KERNEL_TEARDOWN_IDENTITY_MAP: bool = {};
 
 // [user]
 pub const USER_SPACE_START: u64 = {};
@@ -401,6 +443,14 @@ pub const DEBUG_PAGE_ALLOC_TRACE: bool = {};
             self.kernel.layout.va_mode,
             self.kernel.layout.la57_fallback,
             self.kernel.layout.kaslr,
+            self.kernel.layout.vmemmap_start,
+            self.kernel.layout.vmemmap_end,
+            self.kernel.layout.modules_start,
+            self.kernel.layout.modules_end,
+            self.kernel.layout.fixmap_start,
+            self.kernel.layout.fixmap_end,
+            self.kernel.layout.manage_full_phys,
+            self.kernel.layout.teardown_identity_map,
             self.user.space_start,
             self.user.space_end,
             self.user.stack_top,
@@ -428,13 +478,6 @@ pub const DEBUG_PAGE_ALLOC_TRACE: bool = {};
         println!("[arch]");
         println!("  target = {}", self.arch.target);
 
-        println!("[qemu]");
-        println!("  memory = {}", self.qemu.memory);
-        println!("  smp = {}", self.qemu.smp);
-        println!("  kvm = {}", self.qemu.kvm);
-        println!("  machine = {}", self.qemu.machine);
-        println!("  iommu = {}", self.qemu.iommu);
-
         println!("[memory]");
         println!("  page_size = {}", self.memory.page_size);
         println!("  buddy_max_order = {}", self.memory.buddy_max_order);
@@ -457,6 +500,20 @@ pub const DEBUG_PAGE_ALLOC_TRACE: bool = {};
             self.kernel.layout.la57_fallback
         );
         println!("  layout.kaslr = {}", self.kernel.layout.kaslr);
+        println!("  layout.vmemmap_start = {}", self.kernel.layout.vmemmap_start);
+        println!("  layout.vmemmap_end = {}", self.kernel.layout.vmemmap_end);
+        println!("  layout.modules_start = {}", self.kernel.layout.modules_start);
+        println!("  layout.modules_end = {}", self.kernel.layout.modules_end);
+        println!("  layout.fixmap_start = {}", self.kernel.layout.fixmap_start);
+        println!("  layout.fixmap_end = {}", self.kernel.layout.fixmap_end);
+        println!(
+            "  layout.manage_full_phys = {}",
+            self.kernel.layout.manage_full_phys
+        );
+        println!(
+            "  layout.teardown_identity_map = {}",
+            self.kernel.layout.teardown_identity_map
+        );
 
         println!("[user]");
         println!("  space_start = {}", self.user.space_start);
@@ -498,7 +555,7 @@ fn usage() {
     eprintln!("Usage: cfg <command> [args]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  get <key>         Get config value (e.g., qemu.memory)");
+    eprintln!("  get <key>         Get config value (e.g., memory.page_size)");
     eprintln!("  generate <file>   Generate Rust config module");
     eprintln!("  show              Show all config values");
     eprintln!();

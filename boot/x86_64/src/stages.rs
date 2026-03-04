@@ -101,7 +101,7 @@ pub fn run_pre_exit_stages(buffers: &BootBufferLayout) -> StageState {
     print_hex(probe.cr4);
     print_uefi(" supported=");
     print_bool(probe.la57_supported);
-    print_uefi(" active=");
+    print_uefi(" active_pre_exit_bs=");
     print_bool(probe.la57_active);
     println_uefi("");
     print_uefi("      Paging mode: requested=");
@@ -116,10 +116,14 @@ pub fn run_pre_exit_stages(buffers: &BootBufferLayout) -> StageState {
     } else {
         print_uefi("none");
     }
-    print_uefi(" selected_levels=");
-    print_dec(probe.selected_page_levels as u64);
-    print_uefi(" va_bits=");
-    print_dec(probe.selected_va_bits as u64);
+    print_uefi(" current_levels=");
+    print_dec(probe.current_page_levels as u64);
+    print_uefi(" current_va_bits=");
+    print_dec(probe.current_va_bits as u64);
+    print_uefi(" target_levels=");
+    print_dec(probe.target_page_levels as u64);
+    print_uefi(" target_va_bits=");
+    print_dec(probe.target_va_bits as u64);
     print_uefi(" transition=");
     if probe.transition_requested {
         print_uefi("la57_trampoline");

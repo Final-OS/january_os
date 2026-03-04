@@ -102,7 +102,7 @@ pub(super) fn run() {
         return fail("swiotlb", "zero-size mapping should not change slot usage");
     }
 
-    // 4) 边界输入：请求大于池容量，必须回退直通并保持槽位不变
+    // 4) 边界输入：请求大于池容量，必须显式失败并保持槽位不变
     mm_step("swiotlb: case=oversized_high_request");
     let oversize_phys = 0x1_0000_3000u64;
     let oversize = POOL_BYTES + PAGE_SIZE;
@@ -110,17 +110,16 @@ pub(super) fn run() {
     let dma_oversize = swiotlb.map(oversize_phys, oversize, DmaDirection::None);
     if crate::config::DEBUG_VERBOSE {
         kprintln!(
-            "[test/mm][swiotlb][oversize] input phys={:#x} size={} expected_dma={:#x} actual_dma={:#x}",
+            "[test/mm][swiotlb][oversize] input phys={:#x} size={} expected_dma=null actual_dma={:#x}",
             oversize_phys,
             oversize,
-            oversize_phys,
             dma_oversize.as_u64()
         );
     }
-    if dma_oversize.as_u64() != oversize_phys {
+    if !dma_oversize.is_null() {
         return fail(
             "swiotlb",
-            "oversized request should fallback to original physical address",
+            "oversized request should fail instead of returning original physical address",
         );
     }
     if swiotlb.used_slots() != oversize_before {
@@ -160,7 +159,7 @@ pub(super) fn run() {
         );
     }
 
-    if dma_high.as_u64() == high_phys {
+    if dma_high.is_null() {
         // 可能是 memblock 无法再提供低端空间，给出可见提示但不误报失败
         warn!("mm/swiotlb: bounce allocation unavailable, skipped high-address path check");
         return pass("swiotlb");
