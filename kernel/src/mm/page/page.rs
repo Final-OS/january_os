@@ -48,6 +48,8 @@ impl PageFlags {
     pub const FILEMAPPED: u32 = 1 << 14;
     /// 交换页
     pub const SWAPCACHE: u32 = 1 << 15;
+    /// 页表页
+    pub const PGTABLE: u32 = 1 << 16;
 
     /// 创建空标志
     pub const fn empty() -> Self {
@@ -330,6 +332,11 @@ impl Page {
     /// 是否为复合页
     pub fn is_compound(&self) -> bool {
         self.test_flag(PageFlags::COMPOUND)
+    }
+
+    /// 是否为页表页
+    pub fn is_pgtable(&self) -> bool {
+        self.test_flag(PageFlags::PGTABLE)
     }
 
     /// 标记为保留

@@ -5,8 +5,10 @@
 // 用于 32 位设备访问高地址内存
 // ============================================================================
 
+use alloc::boxed::Box;
+use alloc::vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use super::{DmaAddr, DmaDirection, PAGE_SIZE};
+use super::{DMA_ADDR_SIZE, DmaAddr, DmaDirection, PAGE_SIZE};
 
 /// SWIOTLB 最大槽位数 (64MB / 4KB = 16384)
 const MAX_SLOTS: usize = 16384;
@@ -47,9 +49,9 @@ pub struct Swiotlb {
     /// 槽位数量
     nr_slots: usize,
     /// 槽位状态 (简化：使用位图)
-    slot_bitmap: [u64; MAX_SLOTS / 64],
+    slot_bitmap: Box<[u64]>,
     /// 槽位元数据（仅起始槽位使用）
-    slot_meta: [SlotMeta; MAX_SLOTS],
+    slot_meta: Box<[SlotMeta]>,
     /// 已使用槽位数
     used_slots: AtomicUsize,
     /// 下一个检查位置 (简单轮询分配)
@@ -94,8 +96,8 @@ impl Swiotlb {
             buffer_phys,
             buffer_size,
             nr_slots,
-            slot_bitmap: [0u64; MAX_SLOTS / 64],
-            slot_meta: [SlotMeta::empty(); MAX_SLOTS],
+            slot_bitmap: vec![0u64; MAX_SLOTS / 64].into_boxed_slice(),
+            slot_meta: vec![SlotMeta::empty(); MAX_SLOTS].into_boxed_slice(),
             used_slots: AtomicUsize::new(0),
             next_slot: AtomicUsize::new(0),
             direct_map_offset,
@@ -107,17 +109,27 @@ impl Swiotlb {
     /// 如果物理地址 < 4GB，直接返回；
     /// 否则，从弹跳缓冲区分配空间并复制数据
     pub fn map(&mut self, phys_addr: u64, size: usize, dir: DmaDirection) -> DmaAddr {
+        if size == 0 {
+            return DmaAddr::new(phys_addr);
+        }
+
         // 如果已经在 32 位地址空间内，直接使用
-        if phys_addr + size as u64 <= 0x1_0000_0000 {
+        if phys_addr
+            .checked_add(size as u64)
+            .is_some_and(|end| end <= DMA_ADDR_SIZE)
+        {
             return DmaAddr::new(phys_addr);
         }
 
         if self.nr_slots == 0 || self.buffer_phys == 0 {
-            return DmaAddr::new(phys_addr);
+            return DmaAddr::NULL;
         }
 
         // 需要使用弹跳缓冲区
         let slots_needed = (size + PAGE_SIZE as usize - 1) / PAGE_SIZE as usize;
+        if slots_needed == 0 || slots_needed > self.nr_slots {
+            return DmaAddr::NULL;
+        }
 
         if let Some(slot) = self.alloc_slots(slots_needed) {
             let dma_addr = self.buffer_phys + (slot as u64) * PAGE_SIZE;
@@ -140,8 +152,7 @@ impl Swiotlb {
 
             DmaAddr::new(dma_addr)
         } else {
-            // 分配失败，返回原地址（可能导致 DMA 错误）
-            DmaAddr::new(phys_addr)
+            DmaAddr::NULL
         }
     }
     

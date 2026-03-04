@@ -7,7 +7,7 @@
 use crate::config;
 use crate::interrupt;
 use crate::mm::buddy::{alloc_pages, free_page};
-use crate::mm::page::{max_pfn, page_to_pfn, pfn_to_page};
+use crate::mm::page::{max_pfn, page_to_pfn, pfn_to_page, PageFlags};
 use crate::mm::zone::GFP_KERNEL_ZERO;
 use crate::sync::{IrqSpinLock, SpinLock};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -396,6 +396,10 @@ static TLB_PROBE_ADDR: AtomicU64 = AtomicU64::new(0);
 static TLB_PROBE_EXPECTED: AtomicU64 = AtomicU64::new(0);
 static TLB_PROBE_HANDLED: AtomicU32 = AtomicU32::new(0);
 static TLB_PROBE_MATCHED: AtomicU32 = AtomicU32::new(0);
+// 暂保留 [3GiB, 4GiB) 给 LAPIC/IOAPIC/PCI ECAM 等低地址 MMIO 访问路径；
+// 等 MMIO 路径全面切到 direct-map/ioremap 后再移除此保留窗口。
+const LOW_IDENTITY_WINDOW_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+const LOW_IDENTITY_STEP_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[inline]
 fn flush_tlb_local_only(virt_addr: u64) {
@@ -634,6 +638,200 @@ pub fn run_tlb_probe_on_other_cpus(addr: u64, expected: u64) -> (u32, u32, u32) 
     (target_count, handled, matched)
 }
 
+/// 清理启动期低地址 identity-map（默认窗口 0..3GiB）。
+///
+/// 返回成功移除的 1GiB 条目数量。
+pub fn teardown_bootstrap_identity_map(direct_map_offset: u64) -> usize {
+    let cr3_phys = crate::mm::arch::read_cr3() & PTE_ADDR_MASK;
+    let pt_mgr = unsafe {
+        PageTableManager::new_with_layout(
+            cr3_phys,
+            direct_map_offset,
+            crate::mm::page_levels(),
+            crate::mm::va_bits(),
+        )
+    };
+
+    let mut removed = 0usize;
+    let mut addr = 0u64;
+    while addr < LOW_IDENTITY_WINDOW_BYTES {
+        if unsafe { pt_mgr.unmap_page(addr) } {
+            removed += 1;
+        }
+        addr = addr.saturating_add(LOW_IDENTITY_STEP_BYTES);
+    }
+    removed
+}
+
+#[inline]
+fn entry_references_lower_table(entry: PageTableEntry) -> bool {
+    entry.is_present() && !entry.is_huge()
+}
+
+#[inline]
+unsafe fn retain_table_page_ref(table_phys: u64) {
+    let pfn = table_phys / config::PAGE_SIZE;
+    if pfn >= max_pfn() {
+        return;
+    }
+    let page = unsafe { &*pfn_to_page(pfn) };
+    page.get();
+    page.set_flag(PageFlags::PGTABLE);
+}
+
+#[inline]
+unsafe fn release_table_page_ref(table_phys: u64) {
+    let pfn = table_phys / config::PAGE_SIZE;
+    if pfn >= max_pfn() {
+        return;
+    }
+    let page = unsafe { &mut *pfn_to_page(pfn) };
+    if page.refcount() == 0 {
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[pt] release table skipped (ref=0) phys={:#x} pfn={}",
+                table_phys,
+                pfn
+            );
+        }
+        return;
+    }
+    if page.is_reserved() {
+        let _ = page.put();
+        return;
+    }
+    unsafe {
+        free_page(page);
+    }
+}
+
+/// 复制内核高半区根条目，并维护下级页表页引用计数。
+///
+/// # Safety
+/// `src_root_phys` 和 `dst_root_phys` 必须是有效根页表物理地址。
+pub unsafe fn clone_kernel_root_entries_with_refs(src_root_phys: u64, dst_root_phys: u64) {
+    let src_root = src_root_phys & PTE_ADDR_MASK;
+    let dst_root = dst_root_phys & PTE_ADDR_MASK;
+    if src_root == 0 || dst_root == 0 {
+        return;
+    }
+    let page_levels = crate::mm::page_levels();
+    let va_bits = crate::mm::va_bits();
+    let kernel_root_start = level_index(crate::mm::KERNEL_BASE, page_levels);
+    let direct_map = crate::mm::direct_map_offset();
+
+    unsafe {
+        let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
+        let src_mgr = PageTableManager::new_with_layout(src_root, direct_map, page_levels, va_bits);
+        let mut dst_mgr = PageTableManager::new_with_layout(dst_root, direct_map, page_levels, va_bits);
+        let src_tbl = src_mgr.root_table();
+        let dst_tbl = dst_mgr.root_table_mut();
+
+        for idx in kernel_root_start..512 {
+            let old_entry = *dst_tbl.entry(idx);
+            let new_entry = *src_tbl.entry(idx);
+            if old_entry.raw() == new_entry.raw() {
+                continue;
+            }
+            if entry_references_lower_table(old_entry) {
+                release_table_page_ref(old_entry.phys_addr());
+            }
+            if entry_references_lower_table(new_entry) {
+                retain_table_page_ref(new_entry.phys_addr());
+            }
+            *dst_tbl.entry_mut(idx) = new_entry;
+        }
+    }
+}
+
+/// 释放一个私有地址空间根页表里“共享内核根条目”持有的下级页表引用。
+///
+/// # Safety
+/// `root_phys` 必须是有效根页表物理地址，调用方需保证该地址空间不再并发使用。
+pub unsafe fn release_kernel_root_entries_refs(root_phys: u64) {
+    let root = root_phys & PTE_ADDR_MASK;
+    if root == 0 {
+        return;
+    }
+    let page_levels = crate::mm::page_levels();
+    let va_bits = crate::mm::va_bits();
+    let kernel_root_start = level_index(crate::mm::KERNEL_BASE, page_levels);
+    let direct_map = crate::mm::direct_map_offset();
+
+    unsafe {
+        let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
+        let mut mgr = PageTableManager::new_with_layout(root, direct_map, page_levels, va_bits);
+        let root_tbl = mgr.root_table_mut();
+        for idx in kernel_root_start..512 {
+            let entry = *root_tbl.entry(idx);
+            if !entry_references_lower_table(entry) {
+                continue;
+            }
+            let child_phys = entry.phys_addr();
+            let pfn = child_phys / config::PAGE_SIZE;
+            if pfn >= max_pfn() {
+                continue;
+            }
+            let child_page = &*pfn_to_page(pfn);
+            if !child_page.is_pgtable() {
+                continue;
+            }
+            release_table_page_ref(child_phys);
+        }
+    }
+}
+
+/// 将目标根页表的内核高半区根条目同步为 init_mm 的当前视图。
+///
+/// 返回是否发生了条目变更。
+pub fn sync_kernel_root_entries_from_init(dst_root_phys: u64) -> bool {
+    let dst_root = dst_root_phys & PTE_ADDR_MASK;
+    let init_root = unsafe { (*crate::mm::init_mm_ptr()).pgd } & PTE_ADDR_MASK;
+    if dst_root == 0 || init_root == 0 || dst_root == init_root {
+        return false;
+    }
+
+    let page_levels = crate::mm::page_levels();
+    let va_bits = crate::mm::va_bits();
+    let kernel_root_start = level_index(crate::mm::KERNEL_BASE, page_levels);
+    let direct_map = crate::mm::direct_map_offset();
+
+    unsafe {
+        let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
+        let src_mgr = PageTableManager::new_with_layout(init_root, direct_map, page_levels, va_bits);
+        let mut dst_mgr = PageTableManager::new_with_layout(dst_root, direct_map, page_levels, va_bits);
+        let src_root = src_mgr.root_table();
+        let dst_root_tbl = dst_mgr.root_table_mut();
+        let mut changed = false;
+
+        for idx in kernel_root_start..512 {
+            let src_entry = *src_root.entry(idx);
+            let dst_entry = dst_root_tbl.entry_mut(idx);
+            if dst_entry.raw() != src_entry.raw() {
+                if entry_references_lower_table(*dst_entry) {
+                    release_table_page_ref(dst_entry.phys_addr());
+                }
+                if entry_references_lower_table(src_entry) {
+                    retain_table_page_ref(src_entry.phys_addr());
+                }
+                *dst_entry = src_entry;
+                changed = true;
+            }
+        }
+
+        if changed {
+            // 若当前 CPU 正在使用该 root，则本地立即刷新；其他 CPU 通过 IPI 刷新。
+            let current_root = crate::mm::arch::read_cr3() & PTE_ADDR_MASK;
+            if current_root == dst_root {
+                flush_tlb_all_local_only();
+            }
+            shootdown_other_cpus();
+        }
+
+        changed
+    }
+}
+
 impl PageTableManager {
     /// 创建页表管理器
     ///
@@ -722,6 +920,7 @@ impl PageTableManager {
         let page = alloc_pages(0, GFP_KERNEL_ZERO)?;
         let pfn = page_to_pfn(page);
         let table_phys = pfn * config::PAGE_SIZE;
+        page.set_flag(PageFlags::PGTABLE);
         // 防御式清零：避免分配器快路径遗漏 GFP_ZERO 语义时引入脏页表。
         unsafe {
             core::ptr::write_bytes(
@@ -831,8 +1030,20 @@ impl PageTableManager {
     ///
     /// - 需要确保分配内存成功
     pub unsafe fn map_page(&self, virt: u64, phys: u64, flags: u64) -> bool {
+        let watch_vmalloc = crate::config::DEBUG_VERBOSE && crate::mm::vmalloc::is_vmalloc_watch_page(virt);
+        if watch_vmalloc {
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[pt] map_page watch virt={:#x} phys={:#x} root={:#x} flags={:#x}",
+                virt & !(config::PAGE_SIZE - 1),
+                phys & PTE_ADDR_MASK,
+                self.root_phys,
+                flags
+            );
+        }
         let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
         let mut table_phys = self.root_phys;
+        let need_user = (flags & PTE_USER) != 0;
+        let need_writable = (flags & PTE_WRITABLE) != 0;
 
         for level in (2..=self.page_levels).rev() {
             let idx = level_index(virt, level);
@@ -852,6 +1063,15 @@ impl PageTableManager {
                 entry.set_present(true);
                 entry.set_writable(true);
                 entry.set_user(true);
+            } else {
+                // 5-level 下用户地址可能复用已存在的上级目录（例如 PML5[0]）。
+                // 若上级目录缺少 U/W，CPU 会在 user access 时触发 protection fault。
+                if need_user && !entry.is_user() {
+                    entry.set_user(true);
+                }
+                if need_writable && !entry.is_writable() {
+                    entry.set_writable(true);
+                }
             }
 
             table_phys = entry.phys_addr();
@@ -875,6 +1095,14 @@ impl PageTableManager {
         }
 
         *pt_entry = PageTableEntry::new(phys, flags);
+        if watch_vmalloc {
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[pt] map_page watch committed virt={:#x} phys={:#x} root={:#x}",
+                virt & !(config::PAGE_SIZE - 1),
+                (phys & PTE_ADDR_MASK),
+                self.root_phys
+            );
+        }
 
         // 释放页表大锁后再执行 TLB shootdown，避免锁持有期间等待远核 ACK。
         drop(_pt_guard);
@@ -892,6 +1120,14 @@ impl PageTableManager {
     /// 成功返回 true，如果未映射返回 false。
     /// 空的中间页表页会被自动回收。
     pub unsafe fn unmap_page(&self, virt: u64) -> bool {
+        let watch_vmalloc = crate::config::DEBUG_VERBOSE && crate::mm::vmalloc::is_vmalloc_watch_page(virt);
+        if watch_vmalloc {
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[pt] unmap_page watch virt={:#x} root={:#x}",
+                virt & !(config::PAGE_SIZE - 1),
+                self.root_phys
+            );
+        }
         let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
         const MAX_LEVELS: usize = 5;
         let mut parent_phys_path = [0u64; MAX_LEVELS];
@@ -929,12 +1165,47 @@ impl PageTableManager {
             return false;
         }
         *pt_entry = PageTableEntry::empty();
+        if watch_vmalloc {
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[pt] unmap_page watch cleared pte virt={:#x} root={:#x}",
+                virt & !(config::PAGE_SIZE - 1),
+                self.root_phys
+            );
+        }
 
         // 自底向上回收空页表（不回收根页表）。
+        // 仅当页表页是“独占所有权(refcount==1)”时才清父项并回收。
         let mut child_phys = pt_phys;
         for i in (0..path_len).rev() {
             let child_table = unsafe { self.table_ref(child_phys) };
             if !Self::is_table_empty(child_table) {
+                break;
+            }
+
+            let child_pfn = child_phys / config::PAGE_SIZE;
+            if child_pfn >= max_pfn() {
+                break;
+            }
+            let child_page = unsafe { &*pfn_to_page(child_pfn) };
+            if !child_page.is_pgtable() {
+                if crate::config::DEBUG_VERBOSE {
+                    crate::kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[pt] reclaim stop(non-pgtable) child={:#x} pfn={} refcount={}",
+                        child_phys,
+                        child_pfn,
+                        child_page.refcount()
+                    );
+                }
+                break;
+            }
+            if child_page.refcount() != 1 {
+                if watch_vmalloc {
+                    crate::kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[pt] reclaim stop(shared) child={:#x} refcount={}",
+                        child_phys,
+                        child_page.refcount()
+                    );
+                }
                 break;
             }
 
@@ -962,7 +1233,17 @@ impl PageTableManager {
             return;
         }
         unsafe {
-            free_page(&mut *pfn_to_page(pfn));
+            let page = &mut *pfn_to_page(pfn);
+            if crate::config::DEBUG_VERBOSE && !page.is_pgtable() {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[pt] free_table_page on non-pgtable page phys={:#x} pfn={} flags={:#x} refcount={}",
+                    table_phys,
+                    pfn,
+                    page.flags().bits(),
+                    page.refcount()
+                );
+            }
+            release_table_page_ref(table_phys);
         }
     }
 

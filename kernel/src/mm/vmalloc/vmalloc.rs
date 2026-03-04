@@ -11,12 +11,11 @@ use crate::mm::page::buddy::{alloc_page, free_page};
 use crate::mm::page::page::{page_to_pfn, pfn_to_page};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::vm::layout::PAGE_SIZE;
-use crate::mm::vm::paging::{
-    PageTableManager, PTE_GLOBAL, PTE_NO_CACHE, PTE_PRESENT, PTE_WRITABLE,
-};
+use crate::mm::vm::paging::{PageTableManager, PTE_GLOBAL, PTE_NO_CACHE, PTE_PRESENT, PTE_WRITABLE};
 use crate::sync::{Mutex, OnceCell};
 use core::panic::Location;
 use core::ptr;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================================
 // 常量
@@ -87,6 +86,8 @@ impl VmFlags {
 pub struct VmArea {
     /// 大小 (字节)
     pub size: u64,
+    /// 物理基址（仅 IOREMAP 有效；普通 vmalloc 为 0）
+    pub phys_base: u64,
     /// 标志
     pub flags: VmFlags,
     /// 页数
@@ -129,8 +130,6 @@ static VMALLOC_DATA: Mutex<VmallocData> = Mutex::new(VmallocData::new());
 struct VmallocState {
     /// 直接映射偏移
     direct_map: u64,
-    /// 页表管理器指针
-    page_table_mgr: *const PageTableManager,
 }
 
 // 允许跨线程发送（实际上是单核初始化）
@@ -139,17 +138,93 @@ unsafe impl Sync for VmallocState {}
 
 /// vmalloc 全局状态（一次性初始化）
 static VMALLOC_STATE: OnceCell<VmallocState> = OnceCell::new();
+static WATCH_VMALLOC_PAGE_PRIMARY: AtomicU64 = AtomicU64::new(0);
+static WATCH_VMALLOC_PAGE_SECONDARY: AtomicU64 = AtomicU64::new(0);
+static VMALLOC_HEAL_IOREMAP_COUNT: AtomicU64 = AtomicU64::new(0);
+static VMALLOC_HEAL_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+pub fn set_vmalloc_watch_page(addr: u64) {
+    if !crate::config::DEBUG_VERBOSE {
+        return;
+    }
+    let page = addr & !(PAGE_SIZE - 1);
+    let primary = WATCH_VMALLOC_PAGE_PRIMARY.load(Ordering::Acquire);
+    if primary == page {
+        return;
+    }
+    if primary == 0 {
+        WATCH_VMALLOC_PAGE_PRIMARY.store(page, Ordering::Release);
+        return;
+    }
+    let secondary = WATCH_VMALLOC_PAGE_SECONDARY.load(Ordering::Acquire);
+    if secondary == page {
+        return;
+    }
+    if secondary == 0 {
+        WATCH_VMALLOC_PAGE_SECONDARY.store(page, Ordering::Release);
+        return;
+    }
+    // 保留最近观察到的两个热点页。
+    WATCH_VMALLOC_PAGE_SECONDARY.store(page, Ordering::Release);
+}
+
+#[inline]
+pub fn is_vmalloc_watch_page(addr: u64) -> bool {
+    let page = addr & !(PAGE_SIZE - 1);
+    let primary = WATCH_VMALLOC_PAGE_PRIMARY.load(Ordering::Acquire);
+    if primary != 0 && page == primary {
+        return true;
+    }
+    let secondary = WATCH_VMALLOC_PAGE_SECONDARY.load(Ordering::Acquire);
+    secondary != 0 && page == secondary
+}
+
+#[inline]
+pub fn vmalloc_heal_stats() -> (u64, u64) {
+    (
+        VMALLOC_HEAL_IOREMAP_COUNT.load(Ordering::Relaxed),
+        VMALLOC_HEAL_MISS_COUNT.load(Ordering::Relaxed),
+    )
+}
+
+/// 只读查询：返回 vmalloc 地址在 current/init root 的映射状态。
+pub fn vmalloc_mapping_state(addr: u64) -> Option<(u64, u64, Option<u64>, Option<u64>)> {
+    if !crate::mm::is_vmalloc_addr(addr) {
+        return None;
+    }
+    let state = VMALLOC_STATE.get()?;
+    let page_virt = addr & !(PAGE_SIZE - 1);
+
+    unsafe fn translate_in_root(root_phys: u64, direct_map: u64, virt: u64) -> Option<u64> {
+        if root_phys == 0 {
+            return None;
+        }
+        let pt_mgr = PageTableManager::new_with_layout(
+            root_phys,
+            direct_map,
+            crate::mm::page_levels(),
+            crate::mm::va_bits(),
+        );
+        pt_mgr.translate_addr(virt)
+    }
+
+    unsafe {
+        let current_root = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
+        let init_root = (*crate::mm::init_mm_ptr()).pgd & crate::mm::PTE_ADDR_MASK;
+        let current_phys = translate_in_root(current_root, state.direct_map, page_virt);
+        let init_phys = translate_in_root(init_root, state.direct_map, page_virt);
+        Some((current_root, init_root, current_phys, init_phys))
+    }
+}
 
 // ============================================================================
 // 初始化
 // ============================================================================
 
 /// 初始化 vmalloc 子系统
-pub unsafe fn init_vmalloc(direct_map: u64, pt_mgr: *const PageTableManager) {
-    let _ = VMALLOC_STATE.set(VmallocState {
-        direct_map,
-        page_table_mgr: pt_mgr,
-    });
+pub unsafe fn init_vmalloc(direct_map: u64) {
+    let _ = VMALLOC_STATE.set(VmallocState { direct_map });
 }
 
 /// 检查是否已初始化
@@ -295,6 +370,7 @@ fn __vmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
         // 注册到区域 RbTree
         let area = VmArea {
             size,
+            phys_base: 0,
             flags: VmFlags::new(VmFlags::ALLOC | VmFlags::INUSE | VmFlags::ALLOCATING),
             nr_pages,
             caller: Some(Location::caller()),
@@ -405,47 +481,66 @@ fn map_vmalloc_page(virt: u64, phys: u64, flags: u64) -> bool {
         None => return false,
     };
 
-    if state.page_table_mgr.is_null() {
-        crate::kprintln!("map_vmalloc_page: page_table_mgr is null");
-        return false;
-    }
-
-    unsafe {
-        let pt_mgr = &*state.page_table_mgr;
-
-        // 验证 PML4 与当前 CR3 一致
-        let cr3_phys = crate::mm::arch::read_cr3() & 0x000F_FFFF_FFFF_F000;
-        if pt_mgr.pml4_phys() != cr3_phys {
-            crate::kprintln!(
-                "map_vmalloc_page: PML4 mismatch! stored={:#x} cr3={:#x}",
-                pt_mgr.pml4_phys(),
-                cr3_phys
-            );
-            return false;
-        }
-
-        if crate::config::DEBUG_VERBOSE {
-            crate::kprintln!("\x1b[90m[diag]\x1b[0m[vmalloc] calling pt_mgr.map_page");
-        }
+    unsafe fn map_in_root(
+        root_phys: u64,
+        direct_map: u64,
+        virt: u64,
+        phys: u64,
+        flags: u64,
+    ) -> bool {
+        let pt_mgr = PageTableManager::new_with_layout(
+            root_phys,
+            direct_map,
+            crate::mm::page_levels(),
+            crate::mm::va_bits(),
+        );
         let ok = pt_mgr.map_page(virt, phys, flags);
-        if crate::config::DEBUG_VERBOSE {
-            crate::kprintln!("\x1b[90m[diag]\x1b[0m[vmalloc] pt_mgr.map_page -> {}", ok);
-        }
         if ok {
-            // map_page 对“新增映射”仅做本地刷新；vmalloc/ioremap 为低频路径，
-            // 这里追加一次跨核 TLB shootdown 保障内核映射可见性一致。
+            // vmalloc/ioremap 为低频路径，强制跨核刷新降低“内核映射不同步”风险。
             pt_mgr.flush_tlb(virt);
-            // 验证映射是否生效
             if pt_mgr.translate_addr(virt).is_none() {
-                crate::kprintln!(
-                    "map_vmalloc_page: mapping verification FAILED virt={:#x} phys={:#x}",
-                    virt,
-                    phys
-                );
                 return false;
             }
         }
         ok
+    }
+
+    unsafe {
+        let current_root = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
+        let init_root = (*crate::mm::init_mm_ptr()).pgd & crate::mm::PTE_ADDR_MASK;
+
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[vmalloc] map roots current={:#x} init={:#x}",
+                current_root,
+                init_root
+            );
+        }
+
+        if init_root != 0 && !map_in_root(init_root, state.direct_map, virt, phys, flags) {
+            crate::kprintln!(
+                "map_vmalloc_page: map failed in init root virt={:#x} phys={:#x} root={:#x}",
+                virt,
+                phys,
+                init_root
+            );
+            return false;
+        }
+
+        if current_root != 0
+            && current_root != init_root
+            && !map_in_root(current_root, state.direct_map, virt, phys, flags)
+        {
+            crate::kprintln!(
+                "map_vmalloc_page: map failed in current root virt={:#x} phys={:#x} root={:#x}",
+                virt,
+                phys,
+                current_root
+            );
+            return false;
+        }
+
+        true
     }
 }
 
@@ -456,13 +551,26 @@ fn unmap_vmalloc_page(virt: u64) {
         None => return,
     };
 
-    if state.page_table_mgr.is_null() {
-        return;
+    unsafe fn unmap_in_root(root_phys: u64, direct_map: u64, virt: u64) {
+        if root_phys == 0 {
+            return;
+        }
+        let pt_mgr = PageTableManager::new_with_layout(
+            root_phys,
+            direct_map,
+            crate::mm::page_levels(),
+            crate::mm::va_bits(),
+        );
+        let _ = pt_mgr.unmap_page(virt);
     }
 
-    // 使用页表管理器取消映射
     unsafe {
-        (&*state.page_table_mgr).unmap_page(virt);
+        let current_root = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
+        let init_root = (*crate::mm::init_mm_ptr()).pgd & crate::mm::PTE_ADDR_MASK;
+        unmap_in_root(init_root, state.direct_map, virt);
+        if current_root != init_root {
+            unmap_in_root(current_root, state.direct_map, virt);
+        }
     }
 }
 
@@ -473,11 +581,27 @@ fn get_vmalloc_phys(virt: u64) -> Option<u64> {
         None => return None,
     };
 
-    if state.page_table_mgr.is_null() {
-        return None;
+    unsafe fn translate_in_root(root_phys: u64, direct_map: u64, virt: u64) -> Option<u64> {
+        if root_phys == 0 {
+            return None;
+        }
+        let pt_mgr = PageTableManager::new_with_layout(
+            root_phys,
+            direct_map,
+            crate::mm::page_levels(),
+            crate::mm::va_bits(),
+        );
+        pt_mgr.translate_addr(virt)
     }
 
-    unsafe { (&*state.page_table_mgr).translate_addr(virt) }
+    unsafe {
+        let current_root = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
+        if let Some(phys) = translate_in_root(current_root, state.direct_map, virt) {
+            return Some(phys);
+        }
+        let init_root = (*crate::mm::init_mm_ptr()).pgd & crate::mm::PTE_ADDR_MASK;
+        translate_in_root(init_root, state.direct_map, virt)
+    }
 }
 
 /// 页对齐 (向上)
@@ -602,6 +726,7 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
 
         let area = VmArea {
             size: page_align_size,
+            phys_base,
             flags,
             nr_pages,
             caller: Some(Location::caller()),
@@ -666,6 +791,152 @@ pub fn iounmap(addr: *mut u8) {
     // ioremap 返回 vaddr + offset，需要页对齐后再查找
     let aligned = ((addr as u64) & !(PAGE_SIZE - 1)) as *mut u8;
     vfree(aligned);
+}
+
+/// 确保 vmalloc 页在当前 CR3 下可见。
+///
+/// 某些路径会在非 init_mm 的私有地址空间里访问内核 vmalloc/ioremap 地址；
+/// 若当前根页表缺少该页映射，则从 init_mm 对应条目补齐到当前根页表。
+pub fn ensure_vmalloc_page_mapped_in_current(addr: u64) -> bool {
+    if !crate::mm::is_vmalloc_addr(addr) {
+        return true;
+    }
+    let state = match VMALLOC_STATE.get() {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let page_virt = addr & !(PAGE_SIZE - 1);
+
+    #[inline]
+    fn lookup_ioremap_phys(page_virt: u64) -> Option<(u64, u64)> {
+        let data = VMALLOC_DATA.lock();
+        for (&start, area) in data.areas.iter() {
+            let end = start.saturating_add(area.size);
+            if page_virt >= start
+                && page_virt < end
+                && area.flags.contains(VmFlags::IOREMAP)
+                && area.phys_base != 0
+            {
+                let page_offset = page_virt.saturating_sub(start);
+                let phys = area.phys_base.saturating_add(page_offset);
+                return Some((start, phys));
+            }
+        }
+        None
+    }
+
+    #[inline]
+    fn heal_from_ioremap_metadata(
+        page_virt: u64,
+        direct_map: u64,
+        current_root: u64,
+        init_root: u64,
+    ) -> bool {
+        let Some((_area_start, ioremap_phys)) = lookup_ioremap_phys(page_virt) else {
+            VMALLOC_HEAL_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[vmalloc] heal miss: no ioremap metadata virt={:#x} current_root={:#x} init_root={:#x}",
+                    page_virt,
+                    current_root,
+                    init_root
+                );
+            }
+            return false;
+        };
+
+        let flags = PTE_PRESENT | PTE_WRITABLE | PTE_NO_CACHE;
+        let init_ok = unsafe { map_page_in_root(init_root, direct_map, page_virt, ioremap_phys, flags) };
+        let cur_ok = unsafe { map_page_in_root(current_root, direct_map, page_virt, ioremap_phys, flags) };
+        if init_ok && cur_ok {
+            VMALLOC_HEAL_IOREMAP_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        if init_ok && cur_ok && crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[vmalloc] healed from ioremap metadata virt={:#x} phys={:#x} current_root={:#x} init_root={:#x}",
+                page_virt,
+                ioremap_phys,
+                current_root,
+                init_root
+            );
+        }
+        init_ok && cur_ok
+    }
+
+    unsafe fn map_page_in_root(
+        root: u64,
+        direct_map: u64,
+        virt: u64,
+        phys: u64,
+        flags: u64,
+    ) -> bool {
+        if root == 0 {
+            return false;
+        }
+        let mut pt = PageTableManager::new_with_layout(
+            root,
+            direct_map,
+            crate::mm::page_levels(),
+            crate::mm::va_bits(),
+        );
+        if pt.translate_addr(virt).is_some() {
+            return true;
+        }
+        pt.map_page(virt, phys, flags)
+    }
+
+    unsafe {
+        let current_root = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
+        let init_root = (*crate::mm::init_mm_ptr()).pgd & crate::mm::PTE_ADDR_MASK;
+        if current_root == 0 || init_root == 0 {
+            return false;
+        }
+
+        let mut current_pt = PageTableManager::new_with_layout(
+            current_root,
+            state.direct_map,
+            crate::mm::page_levels(),
+            crate::mm::va_bits(),
+        );
+        if current_pt.translate_addr(page_virt).is_some() {
+            return true;
+        }
+
+        let init_pt = PageTableManager::new_with_layout(
+            init_root,
+            state.direct_map,
+            crate::mm::page_levels(),
+            crate::mm::va_bits(),
+        );
+
+        let init_entry = init_pt.translate(page_virt).map(|(entry, _, _)| entry);
+        let init_phys_with_off = init_pt.translate_addr(page_virt);
+
+        let (Some(entry), Some(phys_with_off)) = (init_entry, init_phys_with_off) else {
+            // init_root 缺失该页映射，尝试从 ioremap 元数据重建。
+            return heal_from_ioremap_metadata(
+                page_virt,
+                state.direct_map,
+                current_root,
+                init_root,
+            );
+        };
+        let phys_page = phys_with_off & !(PAGE_SIZE - 1);
+        let flags = entry.flags();
+
+        let ok = current_pt.map_page(page_virt, phys_page, flags);
+        if ok && crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[vmalloc] healed missing mapping virt={:#x} phys={:#x} current_root={:#x} init_root={:#x}",
+                page_virt,
+                phys_page,
+                current_root,
+                init_root
+            );
+        }
+        ok
+    }
 }
 
 // ============================================================================

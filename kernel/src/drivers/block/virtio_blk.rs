@@ -546,6 +546,30 @@ impl VirtioBlkDevice {
             return Err(BlockError::IoError);
         }
         self.queue_notify = unsafe { self.notify_base.add(notify_offset) as *mut u16 };
+        crate::mm::vmalloc::set_vmalloc_watch_page(self.queue_notify as u64);
+        if !crate::mm::vmalloc::ensure_vmalloc_page_mapped_in_current(self.queue_notify as u64) {
+            error!(
+                "[virtio] queue notify mapping missing during setup: queue_notify={:#x} off={:#x} len={:#x}",
+                self.queue_notify as u64,
+                notify_offset,
+                self.notify_len
+            );
+            return Err(BlockError::IoError);
+        }
+        if crate::config::DEBUG_VERBOSE {
+            if let Some((cur_root, init_root, cur_phys, init_phys)) =
+                crate::mm::vmalloc::vmalloc_mapping_state(self.queue_notify as u64)
+            {
+                diag!(
+                    "[virtio] queue_notify state after setup: notify={:#x} cur_root={:#x} init_root={:#x} cur_phys={:#x?} init_phys={:#x?}",
+                    self.queue_notify as u64,
+                    cur_root,
+                    init_root,
+                    cur_phys,
+                    init_phys
+                );
+            }
+        }
 
         unsafe {
             write_volatile(&mut (*self.common_cfg).queue_desc, desc_phys);
@@ -611,6 +635,22 @@ impl VirtioBlkDevice {
 
         if self.queue_notify.is_null() {
             return Err(BlockError::NotReady);
+        }
+        if crate::config::DEBUG_VERBOSE {
+            if let Some((cur_root, init_root, cur_phys, init_phys)) =
+                crate::mm::vmalloc::vmalloc_mapping_state(self.queue_notify as u64)
+            {
+                if cur_phys.is_none() || init_phys.is_none() {
+                    diag!(
+                        "[virtio] queue_notify unmapped before doorbell: notify={:#x} cur_root={:#x} init_root={:#x} cur_phys={:#x?} init_phys={:#x?}",
+                        self.queue_notify as u64,
+                        cur_root,
+                        init_root,
+                        cur_phys,
+                        init_phys
+                    );
+                }
+            }
         }
         unsafe { write_volatile(self.queue_notify, 0); }
 

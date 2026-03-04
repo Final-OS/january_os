@@ -62,21 +62,6 @@ pub fn init_kernel(info: &BootInfo) {
         panic!("Invalid kernel layout in BootInfo");
     }
     let direct_map = mm::direct_map_offset();
-    let runtime_layout = mm::snapshot();
-    if config::DEBUG_VERBOSE {
-        kprintln!(
-            "\x1b[90m[diag]\x1b[0m[boot] bootinfo: mem_entries={} usable={}MB direct_map=[{:#x},{:#x}) vmalloc=[{:#x},{:#x}) va_bits={} levels={} rsdp={:#x}",
-            info.memory_map_entries,
-            info.usable_memory / 1024 / 1024,
-            runtime_layout.direct_map_start,
-            runtime_layout.direct_map_end,
-            runtime_layout.vmalloc_start,
-            runtime_layout.vmalloc_end,
-            runtime_layout.va_bits,
-            runtime_layout.page_levels,
-            info.acpi_rsdp_addr,
-        );
-    }
 
     // 3. 初始化 Framebuffer 控制台
     init_graphics(info, direct_map);
@@ -85,6 +70,37 @@ pub fn init_kernel(info: &BootInfo) {
     kprint!("\x1b[2J\x1b[1;1H"); // Clear screen, move cursor to 1,1
     kprintln!("\n\x1b[36;1m   January OS \x1b[0;36mv0.1.0\x1b[0m");
     kprintln!("\x1b[90m   --------------------------------\x1b[0m\n");
+    let runtime_layout = mm::snapshot();
+    let boot_levels = mm::boot_reported_page_levels();
+    let boot_va_bits = mm::boot_reported_va_bits();
+    let hw_levels = mm::hardware_page_levels();
+    let hw_va_bits = mm::hardware_va_bits();
+    let boot_root = mm::boot_reported_root_phys();
+    let hw_root = mm::hardware_root_phys();
+    let corrected = mm::paging_corrected_by_hw();
+    let root_mismatch = mm::paging_root_mismatch();
+    if config::DEBUG_VERBOSE {
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[boot] bootinfo: mem_entries={} usable={}MB direct_map=[{:#x},{:#x}) vmalloc=[{:#x},{:#x}) boot={}/L{} runtime={}/L{} hw={}/L{} root_boot={:#x} root_hw={:#x} corrected={} root_mismatch={} rsdp={:#x}",
+            info.memory_map_entries,
+            info.usable_memory / 1024 / 1024,
+            runtime_layout.direct_map_start,
+            runtime_layout.direct_map_end,
+            runtime_layout.vmalloc_start,
+            runtime_layout.vmalloc_end,
+            boot_va_bits,
+            boot_levels,
+            runtime_layout.va_bits,
+            runtime_layout.page_levels,
+            hw_va_bits,
+            hw_levels,
+            boot_root,
+            hw_root,
+            corrected,
+            root_mismatch,
+            info.acpi_rsdp_addr,
+        );
+    }
 
     info!("[BOOT] Booting kernel...");
 
@@ -150,6 +166,19 @@ pub fn init_kernel(info: &BootInfo) {
             "\x1b[90m[diag]\x1b[0m[boot] step8: smp::init done online_cpus={}",
             smp::cpu_count()
         );
+    }
+
+    // 8a. 可选回收启动期低地址 identity-map（0..3GiB）。
+    if config::KERNEL_TEARDOWN_IDENTITY_MAP {
+        let removed_identity = mm::arch::paging::teardown_bootstrap_identity_map(direct_map);
+        if config::DEBUG_VERBOSE {
+            kprintln!(
+                "\x1b[90m[diag]\x1b[0m[mm] teardown_identity_map removed_entries={} window_gib=3",
+                removed_identity
+            );
+        }
+    } else if config::DEBUG_VERBOSE {
+        kprintln!("\x1b[90m[diag]\x1b[0m[mm] teardown_identity_map disabled by config");
     }
 
     // 9. IOMMU 初始化
@@ -344,15 +373,25 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
             }
         }
     }
-    let max_managed = max_phys_addr.min(direct_map_span);
-    if max_phys_addr > max_managed {
+    let max_managed = if max_phys_addr > direct_map_span {
+        if config::KERNEL_MANAGE_FULL_PHYS {
+            panic!(
+                "Managed physical memory exceeds direct-map span: max_phys={:#x}, direct_map_span={:#x} ({} GiB). Increase direct-map window or disable kernel.layout.manage_full_phys.",
+                max_phys_addr,
+                direct_map_span,
+                direct_map_span / 1024 / 1024 / 1024
+            );
+        }
         warn!(
-            "Managed physical memory is capped by direct-map span: max_phys={:#x}, managed={:#x}, limit={} GiB",
+            "Managed physical memory is capped by direct-map span (degraded mode): max_phys={:#x}, managed={:#x}, limit={} GiB",
             max_phys_addr,
-            max_managed,
+            direct_map_span,
             direct_map_span / 1024 / 1024 / 1024
         );
-    }
+        direct_map_span
+    } else {
+        max_phys_addr
+    };
     if config::DEBUG_VERBOSE {
         kprintln!(
             "\x1b[90m[diag]\x1b[0m[mm] managed_phys_limit max_phys={:#x} managed={:#x} direct_map={:#x}",
@@ -437,21 +476,7 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
     }
 
     // 初始化 vmalloc
-    {
-        use alloc::boxed::Box;
-        let root_phys = info.page_table_root_phys();
-        let layout = mm::snapshot();
-        let pt_mgr = unsafe {
-            mm::paging::PageTableManager::new_with_layout(
-                root_phys,
-                direct_map,
-                layout.page_levels,
-                layout.va_bits,
-            )
-        };
-        let pt_mgr_ptr = Box::leak(Box::new(pt_mgr));
-        unsafe { mm::vmalloc::init_vmalloc(direct_map, pt_mgr_ptr) };
-    }
+    unsafe { mm::vmalloc::init_vmalloc(direct_map) };
 
     ok!("Memory subsystems initialized (Buddy, SLUB, VMA).");
 }

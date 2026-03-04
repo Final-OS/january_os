@@ -793,6 +793,7 @@ unsafe fn teardown_user_page_tables(pgd_phys: u64) {
 
 unsafe fn teardown_private_mm(mm: &mut Mm) {
     teardown_user_page_tables(mm.pgd);
+    crate::mm::arch::paging::release_kernel_root_entries_refs(mm.pgd);
     free_page_table_page(mm.pgd);
 }
 
@@ -803,13 +804,7 @@ fn init_mm_pgd_phys() -> u64 {
 }
 
 unsafe fn clone_kernel_root_entries(src_pgd: u64, dst_pgd: u64) {
-    let src = &*phys_to_table_mut(src_pgd);
-    let dst = &mut *phys_to_table_mut(dst_pgd);
-    let kernel_root_start = user_root_entry_count();
-
-    for idx in kernel_root_start..512 {
-        *dst.entry_mut(idx) = *src.entry(idx);
-    }
+    crate::mm::arch::paging::clone_kernel_root_entries_with_refs(src_pgd, dst_pgd);
 }
 
 unsafe fn clone_user_present_pages(src: &Mm, dst: &mut Mm) -> bool {

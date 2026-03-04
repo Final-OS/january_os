@@ -498,9 +498,18 @@ fn execute_mm_command(args: &[&str]) {
                 .map(|z| z.nr_free_pages())
                 .sum();
             let fault_stats = mm::get_fault_stats();
+            let (vmalloc_heal_ok, vmalloc_heal_miss) = mm::vmalloc::vmalloc_heal_stats();
             let heap = mm::heap::heap_stats();
             let kmalloc = mm::slub::kmalloc_stats();
             let layout = mm::snapshot();
+            let boot_va_bits = mm::boot_reported_va_bits();
+            let boot_levels = mm::boot_reported_page_levels();
+            let hw_va_bits = mm::hardware_va_bits();
+            let hw_levels = mm::hardware_page_levels();
+            let boot_root = mm::boot_reported_root_phys();
+            let hw_root = mm::hardware_root_phys();
+            let corrected = mm::paging_corrected_by_hw();
+            let root_mismatch = mm::paging_root_mismatch();
             kprintln!("Memory Status:");
             kprintln!("  Free pages:  {}", total_free);
             kprintln!(
@@ -511,6 +520,22 @@ fn execute_mm_command(args: &[&str]) {
                 layout.vmalloc_end,
                 layout.va_bits,
                 layout.page_levels
+            );
+            kprintln!(
+                "  paging:      boot={}/L{} runtime={}/L{} hw={}/L{} corrected={}",
+                boot_va_bits,
+                boot_levels,
+                layout.va_bits,
+                layout.page_levels,
+                hw_va_bits,
+                hw_levels,
+                corrected
+            );
+            kprintln!(
+                "  roots:       boot={:#x} hw={:#x} mismatch={}",
+                boot_root,
+                hw_root,
+                root_mismatch
             );
             kprintln!(
                 "  kmalloc:     init={} active_caches={} objs={} (~{} KiB) slabs={} ({} KiB)",
@@ -534,6 +559,11 @@ fn execute_mm_command(args: &[&str]) {
                 heap.free_size / 1024,
                 heap.segments,
                 heap.live_allocations
+            );
+            kprintln!(
+                "  vmalloc heal: ok={} miss={}",
+                vmalloc_heal_ok,
+                vmalloc_heal_miss
             );
             kprintln!(
                 "  Faults:      total={} minor={} major={} cow={} stack_grow={}",
