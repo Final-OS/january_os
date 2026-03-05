@@ -72,7 +72,7 @@ pub fn run(name: &str) {
             kprintln!("  block [name]   - Block device tests");
             kprintln!("                   Available: virtio, partition");
             kprintln!("  vfs [name]     - VFS core tests");
-            kprintln!("                   Available: path, mount");
+            kprintln!("                   Available: path, mount, fd_bridge");
             kprintln!("  all            - Run all tests");
         }
     }
