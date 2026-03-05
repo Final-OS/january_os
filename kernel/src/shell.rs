@@ -500,6 +500,7 @@ fn execute_mm_command(args: &[&str]) {
             let fault_stats = mm::get_fault_stats();
             let vmalloc_heal = mm::vmalloc::vmalloc_heal_stats();
             let pcp = mm::page::pcp::pcp_stats();
+            let pt_reclaim = mm::pt_reclaim_stats();
             let heap = mm::heap::heap_stats();
             let kmalloc = mm::slub::kmalloc_stats();
             let layout = mm::snapshot();
@@ -573,6 +574,12 @@ fn execute_mm_command(args: &[&str]) {
                 pcp.invalid_free_rejects,
                 pcp.quarantine_fallbacks,
                 pcp.owner_mismatches,
+            );
+            kprintln!(
+                "  pt reclaim:  stop_non_pgtable={} stop_shared={} owner_mismatch={}",
+                pt_reclaim.stop_non_pgtable,
+                pt_reclaim.stop_shared,
+                pt_reclaim.owner_mismatch,
             );
             kprintln!(
                 "  Faults:      total={} minor={} major={} cow={} stack_grow={}",

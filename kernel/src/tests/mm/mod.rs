@@ -5,6 +5,7 @@ mod heap;
 mod mmap;
 mod pcp;
 mod pt_ownership;
+mod pt_reclaim;
 mod slub;
 mod swiotlb;
 mod vmalloc_heal;
@@ -49,6 +50,8 @@ pub fn run_with_filter(filter: Option<&str>) {
             mmap::run();
             mm_step("run case=pt_ownership");
             pt_ownership::run();
+            mm_step("run case=pt_reclaim");
+            pt_reclaim::run();
             mm_step("run case=vmalloc_heal");
             vmalloc_heal::run();
         }
@@ -80,6 +83,10 @@ pub fn run_with_filter(filter: Option<&str>) {
             mm_step("run case=pt_ownership");
             pt_ownership::run();
         }
+        Some("pt_reclaim") => {
+            mm_step("run case=pt_reclaim");
+            pt_reclaim::run();
+        }
         Some("vmalloc_heal") => {
             mm_step("run case=vmalloc_heal");
             vmalloc_heal::run();
@@ -87,7 +94,7 @@ pub fn run_with_filter(filter: Option<&str>) {
         Some(name) => {
             error!("Unknown MM test: {}", name);
             kprintln!(
-                "Available MM tests: swiotlb, slub, buddy, pcp, heap, mmap, pt_ownership, vmalloc_heal"
+                "Available MM tests: swiotlb, slub, buddy, pcp, heap, mmap, pt_ownership, pt_reclaim, vmalloc_heal"
             );
         }
     }

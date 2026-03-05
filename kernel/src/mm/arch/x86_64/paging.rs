@@ -7,7 +7,7 @@
 use crate::config;
 use crate::interrupt;
 use crate::mm::buddy::{alloc_pages, free_page};
-use crate::mm::page::{max_pfn, page_to_pfn, pfn_to_page, PageFlags};
+use crate::mm::page::{max_pfn, page_to_pfn, pfn_to_page, PageFlags, PageOwner};
 use crate::mm::zone::GFP_KERNEL_ZERO;
 use crate::sync::{IrqSpinLock, SpinLock};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -396,10 +396,29 @@ static TLB_PROBE_ADDR: AtomicU64 = AtomicU64::new(0);
 static TLB_PROBE_EXPECTED: AtomicU64 = AtomicU64::new(0);
 static TLB_PROBE_HANDLED: AtomicU32 = AtomicU32::new(0);
 static TLB_PROBE_MATCHED: AtomicU32 = AtomicU32::new(0);
+static PT_RECLAIM_STOP_NON_PGTABLE: AtomicU64 = AtomicU64::new(0);
+static PT_RECLAIM_STOP_SHARED: AtomicU64 = AtomicU64::new(0);
+static PT_RECLAIM_OWNER_MISMATCH: AtomicU64 = AtomicU64::new(0);
 // 暂保留 [3GiB, 4GiB) 给 LAPIC/IOAPIC/PCI ECAM 等低地址 MMIO 访问路径；
 // 等 MMIO 路径全面切到 direct-map/ioremap 后再移除此保留窗口。
 const LOW_IDENTITY_WINDOW_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 const LOW_IDENTITY_STEP_BYTES: u64 = 1024 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+pub struct PtReclaimStats {
+    pub stop_non_pgtable: u64,
+    pub stop_shared: u64,
+    pub owner_mismatch: u64,
+}
+
+#[inline]
+pub fn pt_reclaim_stats() -> PtReclaimStats {
+    PtReclaimStats {
+        stop_non_pgtable: PT_RECLAIM_STOP_NON_PGTABLE.load(Ordering::Relaxed),
+        stop_shared: PT_RECLAIM_STOP_SHARED.load(Ordering::Relaxed),
+        owner_mismatch: PT_RECLAIM_OWNER_MISMATCH.load(Ordering::Relaxed),
+    }
+}
 
 #[inline]
 fn flush_tlb_local_only(virt_addr: u64) {
@@ -690,6 +709,23 @@ unsafe fn release_table_page_ref(table_phys: u64) {
         return;
     }
     let page = unsafe { &mut *pfn_to_page(pfn) };
+    if !page.is_pgtable() && !page.is_reserved() {
+        PT_RECLAIM_OWNER_MISMATCH.fetch_add(1, Ordering::Relaxed);
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[pt] release table reject non-pgtable phys={:#x} pfn={} owner={:?} flags={:#x} refcount={}",
+                table_phys,
+                pfn,
+                page.owner(),
+                page.flags().bits(),
+                page.refcount()
+            );
+        }
+        return;
+    }
+    if page.is_pgtable() && page.owner() != PageOwner::Pgtable {
+        PT_RECLAIM_OWNER_MISMATCH.fetch_add(1, Ordering::Relaxed);
+    }
     if page.refcount() == 0 {
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
@@ -1198,6 +1234,7 @@ impl PageTableManager {
             }
             let child_page = unsafe { &*pfn_to_page(child_pfn) };
             if !child_page.is_pgtable() {
+                PT_RECLAIM_STOP_NON_PGTABLE.fetch_add(1, Ordering::Relaxed);
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
                         "\x1b[90m[diag]\x1b[0m[pt] reclaim stop(non-pgtable) child={:#x} pfn={} refcount={}",
@@ -1209,6 +1246,7 @@ impl PageTableManager {
                 break;
             }
             if child_page.refcount() != 1 {
+                PT_RECLAIM_STOP_SHARED.fetch_add(1, Ordering::Relaxed);
                 if watch_vmalloc {
                     crate::kprintln!(
                         "\x1b[90m[diag]\x1b[0m[pt] reclaim stop(shared) child={:#x} refcount={}",
