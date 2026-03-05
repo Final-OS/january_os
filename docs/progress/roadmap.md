@@ -629,6 +629,6 @@ capget, capset
 
 ## 下一步行动
 
-当前进度：**v0.2 已完成，v0.3 计划中**
+当前进度：**v0.2 已完成，v0.3 进行中（Batch 1 已完成）**
 
-立即开始 v0.3 Batch 1：块设备抽象与 virtio-blk 驱动
+下一步：v0.3 Batch 2（分区解析：MBR/GPT）与 Batch 3（VFS 核心抽象）

@@ -245,6 +245,115 @@ pub(super) fn run() {
 
     fs::drop_process_fds(REGRESSION_FS_PID);
 
+    task_step("regression: verify fs lseek/dup/chdir/getcwd/readdir helpers");
+    let fd = match fs::open_for_pid(REGRESSION_FS_PID, REGRESSION_FS_PATH, 0, 0) {
+        Ok(fd) => fd,
+        Err(errno) => {
+            error!("task: regression FAIL (open_for_pid #2 errno={})", errno);
+            return;
+        }
+    };
+    let pos = match fs::lseek_for_pid(REGRESSION_FS_PID, fd, 3, 0) {
+        Ok(v) => v,
+        Err(errno) => {
+            error!("task: regression FAIL (lseek_for_pid errno={})", errno);
+            return;
+        }
+    };
+    if pos != 3 {
+        error!("task: regression FAIL (lseek position mismatch)");
+        return;
+    }
+    let mut tail = [0u8; 32];
+    let tail_n = match fs::read_for_pid(REGRESSION_FS_PID, fd, &mut tail) {
+        Ok(v) => v,
+        Err(errno) => {
+            error!("task: regression FAIL (read after lseek errno={})", errno);
+            return;
+        }
+    };
+    if &tail[..tail_n] != &REGRESSION_FS_DATA[3..] {
+        error!("task: regression FAIL (tail read mismatch)");
+        return;
+    }
+
+    let dupfd = match fs::dup_for_pid(REGRESSION_FS_PID, fd, 0, false) {
+        Ok(v) => v,
+        Err(errno) => {
+            error!("task: regression FAIL (dup_for_pid errno={})", errno);
+            return;
+        }
+    };
+    if let Err(errno) = fs::close_for_pid(REGRESSION_FS_PID, fd) {
+        error!("task: regression FAIL (close original fd errno={})", errno);
+        return;
+    }
+    let mut dup_buf = [0u8; 4];
+    let dup_n = match fs::read_for_pid(REGRESSION_FS_PID, dupfd, &mut dup_buf) {
+        Ok(v) => v,
+        Err(errno) => {
+            error!("task: regression FAIL (read dup fd errno={})", errno);
+            return;
+        }
+    };
+    if dup_n != 0 {
+        error!("task: regression FAIL (dup fd should share offset and hit EOF)");
+        return;
+    }
+    let _ = fs::close_for_pid(REGRESSION_FS_PID, dupfd);
+
+    if let Err(errno) = fs::chdir_for_pid(REGRESSION_FS_PID, "/tests") {
+        error!("task: regression FAIL (chdir /tests errno={})", errno);
+        return;
+    }
+    let cwd = fs::getcwd_for_pid(REGRESSION_FS_PID);
+    if cwd.as_str() != "/tests" {
+        error!("task: regression FAIL (getcwd mismatch after chdir)");
+        return;
+    }
+    let fd_rel = match fs::open_for_pid(REGRESSION_FS_PID, "task/fs_regression.txt", 0, 0) {
+        Ok(fd) => fd,
+        Err(errno) => {
+            error!("task: regression FAIL (relative open errno={})", errno);
+            return;
+        }
+    };
+    let _ = fs::close_for_pid(REGRESSION_FS_PID, fd_rel);
+
+    let dirfd = match fs::open_for_pid(REGRESSION_FS_PID, "/", 0, 0) {
+        Ok(fd) => fd,
+        Err(errno) => {
+            error!("task: regression FAIL (open root dir errno={})", errno);
+            return;
+        }
+    };
+    let mut saw_tests = false;
+    for _ in 0..16 {
+        let entry = match fs::peek_dir_entry_for_pid(REGRESSION_FS_PID, dirfd) {
+            Ok(v) => v,
+            Err(errno) => {
+                error!("task: regression FAIL (peek_dir_entry errno={})", errno);
+                return;
+            }
+        };
+        let Some(entry) = entry else {
+            break;
+        };
+        if entry.name.as_str() == "tests" {
+            saw_tests = true;
+        }
+        if let Err(errno) = fs::advance_dir_cursor_for_pid(REGRESSION_FS_PID, dirfd, 1) {
+            error!("task: regression FAIL (advance_dir_cursor errno={})", errno);
+            return;
+        }
+    }
+    if !saw_tests {
+        error!("task: regression FAIL (root readdir did not expose /tests)");
+        return;
+    }
+    let _ = fs::close_for_pid(REGRESSION_FS_PID, dirfd);
+    fs::drop_process_fds(REGRESSION_FS_PID);
+
     task_step("regression: verify syscall pipe2 dispatch wiring");
     let pipe2_ret = crate::syscall::dispatch(293, 0, 0, 0, 0, 0, 0);
     let pipe2_errno = (-(pipe2_ret as isize)) as i32;
@@ -258,6 +367,38 @@ pub(super) fn run() {
             "task: regression FAIL (sys_pipe2 dispatch mismatch, got errno={}, expect={})",
             pipe2_errno,
             crate::syscall::EFAULT
+        );
+        return;
+    }
+
+    task_step("regression: verify newly wired fs syscall dispatchers");
+    let lseek_ret = crate::syscall::dispatch(8, usize::MAX, 0, 0, 0, 0, 0);
+    let lseek_errno = (-(lseek_ret as isize)) as i32;
+    if lseek_errno != crate::syscall::EBADF {
+        error!(
+            "task: regression FAIL (sys_lseek dispatch mismatch, got errno={}, expect={})",
+            lseek_errno,
+            crate::syscall::EBADF
+        );
+        return;
+    }
+    let getcwd_ret = crate::syscall::dispatch(79, 0, 16, 0, 0, 0, 0);
+    let getcwd_errno = (-(getcwd_ret as isize)) as i32;
+    if getcwd_errno != crate::syscall::EFAULT {
+        error!(
+            "task: regression FAIL (sys_getcwd dispatch mismatch, got errno={}, expect={})",
+            getcwd_errno,
+            crate::syscall::EFAULT
+        );
+        return;
+    }
+    let getdents_ret = crate::syscall::dispatch(217, usize::MAX, 0, 16, 0, 0, 0);
+    let getdents_errno = (-(getdents_ret as isize)) as i32;
+    if getdents_errno != crate::syscall::EBADF {
+        error!(
+            "task: regression FAIL (sys_getdents64 dispatch mismatch, got errno={}, expect={})",
+            getdents_errno,
+            crate::syscall::EBADF
         );
         return;
     }

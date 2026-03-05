@@ -7,14 +7,19 @@
 
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::sync::Mutex;
-use crate::syscall::{EAGAIN, EBADF, EINVAL, ENOENT, EPIPE};
+use crate::syscall::{EAGAIN, EBADF, EINVAL, EISDIR, ENOENT, ENOTDIR, EPIPE, ESPIPE};
 
 const FIRST_USER_FD: i32 = 3;
 const O_CLOEXEC: u32 = 0o2000000;
 const O_NONBLOCK: u32 = 0o4000;
+const O_DIRECTORY: u32 = 0o200000;
+const O_ACCMODE: u32 = 0o3;
+const O_RDONLY: u32 = 0;
+const O_WRONLY: u32 = 1;
 
 #[derive(Clone, Copy)]
 struct StaticFile {
@@ -22,16 +27,25 @@ struct StaticFile {
     data: &'static [u8],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct StaticOpenFile {
     path: &'static str,
     data: &'static [u8],
     offset: usize,
+    cloexec: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
+struct DirOpenFile {
+    path: String,
+    cursor: usize,
+    cloexec: bool,
+}
+
+#[derive(Clone)]
 enum OpenFile {
     Static(StaticOpenFile),
+    Dir(DirOpenFile),
     PipeRead {
         pipe_id: u64,
         nonblocking: bool,
@@ -64,6 +78,7 @@ struct FsState {
     files: Vec<StaticFile>,
     open_files: BTreeMap<usize, BTreeMap<i32, OpenFile>>,
     next_fd: BTreeMap<usize, i32>,
+    cwd: BTreeMap<usize, String>,
     next_pipe_id: u64,
     pipes: BTreeMap<u64, PipeState>,
 }
@@ -82,6 +97,7 @@ pub struct FsStat {
 
 const S_IFIFO: u32 = 0o010000;
 const S_IFCHR: u32 = 0o020000;
+const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 
 const POLLIN: i16 = 0x0001;
@@ -90,22 +106,224 @@ const POLLERR: i16 = 0x0008;
 const POLLHUP: i16 = 0x0010;
 const POLLNVAL: i16 = 0x0020;
 
+const DT_UNKNOWN: u8 = 0;
+const DT_DIR: u8 = 4;
+const DT_REG: u8 = 8;
+
+#[derive(Clone)]
+pub struct FsDirEntry {
+    pub ino: u64,
+    pub file_type: u8,
+    pub name: String,
+}
+
 impl FsState {
     const fn new() -> Self {
         Self {
             files: Vec::new(),
             open_files: BTreeMap::new(),
             next_fd: BTreeMap::new(),
+            cwd: BTreeMap::new(),
             next_pipe_id: 1,
             pipes: BTreeMap::new(),
         }
     }
 
     fn alloc_fd(&mut self, pid: usize) -> i32 {
-        let next_fd = self.next_fd.entry(pid).or_insert(FIRST_USER_FD);
-        let fd = *next_fd;
-        *next_fd = next_fd.saturating_add(1);
+        self.alloc_fd_from(pid, FIRST_USER_FD)
+    }
+
+    fn alloc_fd_from(&mut self, pid: usize, min_fd: i32) -> i32 {
+        let start = min_fd.max(FIRST_USER_FD);
+        let next_fd = self.next_fd.entry(pid).or_insert(start);
+        if *next_fd < start {
+            *next_fd = start;
+        }
+        let table = self.open_files.entry(pid).or_insert_with(BTreeMap::new);
+        let mut fd = *next_fd;
+        while table.contains_key(&fd) {
+            fd = fd.saturating_add(1);
+        }
+        *next_fd = fd.saturating_add(1);
         fd
+    }
+
+    fn ensure_cwd_mut(&mut self, pid: usize) -> &mut String {
+        self.cwd.entry(pid).or_insert_with(|| String::from("/"))
+    }
+
+    fn cwd_for_pid(&mut self, pid: usize) -> String {
+        self.ensure_cwd_mut(pid).clone()
+    }
+
+    fn normalize_path(base: &str, input: &str) -> Result<String, i32> {
+        if input.is_empty() {
+            return Err(ENOENT);
+        }
+        let mut parts: Vec<&str> = Vec::new();
+        let mut seed = String::from(base);
+        if !seed.starts_with('/') {
+            seed.insert(0, '/');
+        }
+        if !input.starts_with('/') {
+            for comp in seed.split('/') {
+                if comp.is_empty() || comp == "." {
+                    continue;
+                }
+                if comp == ".." {
+                    let _ = parts.pop();
+                } else {
+                    parts.push(comp);
+                }
+            }
+        }
+        for comp in input.split('/') {
+            if comp.is_empty() || comp == "." {
+                continue;
+            }
+            if comp == ".." {
+                let _ = parts.pop();
+            } else {
+                parts.push(comp);
+            }
+        }
+        if parts.is_empty() {
+            return Ok(String::from("/"));
+        }
+        let mut out = String::from("/");
+        for (idx, comp) in parts.iter().enumerate() {
+            if idx != 0 {
+                out.push('/');
+            }
+            out.push_str(comp);
+        }
+        Ok(out)
+    }
+
+    fn resolve_path_for_pid(&mut self, pid: usize, input: &str) -> Result<String, i32> {
+        let cwd = self.cwd_for_pid(pid);
+        Self::normalize_path(cwd.as_str(), input)
+    }
+
+    fn dir_exists(&self, path: &str) -> bool {
+        if path == "/" {
+            return true;
+        }
+        let needle = if path.ends_with('/') {
+            String::from(path)
+        } else {
+            let mut s = String::from(path);
+            s.push('/');
+            s
+        };
+        self.files.iter().any(|f| f.path.starts_with(needle.as_str()))
+    }
+
+    fn split_parent(path: &str) -> (&str, &str) {
+        if path == "/" {
+            return ("/", "");
+        }
+        let trimmed = path.trim_end_matches('/');
+        if let Some(idx) = trimmed.rfind('/') {
+            if idx == 0 {
+                return ("/", &trimmed[1..]);
+            }
+            (&trimmed[..idx], &trimmed[idx + 1..])
+        } else {
+            ("/", trimmed)
+        }
+    }
+
+    fn collect_dir_entries(&self, dir_path: &str) -> Vec<FsDirEntry> {
+        let mut names: BTreeMap<String, (u8, u64)> = BTreeMap::new();
+        let dir_ino = Self::hash_path(dir_path);
+        names.insert(String::from("."), (DT_DIR, dir_ino));
+        let parent = if dir_path == "/" {
+            "/"
+        } else {
+            Self::split_parent(dir_path).0
+        };
+        names.insert(String::from(".."), (DT_DIR, Self::hash_path(parent)));
+
+        for file in self.files.iter() {
+            let path = file.path;
+            if dir_path == "/" {
+                let rest = path.trim_start_matches('/');
+                if rest.is_empty() {
+                    continue;
+                }
+                let (name, tail) = match rest.split_once('/') {
+                    Some((a, b)) => (a, b),
+                    None => (rest, ""),
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                let is_dir = !tail.is_empty();
+                let entry_type = if is_dir { DT_DIR } else { DT_REG };
+                let full = if is_dir {
+                    let mut s = String::from("/");
+                    s.push_str(name);
+                    s
+                } else {
+                    String::from(path)
+                };
+                names
+                    .entry(String::from(name))
+                    .and_modify(|slot| {
+                        if slot.0 != DT_DIR && entry_type == DT_DIR {
+                            *slot = (entry_type, Self::hash_path(full.as_str()));
+                        }
+                    })
+                    .or_insert((entry_type, Self::hash_path(full.as_str())));
+            } else {
+                let mut prefix = String::from(dir_path);
+                if !prefix.ends_with('/') {
+                    prefix.push('/');
+                }
+                if !path.starts_with(prefix.as_str()) {
+                    continue;
+                }
+                let rest = &path[prefix.len()..];
+                if rest.is_empty() {
+                    continue;
+                }
+                let (name, tail) = match rest.split_once('/') {
+                    Some((a, b)) => (a, b),
+                    None => (rest, ""),
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                let is_dir = !tail.is_empty();
+                let entry_type = if is_dir { DT_DIR } else { DT_REG };
+                let full = if is_dir {
+                    let mut s = String::from(prefix.as_str());
+                    s.push_str(name);
+                    s
+                } else {
+                    String::from(path)
+                };
+                names
+                    .entry(String::from(name))
+                    .and_modify(|slot| {
+                        if slot.0 != DT_DIR && entry_type == DT_DIR {
+                            *slot = (entry_type, Self::hash_path(full.as_str()));
+                        }
+                    })
+                    .or_insert((entry_type, Self::hash_path(full.as_str())));
+            }
+        }
+
+        let mut out = Vec::new();
+        for (name, (file_type, ino)) in names {
+            out.push(FsDirEntry {
+                ino,
+                file_type,
+                name,
+            });
+        }
+        out
     }
 
     fn register_static_file(&mut self, path: &'static str, data: &'static [u8]) -> Result<(), i32> {
@@ -132,24 +350,45 @@ impl FsState {
         &mut self,
         pid: usize,
         path: &str,
-        _flags: u32,
+        flags: u32,
         _mode: u16,
     ) -> Result<i32, i32> {
-        let Some(file) = self.files.iter().find(|file| file.path == path).copied() else {
-            return Err(ENOENT);
-        };
+        let resolved = self.resolve_path_for_pid(pid, path)?;
+        let cloexec = (flags & O_CLOEXEC) != 0;
+        let wants_dir = (flags & O_DIRECTORY) != 0;
+        let accmode = flags & O_ACCMODE;
+        if accmode != O_RDONLY && accmode != O_WRONLY {
+            return Err(EINVAL);
+        }
 
-        let fd = self.alloc_fd(pid);
-
-        let table = self.open_files.entry(pid).or_insert_with(BTreeMap::new);
-        table.insert(
-            fd,
+        let open_file = if self.dir_exists(resolved.as_str()) {
+            if accmode != O_RDONLY {
+                return Err(EISDIR);
+            }
+            OpenFile::Dir(DirOpenFile {
+                path: resolved,
+                cursor: 0,
+                cloexec,
+            })
+        } else {
+            if wants_dir {
+                return Err(ENOTDIR);
+            }
+            let Some(file) = self.files.iter().find(|file| file.path == resolved.as_str()).copied()
+            else {
+                return Err(ENOENT);
+            };
             OpenFile::Static(StaticOpenFile {
                 path: file.path,
                 data: file.data,
                 offset: 0,
-            }),
-        );
+                cloexec,
+            })
+        };
+
+        let fd = self.alloc_fd(pid);
+        let table = self.open_files.entry(pid).or_insert_with(BTreeMap::new);
+        table.insert(fd, open_file);
         Ok(fd)
     }
 
@@ -193,7 +432,7 @@ impl FsState {
         let Some(table) = self.open_files.get(&pid) else {
             return Err(EBADF);
         };
-        let Some(open_file) = table.get(&fd).copied() else {
+        let Some(open_file) = table.get(&fd).cloned() else {
             return Err(EBADF);
         };
 
@@ -247,6 +486,7 @@ impl FsState {
                 }
                 Err(EAGAIN)
             }
+            OpenFile::Dir(_) => Err(EISDIR),
             OpenFile::PipeWrite { .. } => Err(EBADF),
         }
     }
@@ -255,7 +495,7 @@ impl FsState {
         let Some(table) = self.open_files.get(&pid) else {
             return Err(EBADF);
         };
-        let Some(open_file) = table.get(&fd).copied() else {
+        let Some(open_file) = table.get(&fd).cloned() else {
             return Err(EBADF);
         };
 
@@ -276,6 +516,7 @@ impl FsState {
                 }
                 Ok(data.len())
             }
+            OpenFile::Dir(_) => Err(EISDIR),
             _ => Err(EBADF),
         }
     }
@@ -305,6 +546,7 @@ impl FsState {
                     }
                 }
             }
+            OpenFile::Dir(_) => {}
             OpenFile::Static(_) => {}
         };
         Ok(())
@@ -323,8 +565,10 @@ impl FsState {
         let Some(open_file) = table.get(&fd) else {
             return Err(EBADF);
         };
-        let OpenFile::Static(open_file) = open_file else {
-            return Err(EBADF);
+        let open_file = match open_file {
+            OpenFile::Static(open_file) => open_file,
+            OpenFile::Dir(_) => return Err(EISDIR),
+            _ => return Err(EBADF),
         };
 
         if out.is_empty() {
@@ -348,8 +592,10 @@ impl FsState {
         let Some(open_file) = table.get(&fd) else {
             return Err(EBADF);
         };
-        let OpenFile::Static(open_file) = open_file else {
-            return Err(EBADF);
+        let open_file = match open_file {
+            OpenFile::Static(open_file) => open_file,
+            OpenFile::Dir(_) => return Err(EISDIR),
+            _ => return Err(EBADF),
         };
         Ok(open_file.data)
     }
@@ -364,8 +610,230 @@ impl FsState {
 
         match open_file {
             OpenFile::Static(_) => Ok(false),
+            OpenFile::Dir(_) => Ok(false),
             OpenFile::PipeRead { nonblocking, .. } => Ok(*nonblocking),
             OpenFile::PipeWrite { nonblocking, .. } => Ok(*nonblocking),
+        }
+    }
+
+    fn lseek_for_pid(&mut self, pid: usize, fd: i32, offset: i64, whence: u32) -> Result<usize, i32> {
+        let Some(table) = self.open_files.get_mut(&pid) else {
+            return Err(EBADF);
+        };
+        let Some(open_file) = table.get_mut(&fd) else {
+            return Err(EBADF);
+        };
+
+        match open_file {
+            OpenFile::Static(file) => {
+                let base = match whence {
+                    0 => 0i64,                   // SEEK_SET
+                    1 => file.offset as i64,     // SEEK_CUR
+                    2 => file.data.len() as i64, // SEEK_END
+                    _ => return Err(EINVAL),
+                };
+                let next = base.checked_add(offset).ok_or(EINVAL)?;
+                if next < 0 {
+                    return Err(EINVAL);
+                }
+                file.offset = next as usize;
+                Ok(file.offset)
+            }
+            OpenFile::Dir(dir) => {
+                if whence != 0 || offset < 0 {
+                    return Err(EINVAL);
+                }
+                dir.cursor = offset as usize;
+                Ok(dir.cursor)
+            }
+            OpenFile::PipeRead { .. } | OpenFile::PipeWrite { .. } => Err(ESPIPE),
+        }
+    }
+
+    fn duplicate_open_file(&mut self, open_file: &OpenFile) {
+        match open_file {
+            OpenFile::PipeRead { pipe_id, .. } => {
+                if let Some(pipe) = self.pipes.get_mut(pipe_id) {
+                    pipe.readers = pipe.readers.saturating_add(1);
+                }
+            }
+            OpenFile::PipeWrite { pipe_id, .. } => {
+                if let Some(pipe) = self.pipes.get_mut(pipe_id) {
+                    pipe.writers = pipe.writers.saturating_add(1);
+                }
+            }
+            OpenFile::Static(_) | OpenFile::Dir(_) => {}
+        }
+    }
+
+    fn dup_for_pid(&mut self, pid: usize, oldfd: i32, min_newfd: i32, cloexec: bool) -> Result<i32, i32> {
+        let old_file = {
+            let Some(table) = self.open_files.get(&pid) else {
+                return Err(EBADF);
+            };
+            let Some(entry) = table.get(&oldfd) else {
+                return Err(EBADF);
+            };
+            entry.clone()
+        };
+
+        let mut new_file = old_file.clone();
+        match &mut new_file {
+            OpenFile::Static(f) => f.cloexec = cloexec,
+            OpenFile::Dir(d) => d.cloexec = cloexec,
+            OpenFile::PipeRead { cloexec: c, .. } => *c = cloexec,
+            OpenFile::PipeWrite { cloexec: c, .. } => *c = cloexec,
+        }
+        self.duplicate_open_file(&new_file);
+        let new_fd = self.alloc_fd_from(pid, min_newfd);
+        let table = self.open_files.entry(pid).or_insert_with(BTreeMap::new);
+        table.insert(new_fd, new_file);
+        Ok(new_fd)
+    }
+
+    fn dup2_for_pid(&mut self, pid: usize, oldfd: i32, newfd: i32, cloexec: bool) -> Result<i32, i32> {
+        if newfd < 0 {
+            return Err(EBADF);
+        }
+        if oldfd == newfd {
+            let table = self.open_files.get(&pid).ok_or(EBADF)?;
+            if table.get(&oldfd).is_none() {
+                return Err(EBADF);
+            }
+            return Ok(newfd);
+        }
+
+        let old_file = {
+            let Some(table) = self.open_files.get(&pid) else {
+                return Err(EBADF);
+            };
+            let Some(entry) = table.get(&oldfd) else {
+                return Err(EBADF);
+            };
+            entry.clone()
+        };
+
+        let _ = self.close_for_pid(pid, newfd);
+
+        let mut new_file = old_file.clone();
+        match &mut new_file {
+            OpenFile::Static(f) => f.cloexec = cloexec,
+            OpenFile::Dir(d) => d.cloexec = cloexec,
+            OpenFile::PipeRead { cloexec: c, .. } => *c = cloexec,
+            OpenFile::PipeWrite { cloexec: c, .. } => *c = cloexec,
+        }
+        self.duplicate_open_file(&new_file);
+        let table = self.open_files.entry(pid).or_insert_with(BTreeMap::new);
+        table.insert(newfd, new_file);
+        let next_fd = self.next_fd.entry(pid).or_insert(FIRST_USER_FD);
+        if *next_fd <= newfd {
+            *next_fd = newfd.saturating_add(1);
+        }
+        Ok(newfd)
+    }
+
+    fn fcntl_getfl_for_pid(&self, pid: usize, fd: i32) -> Result<u32, i32> {
+        let table = self.open_files.get(&pid).ok_or(EBADF)?;
+        let open_file = table.get(&fd).ok_or(EBADF)?;
+        Ok(match open_file {
+            OpenFile::Static(_) | OpenFile::Dir(_) => O_RDONLY,
+            OpenFile::PipeRead { nonblocking, .. } => {
+                let mut f = O_RDONLY;
+                if *nonblocking {
+                    f |= O_NONBLOCK;
+                }
+                f
+            }
+            OpenFile::PipeWrite { nonblocking, .. } => {
+                let mut f = O_WRONLY;
+                if *nonblocking {
+                    f |= O_NONBLOCK;
+                }
+                f
+            }
+        })
+    }
+
+    fn fcntl_setfl_for_pid(&mut self, pid: usize, fd: i32, flags: u32) -> Result<(), i32> {
+        let table = self.open_files.get_mut(&pid).ok_or(EBADF)?;
+        let open_file = table.get_mut(&fd).ok_or(EBADF)?;
+        let nonblocking = (flags & O_NONBLOCK) != 0;
+        match open_file {
+            OpenFile::PipeRead { nonblocking: n, .. } => *n = nonblocking,
+            OpenFile::PipeWrite { nonblocking: n, .. } => *n = nonblocking,
+            OpenFile::Static(_) | OpenFile::Dir(_) => {}
+        }
+        Ok(())
+    }
+
+    fn fcntl_getfd_for_pid(&self, pid: usize, fd: i32) -> Result<u32, i32> {
+        let table = self.open_files.get(&pid).ok_or(EBADF)?;
+        let open_file = table.get(&fd).ok_or(EBADF)?;
+        let cloexec = match open_file {
+            OpenFile::Static(f) => f.cloexec,
+            OpenFile::Dir(f) => f.cloexec,
+            OpenFile::PipeRead { cloexec, .. } => *cloexec,
+            OpenFile::PipeWrite { cloexec, .. } => *cloexec,
+        };
+        Ok(if cloexec { 1 } else { 0 })
+    }
+
+    fn fcntl_setfd_for_pid(&mut self, pid: usize, fd: i32, cloexec: bool) -> Result<(), i32> {
+        let table = self.open_files.get_mut(&pid).ok_or(EBADF)?;
+        let open_file = table.get_mut(&fd).ok_or(EBADF)?;
+        match open_file {
+            OpenFile::Static(f) => f.cloexec = cloexec,
+            OpenFile::Dir(f) => f.cloexec = cloexec,
+            OpenFile::PipeRead { cloexec: c, .. } => *c = cloexec,
+            OpenFile::PipeWrite { cloexec: c, .. } => *c = cloexec,
+        }
+        Ok(())
+    }
+
+    fn chdir_for_pid(&mut self, pid: usize, path: &str) -> Result<(), i32> {
+        let resolved = self.resolve_path_for_pid(pid, path)?;
+        if !self.dir_exists(resolved.as_str()) {
+            return Err(ENOTDIR);
+        }
+        let cwd = self.ensure_cwd_mut(pid);
+        *cwd = resolved;
+        Ok(())
+    }
+
+    fn getcwd_for_pid(&mut self, pid: usize) -> String {
+        self.cwd_for_pid(pid)
+    }
+
+    fn peek_dir_entry_for_pid(&mut self, pid: usize, fd: i32) -> Result<Option<FsDirEntry>, i32> {
+        let (path, cursor) = {
+            let Some(table) = self.open_files.get(&pid) else {
+                return Err(EBADF);
+            };
+            let Some(open_file) = table.get(&fd) else {
+                return Err(EBADF);
+            };
+            match open_file {
+                OpenFile::Dir(d) => (d.path.clone(), d.cursor),
+                _ => return Err(ENOTDIR),
+            }
+        };
+
+        let entries = self.collect_dir_entries(path.as_str());
+        if cursor >= entries.len() {
+            return Ok(None);
+        }
+        Ok(entries.get(cursor).cloned())
+    }
+
+    fn advance_dir_cursor_for_pid(&mut self, pid: usize, fd: i32, count: usize) -> Result<(), i32> {
+        let table = self.open_files.get_mut(&pid).ok_or(EBADF)?;
+        let open_file = table.get_mut(&fd).ok_or(EBADF)?;
+        match open_file {
+            OpenFile::Dir(d) => {
+                d.cursor = d.cursor.saturating_add(count);
+                Ok(())
+            }
+            _ => Err(ENOTDIR),
         }
     }
 
@@ -378,7 +846,7 @@ impl FsState {
         h
     }
 
-    fn make_regular_stat(path: &'static str, data_len: usize) -> FsStat {
+    fn make_regular_stat(path: &str, data_len: usize) -> FsStat {
         let size = data_len as i64;
         FsStat {
             dev: 1,
@@ -389,6 +857,19 @@ impl FsState {
             size,
             blksize: 4096,
             blocks: (size.saturating_add(511) / 512),
+        }
+    }
+
+    fn make_dir_stat(path: &str) -> FsStat {
+        FsStat {
+            dev: 1,
+            ino: Self::hash_path(path),
+            mode: S_IFDIR | 0o755,
+            nlink: 2,
+            rdev: 0,
+            size: 0,
+            blksize: 4096,
+            blocks: 0,
         }
     }
 
@@ -420,10 +901,18 @@ impl FsState {
     }
 
     fn stat_path(&self, path: &str) -> Result<FsStat, i32> {
+        if self.dir_exists(path) {
+            return Ok(Self::make_dir_stat(path));
+        }
         let Some(file) = self.files.iter().find(|file| file.path == path) else {
             return Err(ENOENT);
         };
         Ok(Self::make_regular_stat(file.path, file.data.len()))
+    }
+
+    fn stat_path_for_pid(&mut self, pid: usize, path: &str) -> Result<FsStat, i32> {
+        let resolved = self.resolve_path_for_pid(pid, path)?;
+        self.stat_path(resolved.as_str())
     }
 
     fn stat_fd(&self, pid: usize, fd: i32) -> Result<FsStat, i32> {
@@ -440,6 +929,7 @@ impl FsState {
 
         match open_file {
             OpenFile::Static(file) => Ok(Self::make_regular_stat(file.path, file.data.len())),
+            OpenFile::Dir(dir) => Ok(Self::make_dir_stat(dir.path.as_str())),
             OpenFile::PipeRead { pipe_id, .. } | OpenFile::PipeWrite { pipe_id, .. } => {
                 let size = self
                     .pipes
@@ -484,6 +974,11 @@ impl FsState {
                     if !file.data.is_empty() || eof {
                         revents |= POLLIN;
                     }
+                }
+            }
+            OpenFile::Dir(_) => {
+                if (events & POLLIN) != 0 {
+                    revents |= POLLIN;
                 }
             }
             OpenFile::PipeRead { pipe_id, .. } => {
@@ -534,11 +1029,13 @@ impl FsState {
                             }
                         }
                     }
+                    OpenFile::Dir(_) => {}
                     OpenFile::Static(_) => {}
                 }
             }
         }
         self.next_fd.remove(&pid);
+        self.cwd.remove(&pid);
     }
 }
 
@@ -590,8 +1087,56 @@ pub fn fd_is_nonblocking_for_pid(pid: usize, fd: i32) -> Result<bool, i32> {
     FS_STATE.lock().fd_is_nonblocking_for_pid(pid, fd)
 }
 
+pub fn lseek_for_pid(pid: usize, fd: i32, offset: i64, whence: u32) -> Result<usize, i32> {
+    FS_STATE.lock().lseek_for_pid(pid, fd, offset, whence)
+}
+
+pub fn dup_for_pid(pid: usize, oldfd: i32, min_newfd: i32, cloexec: bool) -> Result<i32, i32> {
+    FS_STATE.lock().dup_for_pid(pid, oldfd, min_newfd, cloexec)
+}
+
+pub fn dup2_for_pid(pid: usize, oldfd: i32, newfd: i32, cloexec: bool) -> Result<i32, i32> {
+    FS_STATE.lock().dup2_for_pid(pid, oldfd, newfd, cloexec)
+}
+
+pub fn fcntl_getfl_for_pid(pid: usize, fd: i32) -> Result<u32, i32> {
+    FS_STATE.lock().fcntl_getfl_for_pid(pid, fd)
+}
+
+pub fn fcntl_setfl_for_pid(pid: usize, fd: i32, flags: u32) -> Result<(), i32> {
+    FS_STATE.lock().fcntl_setfl_for_pid(pid, fd, flags)
+}
+
+pub fn fcntl_getfd_for_pid(pid: usize, fd: i32) -> Result<u32, i32> {
+    FS_STATE.lock().fcntl_getfd_for_pid(pid, fd)
+}
+
+pub fn fcntl_setfd_for_pid(pid: usize, fd: i32, cloexec: bool) -> Result<(), i32> {
+    FS_STATE.lock().fcntl_setfd_for_pid(pid, fd, cloexec)
+}
+
+pub fn chdir_for_pid(pid: usize, path: &str) -> Result<(), i32> {
+    FS_STATE.lock().chdir_for_pid(pid, path)
+}
+
+pub fn getcwd_for_pid(pid: usize) -> String {
+    FS_STATE.lock().getcwd_for_pid(pid)
+}
+
+pub fn peek_dir_entry_for_pid(pid: usize, fd: i32) -> Result<Option<FsDirEntry>, i32> {
+    FS_STATE.lock().peek_dir_entry_for_pid(pid, fd)
+}
+
+pub fn advance_dir_cursor_for_pid(pid: usize, fd: i32, count: usize) -> Result<(), i32> {
+    FS_STATE.lock().advance_dir_cursor_for_pid(pid, fd, count)
+}
+
 pub fn stat_path(path: &str) -> Result<FsStat, i32> {
     FS_STATE.lock().stat_path(path)
+}
+
+pub fn stat_path_for_pid(pid: usize, path: &str) -> Result<FsStat, i32> {
+    FS_STATE.lock().stat_path_for_pid(pid, path)
 }
 
 pub fn stat_fd(pid: usize, fd: i32) -> Result<FsStat, i32> {
