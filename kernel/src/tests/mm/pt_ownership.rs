@@ -11,10 +11,23 @@ pub(super) fn run() {
 
     let page_virt = (io as u64) & !(mm::PAGE_SIZE - 1);
     let init_mm = mm::init_mm_ptr();
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[test/mm][pt_ownership][diag] before clone init_mm={:#x} page_virt={:#x}",
+            init_mm as usize,
+            page_virt
+        );
+    }
     let cloned_mm = mm::mm_clone(init_mm);
     if cloned_mm.is_null() {
         mm::vmalloc::iounmap(io);
         return fail("pt_ownership", "mm_clone failed");
+    }
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[test/mm][pt_ownership][diag] clone ok cloned_mm={:#x}",
+            cloned_mm as usize
+        );
     }
 
     let direct_map = mm::direct_map_offset();
@@ -37,7 +50,13 @@ pub(super) fn run() {
         );
     }
 
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!("[test/mm][pt_ownership][diag] before mm_release");
+    }
     unsafe { mm::mm_release(cloned_mm) };
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!("[test/mm][pt_ownership][diag] after mm_release");
+    }
 
     let init_phys_after = unsafe { mm::PageTableManager::new(init_pgd, direct_map) }
         .translate_addr(page_virt)

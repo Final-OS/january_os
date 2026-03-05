@@ -11,9 +11,9 @@ use super::layout::{
 };
 use crate::fs;
 use crate::libs::mptree::MapleTree;
-use crate::mm::arch::{PageTable, PageTableEntry, PageTableManager, level_index};
+use crate::mm::arch::{level_index, PageTable, PageTableEntry, PageTableManager};
 use crate::mm::page::buddy::{alloc_page, free_page};
-use crate::mm::page::page::{PageFlags, PageOwner, max_pfn, page_to_pfn, pfn_to_page};
+use crate::mm::page::page::{max_pfn, page_to_pfn, pfn_to_page, PageFlags, PageOwner};
 use crate::mm::page::zone::{GFP_KERNEL_ZERO, GFP_USER};
 use crate::sync::IrqSpinLock;
 use alloc::boxed::Box;
@@ -722,6 +722,15 @@ fn user_root_entry_count() -> usize {
 }
 
 #[inline]
+fn user_vma_intersection(start: usize, end: usize) -> Option<(u64, u64)> {
+    let user_start = USER_SPACE_START as usize;
+    let user_end = USER_SPACE_END as usize;
+    let clipped_start = start.max(user_start);
+    let clipped_end = end.min(user_end);
+    (clipped_start < clipped_end).then_some((clipped_start as u64, clipped_end as u64))
+}
+
+#[inline]
 unsafe fn release_user_mapped_phys(phys: u64) {
     let pfn = phys / PAGE_SIZE;
     if pfn >= max_pfn() {
@@ -787,11 +796,36 @@ unsafe fn teardown_user_page_tables(pgd_phys: u64) {
     let root = &mut *phys_to_table_mut(pgd_phys);
     let levels = runtime_page_levels();
     let user_entries = user_root_entry_count();
+    let init_root_phys = init_mm_pgd_phys() & crate::mm::PTE_ADDR_MASK;
+    let init_root = if init_root_phys != 0 {
+        Some(&*phys_to_table_mut(init_root_phys))
+    } else {
+        None
+    };
 
     for idx in 0..user_entries {
         let entry = root.entry_mut(idx);
         if !entry.is_present() {
             continue;
+        }
+
+        // The cloned mm may temporarily mirror a low runtime root entry from init_mm
+        // (non-user, shared kernel path). Never recurse/free through that shared subtree.
+        if !entry.is_user() {
+            if let Some(init_tbl) = init_root {
+                let init_entry = *init_tbl.entry(idx);
+                if init_entry.raw() == entry.raw() {
+                    if crate::config::DEBUG_VERBOSE {
+                        crate::kprintln!(
+                            "\x1b[90m[diag]\x1b[0m[mm_release] skip shared low root entry idx={} raw={:#x}",
+                            idx,
+                            entry.raw()
+                        );
+                    }
+                    *entry = PageTableEntry::empty();
+                    continue;
+                }
+            }
         }
 
         if levels <= 1 {
@@ -822,14 +856,32 @@ unsafe fn clone_kernel_root_entries(src_pgd: u64, dst_pgd: u64) {
     crate::mm::arch::paging::clone_kernel_root_entries_with_refs(src_pgd, dst_pgd);
 }
 
+unsafe fn clone_low_runtime_root_entry(src_pgd: u64, dst_pgd: u64) {
+    let levels = runtime_page_levels();
+    let kernel_root_start = level_index(KERNEL_BASE, levels);
+    let rip_idx = level_index(mm_clone as *const () as usize as u64, levels);
+    if rip_idx >= kernel_root_start {
+        return;
+    }
+
+    let direct_map = crate::mm::direct_map_offset();
+    let va_bits = crate::mm::va_bits();
+    let src_mgr = PageTableManager::new_with_layout(src_pgd, direct_map, levels, va_bits);
+    let mut dst_mgr = PageTableManager::new_with_layout(dst_pgd, direct_map, levels, va_bits);
+    let src_root = src_mgr.root_table();
+    let dst_root = dst_mgr.root_table_mut();
+    *dst_root.entry_mut(rip_idx) = *src_root.entry(rip_idx);
+}
+
 unsafe fn clone_user_present_pages(src: &Mm, dst: &mut Mm) -> bool {
     let direct_map = crate::mm::direct_map_offset();
     let src_pt = PageTableManager::new(src.pgd, direct_map);
     let dst_pt = PageTableManager::new(dst.pgd, direct_map);
 
     for (start, end, info) in src.vma_tree.iter() {
-        let mut va = start as u64;
-        let end_va = end as u64;
+        let Some((mut va, end_va)) = user_vma_intersection(start, end) else {
+            continue;
+        };
         let pte_flags = info.flags.to_user_pte_flags();
 
         while va < end_va {
@@ -972,25 +1024,57 @@ pub fn mm_clone(mm: *mut Mm) -> *mut Mm {
 
     unsafe {
         clone_kernel_root_entries(src.pgd, new_pgd_phys);
+        if src_ptr == init_ptr {
+            clone_low_runtime_root_entry(src.pgd, new_pgd_phys);
+        }
     }
 
     let mut inserted = 0u32;
     for (start, end, info) in src.vma_tree.iter() {
-        if dst.vma_tree.insert(start, end, info.clone()).is_err() {
+        let Some((user_start, user_end)) = user_vma_intersection(start, end) else {
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[mm_clone] skip non-user vma [{:#x}, {:#x}) src_pgd={:#x}",
+                    start,
+                    end,
+                    src.pgd,
+                );
+            }
+            continue;
+        };
+
+        if dst
+            .vma_tree
+            .insert(user_start as usize, user_end as usize, info.clone())
+            .is_err()
+        {
             release_mm_vma_backings(&dst);
             unsafe {
                 teardown_private_mm(&mut dst);
             }
+            crate::warn!(
+                "mm_clone: insert_vma failed [{:#x}, {:#x}) src_pgd={:#x} dst_pgd={:#x}",
+                user_start,
+                user_end,
+                src.pgd,
+                new_pgd_phys
+            );
             return ptr::null_mut();
         }
         if !info.file.is_null() {
             let backing_id = info.file as usize as u64;
             if fs::mmap_retain_backing(backing_id).is_err() {
-                let _ = dst.vma_tree.remove(start);
+                let _ = dst.vma_tree.remove(user_start as usize);
                 release_mm_vma_backings(&dst);
                 unsafe {
                     teardown_private_mm(&mut dst);
                 }
+                crate::warn!(
+                    "mm_clone: retain_backing failed backing_id={} [{:#x}, {:#x})",
+                    backing_id,
+                    user_start,
+                    user_end
+                );
                 return ptr::null_mut();
             }
         }
@@ -1003,6 +1087,11 @@ pub fn mm_clone(mm: *mut Mm) -> *mut Mm {
         unsafe {
             teardown_private_mm(&mut dst);
         }
+        crate::warn!(
+            "mm_clone: clone_user_present_pages failed src_pgd={:#x} dst_pgd={:#x}",
+            src.pgd,
+            new_pgd_phys
+        );
         return ptr::null_mut();
     }
 
@@ -1026,7 +1115,11 @@ pub unsafe fn mm_release(mm: *mut Mm) {
     let _ = (*mm)
         .mm_users
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
-            if v > 0 { Some(v - 1) } else { Some(0) }
+            if v > 0 {
+                Some(v - 1)
+            } else {
+                Some(0)
+            }
         });
 
     if prev <= 1 {

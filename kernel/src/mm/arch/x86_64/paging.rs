@@ -7,7 +7,7 @@
 use crate::config;
 use crate::interrupt;
 use crate::mm::buddy::{alloc_pages, free_page};
-use crate::mm::page::{PageFlags, PageOwner, max_pfn, page_to_pfn, pfn_to_page};
+use crate::mm::page::{max_pfn, page_to_pfn, pfn_to_page, PageFlags, PageOwner};
 use crate::mm::zone::GFP_KERNEL_ZERO;
 use crate::sync::{IrqSpinLock, SpinLock};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -610,9 +610,22 @@ pub fn handle_tlb_probe_ipi() {
     let addr = TLB_PROBE_ADDR.load(Ordering::Acquire);
     let expect = TLB_PROBE_EXPECTED.load(Ordering::Acquire);
     if addr != 0 {
-        let value = unsafe { core::ptr::read_volatile(addr as *const u64) };
-        if value == expect {
-            TLB_PROBE_MATCHED.fetch_add(1, Ordering::AcqRel);
+        // Avoid touching the probed VA directly on remote CPUs:
+        // that VA may be unmapped in a private mm and would fault inside IPI context.
+        let cr3 = crate::mm::arch::read_cr3() & PTE_ADDR_MASK;
+        let pt_mgr = unsafe {
+            PageTableManager::new_with_layout(
+                cr3,
+                crate::mm::direct_map_offset(),
+                crate::mm::page_levels(),
+                crate::mm::va_bits(),
+            )
+        };
+        if let Some(phys) = pt_mgr.translate_addr(addr) {
+            let value = unsafe { core::ptr::read_volatile(crate::mm::phys_to_virt(phys) as *const u64) };
+            if value == expect {
+                TLB_PROBE_MATCHED.fetch_add(1, Ordering::AcqRel);
+            }
         }
     }
     TLB_PROBE_HANDLED.fetch_add(1, Ordering::AcqRel);
@@ -1011,6 +1024,53 @@ impl PageTableManager {
         Some(table_phys)
     }
 
+    #[inline]
+    unsafe fn split_huge_entry_for_user(&self, entry: &mut PageTableEntry, level: u8) -> bool {
+        if !(level == 3 || level == 2) || !entry.is_present() || !entry.is_huge() {
+            return false;
+        }
+
+        let base_phys = entry.phys_addr();
+        let old_flags = entry.flags();
+        let Some(child_phys) = (unsafe { self.alloc_zeroed_table_phys() }) else {
+            return false;
+        };
+        let child = unsafe { self.table_mut(child_phys) };
+
+        if level == 3 {
+            // Split 1GiB mapping into 512x2MiB entries.
+            let leaf_flags = old_flags;
+            const SIZE_2M: u64 = 2 * 1024 * 1024;
+            for i in 0..512usize {
+                let phys = base_phys.saturating_add((i as u64) * SIZE_2M);
+                *child.entry_mut(i) = PageTableEntry::new(phys, leaf_flags);
+            }
+        } else {
+            // Split 2MiB mapping into 512x4KiB entries.
+            let leaf_flags = old_flags & !PTE_HUGE;
+            for i in 0..512usize {
+                let phys = base_phys.saturating_add((i as u64) * config::PAGE_SIZE);
+                *child.entry_mut(i) = PageTableEntry::new(phys, leaf_flags);
+            }
+        }
+
+        let mut parent_flags = PTE_PRESENT;
+        if (old_flags & PTE_WRITABLE) != 0 {
+            parent_flags |= PTE_WRITABLE;
+        }
+        if (old_flags & PTE_USER) != 0 {
+            parent_flags |= PTE_USER;
+        }
+        if (old_flags & PTE_WRITE_THROUGH) != 0 {
+            parent_flags |= PTE_WRITE_THROUGH;
+        }
+        if (old_flags & PTE_NO_CACHE) != 0 {
+            parent_flags |= PTE_NO_CACHE;
+        }
+        *entry = PageTableEntry::new(child_phys, parent_flags);
+        true
+    }
+
     /// 遍历页表，查找虚拟地址对应的页表条目
     ///
     /// 返回 (条目, 页表层级, 页面大小)
@@ -1131,8 +1191,24 @@ impl PageTableManager {
             let entry = table.entry_mut(idx);
 
             if entry.is_huge() {
-                // 4KB 映射不能直接穿透已有 huge 映射。
-                return false;
+                // User mapping may overlap low huge mappings (runtime identity map).
+                // Split huge entries on demand to continue descending.
+                if need_user && (level == 3 || level == 2) {
+                    if !(unsafe { self.split_huge_entry_for_user(entry, level) }) {
+                        return false;
+                    }
+                    if crate::config::DEBUG_VERBOSE {
+                        crate::kprintln!(
+                            "\x1b[90m[diag]\x1b[0m[pt] split huge entry level={} virt={:#x} root={:#x}",
+                            level,
+                            virt & !(config::PAGE_SIZE - 1),
+                            self.root_phys
+                        );
+                    }
+                } else {
+                    // 4KB 映射不能直接穿透已有 huge 映射。
+                    return false;
+                }
             }
 
             if !entry.is_present() {
@@ -1144,10 +1220,35 @@ impl PageTableManager {
                 entry.set_writable(true);
                 entry.set_user(true);
             } else {
-                // 5-level 下用户地址可能复用已存在的上级目录（例如 PML5[0]）。
-                // 若上级目录缺少 U/W，CPU 会在 user access 时触发 protection fault。
+                // User mapping may collide with a non-user shared subtree
+                // (e.g. low runtime mapping borrowed from init_mm).
+                // Clone the next-level table before setting U bit to avoid mutating shared roots.
                 if need_user && !entry.is_user() {
+                    let old_phys = entry.phys_addr();
+                    let Some(new_phys) = (unsafe { self.alloc_zeroed_table_phys() }) else {
+                        return false;
+                    };
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            self.phys_to_virt(old_phys) as *const u8,
+                            self.phys_to_virt(new_phys) as *mut u8,
+                            config::PAGE_SIZE as usize,
+                        );
+                    }
+                    entry.set_phys_addr(new_phys);
+                    entry.set_present(true);
                     entry.set_user(true);
+                    entry.set_writable(true);
+                    if crate::config::DEBUG_VERBOSE {
+                        crate::kprintln!(
+                            "\x1b[90m[diag]\x1b[0m[pt] user-map COW upper table level={} virt={:#x} old={:#x} new={:#x} root={:#x}",
+                            level,
+                            virt & !(config::PAGE_SIZE - 1),
+                            old_phys,
+                            new_phys,
+                            self.root_phys
+                        );
+                    }
                 }
                 if need_writable && !entry.is_writable() {
                     entry.set_writable(true);

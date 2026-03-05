@@ -1,7 +1,7 @@
 use super::{fail, mm_step, pass};
 use crate::mm;
 
-const TEST_USER_VA_BASE: u64 = mm::USER_SPACE_START + 0x20_0000;
+const TEST_USER_VA_BASE: u64 = mm::USER_MMAP_BASE;
 const RECLAIM_STRESS_ITERS: usize = 128;
 
 fn run_reclaim_once(iter: usize) -> Result<(), &'static str> {
@@ -15,7 +15,39 @@ fn run_reclaim_once(iter: usize) -> Result<(), &'static str> {
     let cloned_pgd = unsafe { (*cloned_mm).pgd };
     let pt_mgr = unsafe { mm::PageTableManager::new(cloned_pgd, direct_map) };
 
-    let va = (TEST_USER_VA_BASE + (iter as u64) * 0x20_0000) & !(mm::PAGE_SIZE - 1);
+    let mut va = (TEST_USER_VA_BASE + (iter as u64) * 0x20_0000) & !(mm::PAGE_SIZE - 1);
+    let mut root_idx = mm::level_index(va, mm::page_levels());
+    let mut root_was_present = pt_mgr.root_table().entry(root_idx).is_present();
+
+    if root_was_present {
+        // Prefer a clean user root slot so the reclaim assertion can verify
+        // "created-by-map" root entries are cleared after unmap.
+        let mut found = false;
+        let mut probe = mm::USER_MMAP_BASE & !(mm::PAGE_SIZE - 1);
+        for _ in 0..1024 {
+            if probe >= mm::USER_SPACE_END.saturating_sub(mm::PAGE_SIZE) {
+                break;
+            }
+            let idx = mm::level_index(probe, mm::page_levels());
+            if !pt_mgr.root_table().entry(idx).is_present() && pt_mgr.translate_addr(probe).is_none() {
+                va = probe;
+                root_idx = idx;
+                root_was_present = false;
+                found = true;
+                break;
+            }
+            probe = probe.saturating_add(0x20_0000);
+        }
+
+        if !found && crate::config::DEBUG_VERBOSE {
+            crate::kprintln!(
+                "[test/mm][pt_reclaim][diag] no empty user root slot found, fallback va={:#x} root_idx={} root_present=true",
+                va,
+                root_idx
+            );
+        }
+    }
+
     let data_page = match mm::alloc_page(mm::GFP_USER) {
         Some(p) => p,
         None => {
@@ -40,7 +72,6 @@ fn run_reclaim_once(iter: usize) -> Result<(), &'static str> {
         return Err("mapped phys mismatch");
     }
 
-    let root_idx = mm::level_index(va, mm::page_levels());
     if !pt_mgr.root_table().entry(root_idx).is_present() {
         unsafe { mm::mm_release(cloned_mm) };
         return Err("root entry missing after map");
@@ -56,9 +87,14 @@ fn run_reclaim_once(iter: usize) -> Result<(), &'static str> {
         return Err("translation still present after unmap");
     }
 
-    if pt_mgr.root_table().entry(root_idx).is_present() {
+    let root_present_after = pt_mgr.root_table().entry(root_idx).is_present();
+    if !root_was_present && root_present_after {
         unsafe { mm::mm_release(cloned_mm) };
         return Err("reclaim did not clear root entry");
+    }
+    if root_was_present && !root_present_after {
+        unsafe { mm::mm_release(cloned_mm) };
+        return Err("reclaim unexpectedly cleared pre-existing root entry");
     }
 
     unsafe {
