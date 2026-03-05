@@ -4,7 +4,7 @@
 // 减少 Zone 锁竞争，加速单页分配/释放
 // ============================================================================
 
-use super::page::{max_pfn, vmemmap_base_ptr, ListHead, Page};
+use super::page::{max_pfn, page_to_pfn, vmemmap_base_ptr, ListHead, Page, PageOwner};
 use super::zone::{get_zone, GfpFlags, Zone, ZoneType, NR_ZONES};
 use crate::config;
 use crate::interrupt::apic::local_apic_id;
@@ -158,6 +158,7 @@ impl PerCpuPages {
 
             let page = container_of!(node, Page, lru);
             zone.remove_from_buddy(&mut *page, 0);
+            (*page).set_owner(PageOwner::Pcp);
 
             // 添加到 PCP
             inner.list.add(&mut (*page).lru);
@@ -247,6 +248,7 @@ static NR_CPUS: AtomicU32 = AtomicU32::new(1);
 static PCP_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static PCP_INVALID_FREE_REJECTS: AtomicU64 = AtomicU64::new(0);
 static PCP_QUARANTINE_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+static PCP_OWNER_MISMATCHES: AtomicU64 = AtomicU64::new(0);
 
 /// 临时熔断开关
 ///
@@ -311,13 +313,17 @@ fn is_page_ptr_in_vmemmap(page: *const Page) -> bool {
 
 #[inline]
 unsafe fn fallback_to_buddy(page: &mut Page, zone_idx: usize) {
-    if zone_idx >= NR_PCP_LISTS {
-        PCP_INVALID_FREE_REJECTS.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
-
-    let mut zone = get_zone(idx_to_zone_type(zone_idx));
-    if !zone.initialized {
+    let pfn = page_to_pfn(page);
+    let mut zone = if let Some(zone) = super::zone::pfn_to_zone(pfn) {
+        zone
+    } else {
+        if zone_idx >= NR_PCP_LISTS {
+            PCP_INVALID_FREE_REJECTS.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        get_zone(idx_to_zone_type(zone_idx))
+    };
+    if !zone.initialized || !zone.contains_pfn(pfn) {
         PCP_INVALID_FREE_REJECTS.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -366,6 +372,7 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
                 }
                 let page_zone = page.zone_id() as usize;
                 if page_zone != zone_idx {
+                    PCP_OWNER_MISMATCHES.fetch_add(1, Ordering::Relaxed);
                     if crate::config::DEBUG_VERBOSE {
                         crate::kprintln!(
                             "\x1b[90m[diag]\x1b[0m[pcp] zone mismatch from pcp.alloc: cpu={} list_zone={} page_zone={} page_ptr={:#x} -> quarantine",
@@ -375,8 +382,24 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
                             page as *mut Page as usize,
                         );
                     }
+                    fallback_to_buddy(page, page_zone);
                     continue;
                 }
+                if page.owner() != PageOwner::Pcp {
+                    PCP_OWNER_MISMATCHES.fetch_add(1, Ordering::Relaxed);
+                    if crate::config::DEBUG_VERBOSE {
+                        crate::kprintln!(
+                            "\x1b[90m[diag]\x1b[0m[pcp] owner mismatch from pcp.alloc: cpu={} zone_idx={} owner={:?} page_ptr={:#x} -> buddy-fallback",
+                            cpu,
+                            zone_idx,
+                            page.owner(),
+                            page as *mut Page as usize,
+                        );
+                    }
+                    fallback_to_buddy(page, page_zone);
+                    continue;
+                }
+                page.set_owner(PageOwner::Allocated);
                 return Some(page);
             }
 
@@ -399,6 +422,7 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
                     }
                     let page_zone = page.zone_id() as usize;
                     if page_zone != zone_idx {
+                        PCP_OWNER_MISMATCHES.fetch_add(1, Ordering::Relaxed);
                         if crate::config::DEBUG_VERBOSE {
                             crate::kprintln!(
                                 "\x1b[90m[diag]\x1b[0m[pcp] zone mismatch after refill: cpu={} list_zone={} page_zone={} page_ptr={:#x} -> quarantine",
@@ -408,8 +432,24 @@ pub fn pcp_alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
                                 page as *mut Page as usize,
                             );
                         }
+                        fallback_to_buddy(page, page_zone);
                         continue;
                     }
+                    if page.owner() != PageOwner::Pcp {
+                        PCP_OWNER_MISMATCHES.fetch_add(1, Ordering::Relaxed);
+                        if crate::config::DEBUG_VERBOSE {
+                            crate::kprintln!(
+                                "\x1b[90m[diag]\x1b[0m[pcp] owner mismatch after refill: cpu={} zone_idx={} owner={:?} page_ptr={:#x} -> buddy-fallback",
+                                cpu,
+                                zone_idx,
+                                page.owner(),
+                                page as *mut Page as usize,
+                            );
+                        }
+                        fallback_to_buddy(page, page_zone);
+                        continue;
+                    }
+                    page.set_owner(PageOwner::Allocated);
                     return Some(page);
                 }
             }
@@ -460,11 +500,27 @@ pub fn pcp_free_page(page: &mut Page) {
             fallback_to_buddy(page, zone_idx);
             return;
         }
+        let owner = page.owner();
+        if owner != PageOwner::Allocated && owner != PageOwner::Unknown {
+            PCP_OWNER_MISMATCHES.fetch_add(1, Ordering::Relaxed);
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[pcp] owner mismatch on free: cpu={} zone_idx={} owner={:?} page_ptr={:#x} -> buddy-fallback",
+                    cpu,
+                    zone_idx,
+                    owner,
+                    page as *mut Page as usize,
+                );
+            }
+            fallback_to_buddy(page, zone_idx);
+            return;
+        }
 
         let pageset = cpu_pageset(cpu);
         let pcp = &pageset.pcp[zone_idx];
 
         // 释放到 PCP
+        page.set_owner(PageOwner::Pcp);
         pcp.free(page);
 
         // 如果超过高水位，批量归还给 Buddy
@@ -542,6 +598,8 @@ pub struct PcpStats {
     pub invalid_free_rejects: u64,
     /// 可疑链表路径下的 Buddy 降级回收次数
     pub quarantine_fallbacks: u64,
+    /// PCP 所有权不一致计数
+    pub owner_mismatches: u64,
 }
 
 /// 获取 PCP 统计信息
@@ -551,6 +609,7 @@ pub fn pcp_stats() -> PcpStats {
         per_zone: [0; NR_PCP_LISTS],
         invalid_free_rejects: PCP_INVALID_FREE_REJECTS.load(Ordering::Relaxed),
         quarantine_fallbacks: PCP_QUARANTINE_FALLBACKS.load(Ordering::Relaxed),
+        owner_mismatches: PCP_OWNER_MISMATCHES.load(Ordering::Relaxed),
     };
 
     if !pcp_initialized() {

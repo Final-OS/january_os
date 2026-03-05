@@ -6,6 +6,33 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageOwner {
+    Unknown = 0,
+    Buddy = 1,
+    Pcp = 2,
+    Slab = 3,
+    Pgtable = 4,
+    Allocated = 5,
+    Reserved = 6,
+}
+
+impl PageOwner {
+    #[inline]
+    pub const fn from_raw(raw: u8) -> Self {
+        match raw {
+            1 => Self::Buddy,
+            2 => Self::Pcp,
+            3 => Self::Slab,
+            4 => Self::Pgtable,
+            5 => Self::Allocated,
+            6 => Self::Reserved,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 // ============================================================================
 // 页帧标志位
 // ============================================================================
@@ -172,8 +199,10 @@ pub struct Page {
     /// Buddy order（如果在空闲链表中）
     order: AtomicU8,
 
+    /// 当前所有权（Buddy/PCP/SLUB/页表等）
+    owner: AtomicU8,
     /// 保留字段（对齐）
-    _reserved: [u8; 2],
+    _reserved: u8,
 
     /// 用于链表（Buddy 空闲链表、LRU 等）
     pub lru: ListHead,
@@ -197,7 +226,8 @@ impl Page {
             mapcount: AtomicI32::new(-1),
             zone_id: 0,
             order: AtomicU8::new(0),
-            _reserved: [0; 2],
+            owner: AtomicU8::new(PageOwner::Unknown as u8),
+            _reserved: 0,
             lru: ListHead::new(),
             private: core::ptr::null_mut(),
         }
@@ -210,6 +240,8 @@ impl Page {
         self.mapcount.store(-1, Ordering::Relaxed);
         self.zone_id = zone_id;
         self.order.store(0, Ordering::Relaxed);
+        self.owner
+            .store(PageOwner::Unknown as u8, Ordering::Relaxed);
         self.lru.init();
         self.private = core::ptr::null_mut();
     }
@@ -300,6 +332,16 @@ impl Page {
         self.order.store(order, Ordering::Relaxed);
     }
 
+    #[inline]
+    pub fn owner(&self) -> PageOwner {
+        PageOwner::from_raw(self.owner.load(Ordering::Relaxed))
+    }
+
+    #[inline]
+    pub fn set_owner(&self, owner: PageOwner) {
+        self.owner.store(owner as u8, Ordering::Relaxed);
+    }
+
     // ========== 私有数据 ==========
 
     /// 获取私有数据指针
@@ -342,12 +384,14 @@ impl Page {
     /// 标记为保留
     pub fn mark_reserved(&self) {
         self.set_flag(PageFlags::RESERVED);
+        self.set_owner(PageOwner::Reserved);
     }
 
     /// 标记为 Buddy
     pub fn mark_buddy(&self, order: u8) {
         self.set_flag(PageFlags::BUDDY);
         self.order.store(order, Ordering::Relaxed);
+        self.set_owner(PageOwner::Buddy);
     }
 
     /// 清除 Buddy 标记

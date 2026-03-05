@@ -4,7 +4,9 @@
 // 参考 Linux 内核实现，基于 Zone 和 struct page
 // ============================================================================
 
-use super::page::{max_pfn, page_to_pfn, pfn_to_page, vmemmap_base_ptr, Page, PageFlags};
+use super::page::{
+    max_pfn, page_to_pfn, pfn_to_page, vmemmap_base_ptr, Page, PageFlags, PageOwner,
+};
 use super::pcp::{pcp_alloc_page, pcp_free_page, pcp_initialized};
 use super::zone::{get_buddy_pfn, pages_per_order};
 use super::zone::{get_zone, gfp_to_zone_list, GfpFlags, Zone, MAX_ORDER};
@@ -30,6 +32,7 @@ static INVALID_MM_STATE_LOGGED: AtomicBool = AtomicBool::new(false);
 fn sanitize_page_for_allocator(page: &mut Page, order: usize) {
     // Page 元数据在多个子系统间复用。进入分配器路径前统一清理 owner 痕迹。
     page.clear_flag(PageFlags::SLAB | PageFlags::PGTABLE);
+    page.set_owner(PageOwner::Allocated);
     page.set_private(core::ptr::null_mut());
     page.lru.next = core::ptr::null_mut();
     page.lru.prev = core::ptr::null_mut();

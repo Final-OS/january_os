@@ -6,20 +6,20 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use crate::mm::page::page::{max_pfn, page_to_pfn, pfn_to_page, Page, PageFlags};
-use crate::mm::page::zone::GfpFlags;
 use crate::mm::page::buddy::{alloc_pages, free_pages};
+use crate::mm::page::page::{max_pfn, page_to_pfn, pfn_to_page, Page, PageFlags, PageOwner};
+use crate::mm::page::zone::GfpFlags;
 use crate::mm::vm::layout::PAGE_SIZE;
 use crate::sync::IrqSpinLock;
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 // ============================================================================
 // 常量
 // ============================================================================
 
 /// kmalloc 大小类数量
-pub const KMALLOC_SHIFT_LOW: usize = 3;   // 最小 8 字节
+pub const KMALLOC_SHIFT_LOW: usize = 3; // 最小 8 字节
 pub const KMALLOC_SHIFT_HIGH: usize = 13; // 最大 8192 字节
 pub const KMALLOC_NUM_CACHES: usize = KMALLOC_SHIFT_HIGH - KMALLOC_SHIFT_LOW + 1;
 
@@ -91,7 +91,7 @@ pub struct FreePointer {
 // ============================================================================
 
 /// 内核内存缓存
-/// 
+///
 /// 管理特定大小对象的分配
 pub struct KmemCache {
     /// 校验标记，防止 page.private 损坏后误解引用
@@ -138,92 +138,92 @@ impl KmemCache {
             initialized: false,
         }
     }
-    
+
     /// 初始化缓存
     pub fn init(&mut self, name: &'static str, size: usize, align: usize) {
         self.magic = KMEM_CACHE_MAGIC;
         self.name = name;
         self.object_size = size;
         self.align = align.max(core::mem::size_of::<FreePointer>());
-        
+
         // 对齐后的大小（至少能容纳 FreePointer）
         self.size = align_up(size.max(core::mem::size_of::<FreePointer>()), self.align);
-        
+
         // 计算需要的 order 和每个 slab 的对象数
         self.calculate_order();
-        
+
         self.initialized = true;
     }
-    
+
     /// 计算最佳 order
     fn calculate_order(&mut self) {
         // 从 order 0 开始尝试
         for order in 0..11 {
             let slab_size = PAGE_SIZE as usize * (1 << order);
             let objects = slab_size / self.size;
-            
+
             if objects >= 4 && objects <= MAX_OBJS_PER_SLAB {
                 self.order = order;
                 self.objects_per_slab = objects;
                 return;
             }
         }
-        
+
         // 默认使用 order 0
         self.order = 0;
         self.objects_per_slab = (PAGE_SIZE as usize / self.size).max(1);
     }
-    
+
     /// 从缓存分配对象
     pub fn alloc(&self, gfp: GfpFlags) -> *mut u8 {
         if !self.initialized {
             return core::ptr::null_mut();
         }
-        
+
         // 1. 尝试从 partial slab 分配
         if let Some(ptr) = self.alloc_from_partial() {
             return ptr;
         }
-        
+
         // 2. 分配新的 slab
         if let Some(ptr) = self.alloc_new_slab(gfp) {
             return ptr;
         }
-        
+
         core::ptr::null_mut()
     }
-    
+
     /// 从 partial slab 分配
     fn alloc_from_partial(&self) -> Option<*mut u8> {
         let _guard = self.lock.lock();
         let mut page_ptr = self.partial.load(Ordering::Relaxed);
-        
+
         while !page_ptr.is_null() {
             unsafe {
                 let page = &mut *page_ptr;
-                
+
                 // 使用 page.lru.prev 存储 freelist 头指针
                 let free_head = page.lru.prev as *mut FreePointer;
-                
+
                 if !free_head.is_null() {
                     // 从 freelist 取出一个对象
                     let next_free = (*free_head).next;
                     page.lru.prev = next_free as *mut _;
-                    
+
                     self.allocated.fetch_add(1, Ordering::Relaxed);
-                    
+
                     return Some(free_head as *mut u8);
                 }
-                
+
                 // 尝试下一个 page
                 // page.lru.next 存储下一个 page 的指针
                 page_ptr = page.lru.next as *mut Page;
             }
         }
-        
+
         None
     }
-    
+
     /// 分配新的 slab
     fn alloc_new_slab(&self, gfp: GfpFlags) -> Option<*mut u8> {
         // 分配页（在锁外进行，避免持锁调用 buddy）
@@ -239,19 +239,20 @@ impl KmemCache {
             // 初始化空闲链表
             let obj_start = page_virt as *mut u8;
             let mut prev: *mut FreePointer = core::ptr::null_mut();
-            
+
             for i in (0..self.objects_per_slab).rev() {
                 let obj = obj_start.add(i * self.size) as *mut FreePointer;
                 (*obj).next = prev;
                 prev = obj;
             }
-            
+
             // 设置页标志
             page.set_flag(PageFlags::SLAB);
+            page.set_owner(PageOwner::Slab);
 
             // 将 cache 指针存入 page.private，用于 kfree 时定位正确的 cache
             page.set_private(self as *const KmemCache as *mut u8);
-            
+
             // 取出第一个对象
             let first_obj = prev;
             let second_obj = if !first_obj.is_null() {
@@ -259,20 +260,20 @@ impl KmemCache {
             } else {
                 core::ptr::null_mut()
             };
-            
+
             // 使用 page.lru.prev 存储 freelist 头指针
             (*page).lru.prev = second_obj as *mut _;
-            
+
             // 添加到 partial 链表
             self.add_to_partial(page);
-            
+
             self.slabs.fetch_add(1, Ordering::Relaxed);
             self.allocated.fetch_add(1, Ordering::Relaxed);
-            
+
             Some(first_obj as *mut u8)
         }
     }
-    
+
     /// 添加 slab 到 partial 链表
     ///
     /// 调用者必须持有 self.lock
@@ -328,7 +329,7 @@ impl KmemCache {
         }
         count
     }
-    
+
     /// 释放对象
     pub unsafe fn free(&self, ptr: *mut u8) {
         if ptr.is_null() || !self.initialized {
@@ -359,10 +360,12 @@ impl KmemCache {
             self.allocated.fetch_sub(1, Ordering::Relaxed);
 
             // 整页对象全部归还后，回收 slab 到 buddy。
-            if self.free_objects_in_page(page) == self.objects_per_slab && self.remove_from_partial(page)
+            if self.free_objects_in_page(page) == self.objects_per_slab
+                && self.remove_from_partial(page)
             {
                 (*page).lru.prev = core::ptr::null_mut();
                 (*page).clear_flag(PageFlags::SLAB);
+                (*page).set_owner(PageOwner::Allocated);
                 (*page).set_private(core::ptr::null_mut());
                 atomic_saturating_sub(&self.slabs, 1);
                 release_slab = true;
@@ -373,7 +376,7 @@ impl KmemCache {
             free_pages(&mut *page, self.order);
         }
     }
-    
+
     /// 获取统计信息
     pub fn stats(&self) -> (usize, usize) {
         (
@@ -447,23 +450,23 @@ fn find_kmalloc_cache(size: usize) -> Option<&'static KmemCache> {
     if size == 0 {
         return None;
     }
-    
+
     // 找到能容纳 size 的最小缓存
     let min_size = 1 << KMALLOC_SHIFT_LOW;
     let size = size.max(min_size);
-    
+
     let caches = kmalloc_caches_ref();
 
     let index = size.next_power_of_two().trailing_zeros() as usize;
     if index < KMALLOC_SHIFT_LOW {
         return Some(&caches[0]);
     }
-    
+
     let cache_index = index - KMALLOC_SHIFT_LOW;
     if cache_index >= KMALLOC_NUM_CACHES {
         return None; // 太大，应该用 alloc_pages
     }
-    
+
     Some(&caches[cache_index])
 }
 
@@ -472,11 +475,11 @@ fn find_kmalloc_cache(size: usize) -> Option<&'static KmemCache> {
 // ============================================================================
 
 /// 分配内核内存
-/// 
+///
 /// # Arguments
 /// * `size` - 请求的大小（字节）
 /// * `gfp` - 分配标志
-/// 
+///
 /// # Returns
 /// 成功返回内存指针，失败返回空指针
 pub fn kmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
@@ -492,7 +495,7 @@ pub fn kmalloc(size: usize, gfp: GfpFlags) -> *mut u8 {
         }
         return core::ptr::null_mut();
     }
-    
+
     // 小分配使用 SLUB
     match find_kmalloc_cache(size) {
         Some(cache) => cache.alloc(gfp),
@@ -534,6 +537,14 @@ pub unsafe fn kfree(ptr: *mut u8) {
 
     // 检查是否为 slab 页
     if page.is_slab() {
+        if page.owner() != PageOwner::Slab {
+            crate::warn!(
+                "slub: slab page owner mismatch pfn={} owner={:?}",
+                pfn,
+                page.owner()
+            );
+            return;
+        }
         if let Some(cache) = resolve_kmalloc_cache_from_page(page) {
             cache.free(ptr);
         } else {
@@ -642,15 +653,15 @@ pub fn kmalloc_stats() -> KmallocStats {
         let cache = &caches[i];
         if cache.initialized {
             let (allocated, slabs) = cache.stats();
-            let slab_bytes = slabs.saturating_mul(
-                pages_for_order(cache.order).saturating_mul(PAGE_SIZE as usize),
-            );
+            let slab_bytes = slabs
+                .saturating_mul(pages_for_order(cache.order).saturating_mul(PAGE_SIZE as usize));
             let allocated_bytes = allocated.saturating_mul(cache.object_size);
             if allocated > 0 || slabs > 0 {
                 stats.active_caches += 1;
             }
             stats.total_allocated_objects = stats.total_allocated_objects.saturating_add(allocated);
-            stats.total_allocated_bytes = stats.total_allocated_bytes.saturating_add(allocated_bytes);
+            stats.total_allocated_bytes =
+                stats.total_allocated_bytes.saturating_add(allocated_bytes);
             stats.total_slabs = stats.total_slabs.saturating_add(slabs);
             stats.total_slab_bytes = stats.total_slab_bytes.saturating_add(slab_bytes);
             stats.caches[i] = KmallocCacheStats {

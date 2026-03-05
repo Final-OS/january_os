@@ -64,10 +64,10 @@ impl PageTableLevel {
     pub const fn entry_size(&self) -> u64 {
         match self {
             PageTableLevel::Pml5 => 256 * 1024 * 1024 * 1024 * 1024, // 256 TB
-            PageTableLevel::Pml4 => 512 * 1024 * 1024 * 1024, // 512 GB
-            PageTableLevel::Pdpt => 1024 * 1024 * 1024,       // 1 GB
-            PageTableLevel::Pd => 2 * 1024 * 1024,            // 2 MB
-            PageTableLevel::Pt => config::PAGE_SIZE,          // 4 KB
+            PageTableLevel::Pml4 => 512 * 1024 * 1024 * 1024,        // 512 GB
+            PageTableLevel::Pdpt => 1024 * 1024 * 1024,              // 1 GB
+            PageTableLevel::Pd => 2 * 1024 * 1024,                   // 2 MB
+            PageTableLevel::Pt => config::PAGE_SIZE,                 // 4 KB
         }
     }
 
@@ -444,7 +444,10 @@ pub fn register_tlb_shootdown_cpu() {
             .is_ok()
     {
         if crate::config::DEBUG_VERBOSE {
-            crate::kprintln!("\x1b[90m[diag]\x1b[0m[tlb] register shootdown cpu apic_id={}", apic_id,);
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[tlb] register shootdown cpu apic_id={}",
+                apic_id,
+            );
         }
     }
 }
@@ -677,6 +680,7 @@ unsafe fn retain_table_page_ref(table_phys: u64) {
     let page = unsafe { &*pfn_to_page(pfn) };
     page.get();
     page.set_flag(PageFlags::PGTABLE);
+    page.set_owner(crate::mm::page::page::PageOwner::Pgtable);
 }
 
 #[inline]
@@ -723,7 +727,8 @@ pub unsafe fn clone_kernel_root_entries_with_refs(src_root_phys: u64, dst_root_p
     unsafe {
         let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
         let src_mgr = PageTableManager::new_with_layout(src_root, direct_map, page_levels, va_bits);
-        let mut dst_mgr = PageTableManager::new_with_layout(dst_root, direct_map, page_levels, va_bits);
+        let mut dst_mgr =
+            PageTableManager::new_with_layout(dst_root, direct_map, page_levels, va_bits);
         let src_tbl = src_mgr.root_table();
         let dst_tbl = dst_mgr.root_table_mut();
 
@@ -798,8 +803,10 @@ pub fn sync_kernel_root_entries_from_init(dst_root_phys: u64) -> bool {
 
     unsafe {
         let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
-        let src_mgr = PageTableManager::new_with_layout(init_root, direct_map, page_levels, va_bits);
-        let mut dst_mgr = PageTableManager::new_with_layout(dst_root, direct_map, page_levels, va_bits);
+        let src_mgr =
+            PageTableManager::new_with_layout(init_root, direct_map, page_levels, va_bits);
+        let mut dst_mgr =
+            PageTableManager::new_with_layout(dst_root, direct_map, page_levels, va_bits);
         let src_root = src_mgr.root_table();
         let dst_root_tbl = dst_mgr.root_table_mut();
         let mut changed = false;
@@ -921,6 +928,7 @@ impl PageTableManager {
         let pfn = page_to_pfn(page);
         let table_phys = pfn * config::PAGE_SIZE;
         page.set_flag(PageFlags::PGTABLE);
+        page.set_owner(crate::mm::page::page::PageOwner::Pgtable);
         // 防御式清零：避免分配器快路径遗漏 GFP_ZERO 语义时引入脏页表。
         unsafe {
             core::ptr::write_bytes(
@@ -1030,7 +1038,8 @@ impl PageTableManager {
     ///
     /// - 需要确保分配内存成功
     pub unsafe fn map_page(&self, virt: u64, phys: u64, flags: u64) -> bool {
-        let watch_vmalloc = crate::config::DEBUG_VERBOSE && crate::mm::vmalloc::is_vmalloc_watch_page(virt);
+        let watch_vmalloc =
+            crate::config::DEBUG_VERBOSE && crate::mm::vmalloc::is_vmalloc_watch_page(virt);
         if watch_vmalloc {
             crate::kprintln!(
                 "\x1b[90m[diag]\x1b[0m[pt] map_page watch virt={:#x} phys={:#x} root={:#x} flags={:#x}",
@@ -1120,7 +1129,8 @@ impl PageTableManager {
     /// 成功返回 true，如果未映射返回 false。
     /// 空的中间页表页会被自动回收。
     pub unsafe fn unmap_page(&self, virt: u64) -> bool {
-        let watch_vmalloc = crate::config::DEBUG_VERBOSE && crate::mm::vmalloc::is_vmalloc_watch_page(virt);
+        let watch_vmalloc =
+            crate::config::DEBUG_VERBOSE && crate::mm::vmalloc::is_vmalloc_watch_page(virt);
         if watch_vmalloc {
             crate::kprintln!(
                 "\x1b[90m[diag]\x1b[0m[pt] unmap_page watch virt={:#x} root={:#x}",

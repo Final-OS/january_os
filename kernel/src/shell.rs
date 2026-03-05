@@ -499,6 +499,7 @@ fn execute_mm_command(args: &[&str]) {
                 .sum();
             let fault_stats = mm::get_fault_stats();
             let vmalloc_heal = mm::vmalloc::vmalloc_heal_stats();
+            let pcp = mm::page::pcp::pcp_stats();
             let heap = mm::heap::heap_stats();
             let kmalloc = mm::slub::kmalloc_stats();
             let layout = mm::snapshot();
@@ -566,6 +567,12 @@ fn execute_mm_command(args: &[&str]) {
                 vmalloc_heal.recovered_from_ioremap,
                 vmalloc_heal.heal_miss,
                 vmalloc_heal.heal_fail,
+            );
+            kprintln!(
+                "  pcp guard:   invalid={} quarantine={} owner_mismatch={}",
+                pcp.invalid_free_rejects,
+                pcp.quarantine_fallbacks,
+                pcp.owner_mismatches,
             );
             kprintln!(
                 "  Faults:      total={} minor={} major={} cow={} stack_grow={}",
