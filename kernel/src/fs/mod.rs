@@ -44,12 +44,17 @@ struct DirOpenFile {
     cursor: usize,
     cloexec: bool,
     inode: Option<Arc<dyn vfs::Inode>>,
+    ino: u64,
+    mode: u32,
 }
 
 #[derive(Clone)]
 struct VfsOpenFile {
     path: String,
     inode: Arc<dyn vfs::Inode>,
+    ino: u64,
+    mode: u32,
+    static_data: Option<&'static [u8]>,
     offset: usize,
     cloexec: bool,
 }
@@ -57,6 +62,7 @@ struct VfsOpenFile {
 struct VfsOpenHint {
     inode: Arc<dyn vfs::Inode>,
     meta: vfs::Metadata,
+    static_data: Option<&'static [u8]>,
 }
 
 #[derive(Clone)]
@@ -390,63 +396,39 @@ impl FsState {
             return Err(EINVAL);
         }
 
-        let open_file = if self.dir_exists(resolved.as_str()) {
-            if accmode != O_RDONLY {
-                return Err(EISDIR);
+        let Some(hint) = vfs_hint else {
+            return Err(ENOENT);
+        };
+
+        let open_file = match hint.meta.file_type {
+            vfs::FileType::Directory => {
+                if accmode != O_RDONLY {
+                    return Err(EISDIR);
+                }
+                OpenFile::Dir(DirOpenFile {
+                    path: resolved,
+                    cursor: 0,
+                    cloexec,
+                    inode: Some(hint.inode),
+                    ino: hint.meta.ino,
+                    mode: hint.meta.mode,
+                })
             }
-            OpenFile::Dir(DirOpenFile {
-                path: resolved,
-                cursor: 0,
-                cloexec,
-                inode: vfs_hint.and_then(|hint| {
-                    (hint.meta.file_type == vfs::FileType::Directory).then_some(hint.inode)
-                }),
-            })
-        } else {
-            let static_file = self
-                .files
-                .iter()
-                .find(|file| file.path == resolved.as_str())
-                .copied();
-            if let Some(file) = static_file {
+            vfs::FileType::Regular => {
                 if wants_dir {
                     return Err(ENOTDIR);
                 }
-                OpenFile::Static(StaticOpenFile {
-                    path: file.path,
-                    data: file.data,
+                OpenFile::Vfs(VfsOpenFile {
+                    path: resolved,
+                    inode: hint.inode,
+                    ino: hint.meta.ino,
+                    mode: hint.meta.mode,
+                    static_data: hint.static_data,
                     offset: 0,
                     cloexec,
                 })
-            } else if let Some(hint) = vfs_hint {
-                match hint.meta.file_type {
-                    vfs::FileType::Directory => {
-                        if accmode != O_RDONLY {
-                            return Err(EISDIR);
-                        }
-                        OpenFile::Dir(DirOpenFile {
-                            path: resolved,
-                            cursor: 0,
-                            cloexec,
-                            inode: Some(hint.inode),
-                        })
-                    }
-                    vfs::FileType::Regular => {
-                        if wants_dir {
-                            return Err(ENOTDIR);
-                        }
-                        OpenFile::Vfs(VfsOpenFile {
-                            path: resolved,
-                            inode: hint.inode,
-                            offset: 0,
-                            cloexec,
-                        })
-                    }
-                    _ => return Err(ENOENT),
-                }
-            } else {
-                return Err(ENOENT);
             }
+            _ => return Err(ENOENT),
         };
 
         let fd = self.alloc_fd(pid);
@@ -526,10 +508,20 @@ impl FsState {
                 let Some(OpenFile::Vfs(open_file)) = table.get_mut(&fd) else {
                     return Err(EBADF);
                 };
-                let read_len = open_file
-                    .inode
-                    .read_at(open_file.offset, out)
-                    .map_err(|e| e.errno())?;
+                let read_len = if let Some(data) = open_file.static_data {
+                    if open_file.offset >= data.len() {
+                        0
+                    } else {
+                        let n = out.len().min(data.len() - open_file.offset);
+                        out[..n].copy_from_slice(&data[open_file.offset..open_file.offset + n]);
+                        n
+                    }
+                } else {
+                    open_file
+                        .inode
+                        .read_at(open_file.offset, out)
+                        .map_err(|e| e.errno())?
+                };
                 open_file.offset = open_file.offset.saturating_add(read_len);
                 Ok(read_len)
             }
@@ -657,6 +649,15 @@ impl FsState {
                     .copy_from_slice(&open_file.data[offset..offset.saturating_add(read_len)]);
                 Ok(read_len)
             }
+            OpenFile::Vfs(open_file) if open_file.static_data.is_some() => {
+                let data = open_file.static_data.unwrap_or(&[]);
+                if offset >= data.len() {
+                    return Ok(0);
+                }
+                let read_len = (data.len() - offset).min(out.len());
+                out[..read_len].copy_from_slice(&data[offset..offset + read_len]);
+                Ok(read_len)
+            }
             OpenFile::Vfs(open_file) => open_file.inode.read_at(offset, out).map_err(|e| e.errno()),
             OpenFile::Dir(_) => Err(EISDIR),
             _ => Err(EBADF),
@@ -672,6 +673,7 @@ impl FsState {
         };
         match open_file {
             OpenFile::Static(open_file) => Ok(open_file.data),
+            OpenFile::Vfs(open_file) => open_file.static_data.ok_or(EBADF),
             OpenFile::Dir(_) => Err(EISDIR),
             _ => Err(EBADF),
         }
@@ -718,7 +720,10 @@ impl FsState {
                 Ok(file.offset)
             }
             OpenFile::Vfs(file) => {
-                let size = file.inode.metadata().map_err(|e| e.errno())?.size as i64;
+                let size = file
+                    .static_data
+                    .map(|data| data.len() as i64)
+                    .unwrap_or_else(|| file.inode.metadata().map(|m| m.size as i64).unwrap_or(0));
                 let base = match whence {
                     0 => 0i64,               // SEEK_SET
                     1 => file.offset as i64, // SEEK_CUR
@@ -889,7 +894,9 @@ impl FsState {
 
     fn chdir_for_pid(&mut self, pid: usize, path: &str) -> Result<(), i32> {
         let resolved = self.resolve_path_for_pid(pid, path)?;
-        if !self.dir_exists(resolved.as_str()) {
+        let inode = vfs::lookup_path(resolved.as_str()).map_err(|e| e.errno())?;
+        let meta = inode.metadata().map_err(|e| e.errno())?;
+        if meta.file_type != vfs::FileType::Directory {
             return Err(ENOTDIR);
         }
         let cwd = self.ensure_cwd_mut(pid);
@@ -1022,19 +1029,33 @@ impl FsState {
         match open_file {
             OpenFile::Static(file) => Ok(Self::make_regular_stat(file.path, file.data.len())),
             OpenFile::Vfs(file) => {
-                let meta = file.inode.metadata().map_err(|e| e.errno())?;
+                let size = file
+                    .static_data
+                    .map(|data| data.len() as u64)
+                    .unwrap_or_else(|| file.inode.metadata().map(|m| m.size).unwrap_or(0));
                 Ok(FsStat {
                     dev: 1,
-                    ino: meta.ino,
-                    mode: meta.mode,
-                    nlink: meta.nlink as u64,
+                    ino: file.ino,
+                    mode: file.mode,
+                    nlink: 1,
                     rdev: 0,
-                    size: meta.size as i64,
+                    size: size as i64,
                     blksize: 4096,
-                    blocks: ((meta.size as i64).saturating_add(511) / 512),
+                    blocks: ((size as i64).saturating_add(511) / 512),
                 })
             }
-            OpenFile::Dir(dir) => Ok(Self::make_dir_stat(dir.path.as_str())),
+            OpenFile::Dir(dir) => {
+                Ok(FsStat {
+                    dev: 1,
+                    ino: dir.ino,
+                    mode: dir.mode,
+                    nlink: 2,
+                    rdev: 0,
+                    size: 0,
+                    blksize: 4096,
+                    blocks: 0,
+                })
+            }
             OpenFile::PipeRead { pipe_id, .. } | OpenFile::PipeWrite { pipe_id, .. } => {
                 let size = self
                     .pipes
@@ -1083,13 +1104,16 @@ impl FsState {
             }
             OpenFile::Vfs(file) => {
                 if (events & POLLIN) != 0 {
-                    if let Ok(meta) = file.inode.metadata() {
+                    if let Some(data) = file.static_data {
+                        let eof = file.offset >= data.len();
+                        if !data.is_empty() || eof {
+                            revents |= POLLIN;
+                        }
+                    } else if let Ok(meta) = file.inode.metadata() {
                         let eof = file.offset >= meta.size as usize;
                         if meta.size > 0 || eof {
                             revents |= POLLIN;
                         }
-                    } else {
-                        revents |= POLLERR;
                     }
                 }
             }
@@ -1179,9 +1203,14 @@ pub fn open_for_pid(pid: usize, path: &str, flags: u32, mode: u16) -> Result<i32
         let mut state = FS_STATE.lock();
         state.resolve_path_for_pid(pid, path)?
     };
-    let vfs_hint = vfs::lookup_path(resolved.as_str())
-        .ok()
-        .and_then(|inode| inode.metadata().ok().map(|meta| VfsOpenHint { inode, meta }));
+    let inode = vfs::lookup_path(resolved.as_str()).map_err(|e| e.errno())?;
+    let meta = inode.metadata().map_err(|e| e.errno())?;
+    let static_data = crate::fs::backend_read_static_file(resolved.as_str());
+    let vfs_hint = Some(VfsOpenHint {
+        inode,
+        meta,
+        static_data,
+    });
     FS_STATE
         .lock()
         .open_for_pid(pid, resolved.as_str(), flags, mode, vfs_hint)
@@ -1244,7 +1273,19 @@ pub fn fcntl_setfd_for_pid(pid: usize, fd: i32, cloexec: bool) -> Result<(), i32
 }
 
 pub fn chdir_for_pid(pid: usize, path: &str) -> Result<(), i32> {
-    FS_STATE.lock().chdir_for_pid(pid, path)
+    let resolved = {
+        let mut state = FS_STATE.lock();
+        state.resolve_path_for_pid(pid, path)?
+    };
+    let inode = vfs::lookup_path(resolved.as_str()).map_err(|e| e.errno())?;
+    let meta = inode.metadata().map_err(|e| e.errno())?;
+    if meta.file_type != vfs::FileType::Directory {
+        return Err(ENOTDIR);
+    }
+    let mut state = FS_STATE.lock();
+    let cwd = state.ensure_cwd_mut(pid);
+    *cwd = resolved;
+    Ok(())
 }
 
 pub fn getcwd_for_pid(pid: usize) -> String {
@@ -1252,39 +1293,35 @@ pub fn getcwd_for_pid(pid: usize) -> String {
 }
 
 pub fn peek_dir_entry_for_pid(pid: usize, fd: i32) -> Result<Option<FsDirEntry>, i32> {
-    let (dir_path, cursor, dir_inode) = {
+    let (cursor, dir_inode) = {
         let state = FS_STATE.lock();
         let table = state.open_files.get(&pid).ok_or(EBADF)?;
         let open_file = table.get(&fd).ok_or(EBADF)?;
         match open_file {
-            OpenFile::Dir(dir) => (dir.path.clone(), dir.cursor, dir.inode.clone()),
+            OpenFile::Dir(dir) => (dir.cursor, dir.inode.clone()),
             _ => return Err(ENOTDIR),
         }
     };
 
-    if let Some(inode) = dir_inode {
-        let vfs_entries = inode.readdir().map_err(|e| e.errno())?;
-        if cursor >= vfs_entries.len() {
-            return Ok(None);
-        }
-        let entry = &vfs_entries[cursor];
-        let file_type = match entry.file_type {
-            vfs::FileType::Directory => DT_DIR,
-            vfs::FileType::Regular => DT_REG,
-            _ => DT_UNKNOWN,
-        };
-        return Ok(Some(FsDirEntry {
-            ino: entry.ino,
-            file_type,
-            name: entry.name.clone(),
-        }));
-    }
+    let Some(inode) = dir_inode else {
+        return Err(ENOTDIR);
+    };
 
-    let entries = FS_STATE.lock().collect_dir_entries(dir_path.as_str());
+    let entries = inode.readdir().map_err(|e| e.errno())?;
     if cursor >= entries.len() {
         return Ok(None);
     }
-    Ok(entries.get(cursor).cloned())
+    let entry = &entries[cursor];
+    let file_type = match entry.file_type {
+        vfs::FileType::Directory => DT_DIR,
+        vfs::FileType::Regular => DT_REG,
+        _ => DT_UNKNOWN,
+    };
+    Ok(Some(FsDirEntry {
+        ino: entry.ino,
+        file_type,
+        name: entry.name.clone(),
+    }))
 }
 
 pub fn advance_dir_cursor_for_pid(pid: usize, fd: i32, count: usize) -> Result<(), i32> {
@@ -1292,7 +1329,18 @@ pub fn advance_dir_cursor_for_pid(pid: usize, fd: i32, count: usize) -> Result<(
 }
 
 pub fn stat_path(path: &str) -> Result<FsStat, i32> {
-    FS_STATE.lock().stat_path(path)
+    let inode = vfs::lookup_path(path).map_err(|e| e.errno())?;
+    let meta = inode.metadata().map_err(|e| e.errno())?;
+    Ok(FsStat {
+        dev: 1,
+        ino: meta.ino,
+        mode: meta.mode,
+        nlink: meta.nlink as u64,
+        rdev: 0,
+        size: meta.size as i64,
+        blksize: 4096,
+        blocks: ((meta.size as i64).saturating_add(511) / 512),
+    })
 }
 
 pub fn stat_path_for_pid(pid: usize, path: &str) -> Result<FsStat, i32> {
@@ -1300,32 +1348,18 @@ pub fn stat_path_for_pid(pid: usize, path: &str) -> Result<FsStat, i32> {
         let mut state = FS_STATE.lock();
         state.resolve_path_for_pid(pid, path)?
     };
-    if let Ok(stat) = FS_STATE.lock().stat_path(resolved.as_str()) {
-        return Ok(stat);
-    }
-
-    if let Ok(inode) = vfs::lookup_path(resolved.as_str()) {
-        let meta = inode.metadata().map_err(|e| e.errno())?;
-        let mode = match meta.file_type {
-            vfs::FileType::Directory => S_IFDIR | 0o755,
-            vfs::FileType::Regular => S_IFREG | 0o644,
-            vfs::FileType::CharDevice => S_IFCHR | 0o620,
-            vfs::FileType::Fifo => S_IFIFO | 0o600,
-            vfs::FileType::Unknown => meta.mode,
-        };
-        return Ok(FsStat {
-            dev: 1,
-            ino: meta.ino,
-            mode,
-            nlink: meta.nlink as u64,
-            rdev: 0,
-            size: meta.size as i64,
-            blksize: 4096,
-            blocks: ((meta.size as i64).saturating_add(511) / 512),
-        });
-    }
-
-    Err(ENOENT)
+    let inode = vfs::lookup_path(resolved.as_str()).map_err(|e| e.errno())?;
+    let meta = inode.metadata().map_err(|e| e.errno())?;
+    Ok(FsStat {
+        dev: 1,
+        ino: meta.ino,
+        mode: meta.mode,
+        nlink: meta.nlink as u64,
+        rdev: 0,
+        size: meta.size as i64,
+        blksize: 4096,
+        blocks: ((meta.size as i64).saturating_add(511) / 512),
+    })
 }
 
 pub fn stat_fd(pid: usize, fd: i32) -> Result<FsStat, i32> {
