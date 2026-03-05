@@ -94,6 +94,7 @@ impl PipeState {
 struct MmapBacking {
     inode: Arc<dyn vfs::Inode>,
     static_data: Option<&'static [u8]>,
+    refs: usize,
 }
 
 struct FsState {
@@ -947,9 +948,37 @@ impl FsState {
 
         let backing_id = self.next_mmap_backing_id;
         self.next_mmap_backing_id = self.next_mmap_backing_id.saturating_add(1);
-        self.mmap_backings
-            .insert(backing_id, MmapBacking { inode, static_data });
+        self.mmap_backings.insert(
+            backing_id,
+            MmapBacking {
+                inode,
+                static_data,
+                refs: 1,
+            },
+        );
         Ok(backing_id)
+    }
+
+    fn retain_mmap_backing(&mut self, backing_id: u64) -> Result<(), i32> {
+        let Some(backing) = self.mmap_backings.get_mut(&backing_id) else {
+            return Err(EBADF);
+        };
+        backing.refs = backing.refs.saturating_add(1);
+        Ok(())
+    }
+
+    fn release_mmap_backing(&mut self, backing_id: u64) {
+        let mut should_remove = false;
+        if let Some(backing) = self.mmap_backings.get_mut(&backing_id) {
+            if backing.refs > 1 {
+                backing.refs -= 1;
+            } else {
+                should_remove = true;
+            }
+        }
+        if should_remove {
+            self.mmap_backings.remove(&backing_id);
+        }
     }
 
     fn copy_mmap_page(
@@ -1144,6 +1173,14 @@ pub fn read_all_for_pid(pid: usize, path: &str) -> Result<Vec<u8>, i32> {
 
 pub fn mmap_create_backing_for_pid(pid: usize, fd: i32) -> Result<u64, i32> {
     FS_STATE.lock().create_mmap_backing_for_pid(pid, fd)
+}
+
+pub fn mmap_retain_backing(backing_id: u64) -> Result<(), i32> {
+    FS_STATE.lock().retain_mmap_backing(backing_id)
+}
+
+pub fn mmap_release_backing(backing_id: u64) {
+    FS_STATE.lock().release_mmap_backing(backing_id);
 }
 
 pub fn mmap_copy_page(backing_id: u64, file_offset: usize, out: &mut [u8]) -> Result<usize, i32> {

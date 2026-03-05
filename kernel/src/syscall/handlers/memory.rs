@@ -63,6 +63,37 @@ fn apply_pte_flags_range(pgd: u64, start: u64, end: u64, pte_flags: u64) -> Resu
     Ok(())
 }
 
+#[inline]
+fn vma_backing_id(info: &mm::VmaInfo) -> Option<u64> {
+    if info.file.is_null() {
+        None
+    } else {
+        Some(info.file as usize as u64)
+    }
+}
+
+fn adjust_backing_refs_after_vma_replace(
+    info: &mm::VmaInfo,
+    kept_segments: usize,
+) -> Result<(), i32> {
+    let Some(backing_id) = vma_backing_id(info) else {
+        return Ok(());
+    };
+
+    if kept_segments == 0 {
+        fs::mmap_release_backing(backing_id);
+        return Ok(());
+    }
+    if kept_segments == 1 {
+        return Ok(());
+    }
+
+    for _ in 1..kept_segments {
+        fs::mmap_retain_backing(backing_id)?;
+    }
+    Ok(())
+}
+
 fn mprotect_range_for_mm(
     mm_state: &mut mm::Mm,
     start: u64,
@@ -84,11 +115,18 @@ fn mprotect_range_for_mm(
             return Err(EBUSY);
         };
 
+        let mut kept_segments = 0usize;
         if vma.vm_start < seg_start {
-            let _ = mm_state.insert_vma(vma.vm_start, seg_start, info.clone());
+            if !mm_state.insert_vma(vma.vm_start, seg_start, info.clone()) {
+                return Err(EBUSY);
+            }
+            kept_segments += 1;
         }
         if seg_end < vma.vm_end {
-            let _ = mm_state.insert_vma(seg_end, vma.vm_end, info.clone());
+            if !mm_state.insert_vma(seg_end, vma.vm_end, info.clone()) {
+                return Err(EBUSY);
+            }
+            kept_segments += 1;
         }
 
         let mut protected_info = info.clone();
@@ -96,6 +134,9 @@ fn mprotect_range_for_mm(
         if !mm_state.insert_vma(seg_start, seg_end, protected_info.clone()) {
             return Err(EBUSY);
         }
+        kept_segments += 1;
+
+        adjust_backing_refs_after_vma_replace(&info, kept_segments)?;
 
         apply_pte_flags_range(
             mm_state.pgd,
@@ -261,12 +302,20 @@ fn collect_unmap_ranges_for_mm(
             return Err(EBUSY);
         };
 
+        let mut kept_segments = 0usize;
         if vma_start < cut_start {
-            let _ = mm_state.insert_vma(vma_start, cut_start, info.clone());
+            if !mm_state.insert_vma(vma_start, cut_start, info.clone()) {
+                return Err(EBUSY);
+            }
+            kept_segments += 1;
         }
         if cut_end < vma_end {
-            let _ = mm_state.insert_vma(cut_end, vma_end, info.clone());
+            if !mm_state.insert_vma(cut_end, vma_end, info.clone()) {
+                return Err(EBUSY);
+            }
+            kept_segments += 1;
         }
+        adjust_backing_refs_after_vma_replace(&info, kept_segments)?;
 
         unmap_ranges.push((cut_start, cut_end));
     }
@@ -341,6 +390,7 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
 
     let mut info = mm::VmaInfo::new(vm_flags);
     info.pgoff = offset / mm::PAGE_SIZE;
+    let mut file_backing_id: Option<u64> = None;
     if (flags & mm::mmap_flags::MAP_ANONYMOUS) == 0 {
         let fd = match parse_fd(fd_raw) {
             Ok(fd) => fd,
@@ -356,13 +406,20 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
         };
         info.file = backing_id as usize as *mut ();
         info.private_data = core::ptr::null_mut();
+        file_backing_id = Some(backing_id);
     }
 
     let mm_state = unsafe { &mut *mm_ptr };
     if mm_state.find_vma_intersection(start, end).is_some() {
+        if let Some(backing_id) = file_backing_id {
+            fs::mmap_release_backing(backing_id);
+        }
         return err(EBUSY);
     }
     if !mm_state.insert_vma(start, end, info) {
+        if let Some(backing_id) = file_backing_id {
+            fs::mmap_release_backing(backing_id);
+        }
         return err(EBUSY);
     }
 

@@ -9,6 +9,7 @@ use super::layout::{
     KERNEL_BASE, PAGE_SIZE, USER_MMAP_BASE, USER_SPACE_END, USER_SPACE_START, USER_STACK_SIZE,
     USER_STACK_TOP,
 };
+use crate::fs;
 use crate::libs::mptree::MapleTree;
 use crate::mm::arch::{PageTable, PageTableEntry, PageTableManager, level_index};
 use crate::mm::page::buddy::{alloc_page, free_page};
@@ -881,6 +882,15 @@ unsafe fn clone_user_present_pages(src: &Mm, dst: &mut Mm) -> bool {
     true
 }
 
+fn release_mm_vma_backings(mm: &Mm) {
+    for (_start, _end, info) in mm.vma_tree.iter() {
+        if !info.file.is_null() {
+            let backing_id = info.file as usize as u64;
+            fs::mmap_release_backing(backing_id);
+        }
+    }
+}
+
 /// 内核 mm (共享内核页表)
 static INIT_MM: crate::sync::OnceCell<IrqSpinLock<Mm>> = crate::sync::OnceCell::new();
 
@@ -967,16 +977,29 @@ pub fn mm_clone(mm: *mut Mm) -> *mut Mm {
     let mut inserted = 0u32;
     for (start, end, info) in src.vma_tree.iter() {
         if dst.vma_tree.insert(start, end, info.clone()).is_err() {
+            release_mm_vma_backings(&dst);
             unsafe {
                 teardown_private_mm(&mut dst);
             }
             return ptr::null_mut();
+        }
+        if !info.file.is_null() {
+            let backing_id = info.file as usize as u64;
+            if fs::mmap_retain_backing(backing_id).is_err() {
+                let _ = dst.vma_tree.remove(start);
+                release_mm_vma_backings(&dst);
+                unsafe {
+                    teardown_private_mm(&mut dst);
+                }
+                return ptr::null_mut();
+            }
         }
         inserted = inserted.saturating_add(1);
     }
     dst.vma_count = inserted;
 
     if unsafe { !clone_user_present_pages(src, &mut dst) } {
+        release_mm_vma_backings(&dst);
         unsafe {
             teardown_private_mm(&mut dst);
         }
@@ -1014,6 +1037,7 @@ pub unsafe fn mm_release(mm: *mut Mm) {
                 crate::mm::arch::write_cr3(init_pgd);
             }
             let _guard = (*mm).lock.lock();
+            release_mm_vma_backings(&*mm);
             teardown_private_mm(&mut *mm);
         }
         drop(Box::from_raw(mm));
