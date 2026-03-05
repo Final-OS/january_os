@@ -4,8 +4,10 @@ mod buddy;
 mod heap;
 mod mmap;
 mod pcp;
+mod pt_ownership;
 mod slub;
 mod swiotlb;
+mod vmalloc_heal;
 
 use crate::{error, kprintln, ok};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -45,6 +47,10 @@ pub fn run_with_filter(filter: Option<&str>) {
             heap::run();
             mm_step("run case=mmap");
             mmap::run();
+            mm_step("run case=pt_ownership");
+            pt_ownership::run();
+            mm_step("run case=vmalloc_heal");
+            vmalloc_heal::run();
         }
         Some("swiotlb") => {
             mm_step("run case=swiotlb");
@@ -70,9 +76,19 @@ pub fn run_with_filter(filter: Option<&str>) {
             mm_step("run case=mmap");
             mmap::run();
         }
+        Some("pt_ownership") => {
+            mm_step("run case=pt_ownership");
+            pt_ownership::run();
+        }
+        Some("vmalloc_heal") => {
+            mm_step("run case=vmalloc_heal");
+            vmalloc_heal::run();
+        }
         Some(name) => {
             error!("Unknown MM test: {}", name);
-            kprintln!("Available MM tests: swiotlb, slub, buddy, pcp, heap, mmap");
+            kprintln!(
+                "Available MM tests: swiotlb, slub, buddy, pcp, heap, mmap, pt_ownership, vmalloc_heal"
+            );
         }
     }
 

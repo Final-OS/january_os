@@ -4,9 +4,9 @@ use crate::drivers::block::{self, BlockDevice};
 use crate::sync::Mutex;
 use crate::{error, kprintln, ok, warn};
 
+use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::format;
 use alloc::vec;
 
 pub fn run() {
@@ -228,10 +228,11 @@ fn test_partition_mbr_case() -> Result<(), String> {
         .map_err(|_| String::from("partition write failed"))?;
 
     let mut parent = [0u8; MOCK_BLOCK_SIZE];
-    dev.read_raw_block(64, &mut parent)
-        .map_err(String::from)?;
+    dev.read_raw_block(64, &mut parent).map_err(String::from)?;
     if parent != pattern {
-        return Err(String::from("partition write did not translate to parent LBA"));
+        return Err(String::from(
+            "partition write did not translate to parent LBA",
+        ));
     }
 
     Ok(())
@@ -305,10 +306,11 @@ fn test_partition_gpt_case() -> Result<(), String> {
         .map_err(|_| String::from("GPT partition write failed"))?;
 
     let mut parent = [0u8; MOCK_BLOCK_SIZE];
-    dev.read_raw_block(64, &mut parent)
-        .map_err(String::from)?;
+    dev.read_raw_block(64, &mut parent).map_err(String::from)?;
     if parent != pattern {
-        return Err(String::from("GPT partition write did not translate to parent LBA"));
+        return Err(String::from(
+            "GPT partition write did not translate to parent LBA",
+        ));
     }
 
     Ok(())

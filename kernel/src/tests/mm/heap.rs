@@ -26,7 +26,10 @@ pub fn run() {
         let layout = Layout::from_size_align(FILL_CHUNK, 64).expect("valid fill layout");
         let ptr = unsafe { crate::mm::heap::heap_alloc_raw(layout) };
         if ptr.is_null() {
-            return fail("heap", "failed while preparing low-free condition for growth check");
+            return fail(
+                "heap",
+                "failed while preparing low-free condition for growth check",
+            );
         }
         ptrs[count] = ptr;
         sizes[count] = FILL_CHUNK;
@@ -49,7 +52,10 @@ pub fn run() {
 
     let after = crate::mm::heap::heap_stats();
     if after.segments <= before.segments || after.total_size <= before.total_size {
-        return fail("heap", "heap did not grow after free space became insufficient");
+        return fail(
+            "heap",
+            "heap did not grow after free space became insufficient",
+        );
     }
 
     mm_step("heap: case=oversized_request_returns_null");
@@ -67,7 +73,10 @@ pub fn run() {
         Layout::from_size_align(RECOVERY_ALLOC, 64).expect("valid recovery layout");
     let recovery_ptr = unsafe { crate::mm::heap::heap_alloc_raw(recovery_layout) };
     if recovery_ptr.is_null() {
-        return fail("heap", "heap cannot allocate small block after failed oversized request");
+        return fail(
+            "heap",
+            "heap cannot allocate small block after failed oversized request",
+        );
     }
     unsafe {
         crate::mm::heap::heap_dealloc_raw(recovery_ptr, recovery_layout);
@@ -84,7 +93,10 @@ pub fn run() {
 
     let final_stats = crate::mm::heap::heap_stats();
     if final_stats.live_allocations != 0 || final_stats.used_size != 0 {
-        return fail("heap", "heap did not return to zero-live-allocation state after cleanup");
+        return fail(
+            "heap",
+            "heap did not return to zero-live-allocation state after cleanup",
+        );
     }
 
     pass("heap");
