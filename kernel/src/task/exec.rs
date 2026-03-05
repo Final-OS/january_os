@@ -670,7 +670,7 @@ fn release_mapped_phys_page(phys: u64) {
         let page = &mut *mm::pfn_to_page(pfn);
 
         if page.mapcount() >= 0 {
-            page.dec_mapcount();
+            let _ = page.try_dec_mapcount();
         }
 
         if page.refcount() == 0 {

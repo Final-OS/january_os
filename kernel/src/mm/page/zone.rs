@@ -28,11 +28,15 @@ pub const ZONE_DMA32_LIMIT: u64 = config::ZONE_DMA32_LIMIT;
 
 static ZONE_AREA_UNDERFLOW_REJECTS: AtomicU64 = AtomicU64::new(0);
 static ZONE_GLOBAL_UNDERFLOW_REJECTS: AtomicU64 = AtomicU64::new(0);
+static ZONE_SNAPSHOT_MISMATCHES: AtomicU64 = AtomicU64::new(0);
+static ZONE_SCRUB_REPAIRS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy)]
 pub struct ZoneGuardStats {
     pub area_underflow_rejects: u64,
     pub global_underflow_rejects: u64,
+    pub snapshot_mismatches: u64,
+    pub scrub_repairs: u64,
 }
 
 #[inline]
@@ -40,6 +44,8 @@ pub fn zone_guard_stats() -> ZoneGuardStats {
     ZoneGuardStats {
         area_underflow_rejects: ZONE_AREA_UNDERFLOW_REJECTS.load(Ordering::Relaxed),
         global_underflow_rejects: ZONE_GLOBAL_UNDERFLOW_REJECTS.load(Ordering::Relaxed),
+        snapshot_mismatches: ZONE_SNAPSHOT_MISMATCHES.load(Ordering::Relaxed),
+        scrub_repairs: ZONE_SCRUB_REPAIRS.load(Ordering::Relaxed),
     }
 }
 
@@ -295,8 +301,7 @@ impl Zone {
         self.free_pages.load(Ordering::Relaxed)
     }
 
-    /// 在持有 Zone 锁的前提下，按 free_area 重算空闲页总数并与原子计数对齐。
-    pub fn reconcile_free_pages_locked(&mut self) -> u64 {
+    fn recompute_free_pages_locked(&self) -> u64 {
         let mut recomputed = 0u64;
         for order in 0..MAX_ORDER {
             let blocks = self.free_area[order].nr_free;
@@ -304,20 +309,43 @@ impl Zone {
             let add = blocks.saturating_mul(pages_per_block);
             recomputed = recomputed.saturating_add(add);
         }
+        recomputed
+    }
 
+    /// 在持有 Zone 锁的前提下，返回 (observed, recomputed)。
+    pub fn free_pages_snapshot_locked(&self) -> (u64, u64) {
         let observed = self.free_pages.load(Ordering::Relaxed);
+        let recomputed = self.recompute_free_pages_locked();
         if observed != recomputed {
+            ZONE_SNAPSHOT_MISMATCHES.fetch_add(1, Ordering::Relaxed);
+        }
+        (observed, recomputed)
+    }
+
+    /// 在持有 Zone 锁的前提下，仅按 free_area 计算空闲页总数（只读）。
+    pub fn recomputed_free_pages_locked(&self) -> u64 {
+        self.recompute_free_pages_locked()
+    }
+
+    /// 在持有 Zone 锁的前提下，将 free_pages 原子值纠偏到 recomputed 值。
+    /// 返回 (observed, recomputed, repaired)。
+    pub fn scrub_free_pages_locked(&mut self) -> (u64, u64, bool) {
+        let observed = self.free_pages.load(Ordering::Relaxed);
+        let recomputed = self.recompute_free_pages_locked();
+        if observed != recomputed {
+            ZONE_SCRUB_REPAIRS.fetch_add(1, Ordering::Relaxed);
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "\x1b[90m[diag]\x1b[0m[zone] reconcile free_pages: zone={} observed={} recomputed={}",
+                    "\x1b[90m[diag]\x1b[0m[zone] scrub free_pages: zone={} observed={} recomputed={}",
                     self.name,
                     observed,
                     recomputed
                 );
             }
             self.free_pages.store(recomputed, Ordering::Relaxed);
+            return (observed, recomputed, true);
         }
-        recomputed
+        (observed, recomputed, false)
     }
     
     /// 结束 PFN

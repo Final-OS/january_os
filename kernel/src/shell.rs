@@ -493,19 +493,24 @@ fn execute_mm_command(args: &[&str]) {
     match subcommand {
         "status" => {
             let mut total_free = 0u64;
+            let mut zone_drifted = 0u64;
             for zone_type in mm::ZoneType::iter() {
-                let mut zone = mm::get_zone(zone_type);
+                let zone = mm::get_zone(zone_type);
                 if !zone.initialized {
                     continue;
                 }
-                let reconciled = zone.reconcile_free_pages_locked();
-                total_free = total_free.saturating_add(reconciled);
+                let (observed, recomputed) = zone.free_pages_snapshot_locked();
+                if observed != recomputed {
+                    zone_drifted = zone_drifted.saturating_add(1);
+                }
+                total_free = total_free.saturating_add(recomputed);
             }
             let fault_stats = mm::get_fault_stats();
             let vmalloc_heal = mm::vmalloc::vmalloc_heal_stats();
             let pcp = mm::page::pcp::pcp_stats();
             let pt_reclaim = mm::pt_reclaim_stats();
             let zone_guard = mm::zone::zone_guard_stats();
+            let page_guard = mm::page_guard_stats();
             let dma_guard = mm::iommu::dma_coherent_guard_stats();
             let heap = mm::heap::heap_stats();
             let kmalloc = mm::slub::kmalloc_stats();
@@ -589,12 +594,20 @@ fn execute_mm_command(args: &[&str]) {
                 pt_reclaim.owner_healed,
             );
             kprintln!(
-                "  zone guard:  area_underflow={} global_underflow={}",
-                zone_guard.area_underflow_rejects,
-                zone_guard.global_underflow_rejects,
+                "  page guard:  ref_underflow={} mapcount_underflow={}",
+                page_guard.ref_underflow_rejects,
+                page_guard.mapcount_underflow_rejects,
             );
             kprintln!(
-                "  dma guard:   track_full={} invalid_virt={} meta_miss={} size_mismatch={} dma_mismatch={} pfn_oob={} owner_mismatch={} order_mismatch={}",
+                "  zone guard:  area_underflow={} global_underflow={} snapshot_mismatch={} scrub_repairs={} drifted_zones={}",
+                zone_guard.area_underflow_rejects,
+                zone_guard.global_underflow_rejects,
+                zone_guard.snapshot_mismatches,
+                zone_guard.scrub_repairs,
+                zone_drifted,
+            );
+            kprintln!(
+                "  dma guard:   track_full={} invalid_virt={} meta_miss={} size_mismatch={} dma_mismatch={} pfn_oob={} owner_mismatch={} order_mismatch={} in_progress={} rollback={}",
                 dma_guard.track_insert_fail,
                 dma_guard.free_invalid_virt,
                 dma_guard.free_meta_miss,
@@ -603,6 +616,8 @@ fn execute_mm_command(args: &[&str]) {
                 dma_guard.free_pfn_oob,
                 dma_guard.free_owner_mismatch,
                 dma_guard.free_order_mismatch,
+                dma_guard.free_in_progress_conflict,
+                dma_guard.free_rollback,
             );
             kprintln!(
                 "  Faults:      total={} minor={} major={} cow={} stack_grow={}",
@@ -699,7 +714,7 @@ fn execute_mm_command(args: &[&str]) {
             kprintln!("  Units:       {}", stats.nr_units);
             kprintln!("  Mapped:      {} pages", stats.mapped_pages);
             kprintln!(
-                "  DMA guard:   track_full={} invalid_virt={} meta_miss={} size_mismatch={} dma_mismatch={} pfn_oob={} owner_mismatch={} order_mismatch={}",
+                "  DMA guard:   track_full={} invalid_virt={} meta_miss={} size_mismatch={} dma_mismatch={} pfn_oob={} owner_mismatch={} order_mismatch={} in_progress={} rollback={}",
                 dma_guard.track_insert_fail,
                 dma_guard.free_invalid_virt,
                 dma_guard.free_meta_miss,
@@ -708,6 +723,37 @@ fn execute_mm_command(args: &[&str]) {
                 dma_guard.free_pfn_oob,
                 dma_guard.free_owner_mismatch,
                 dma_guard.free_order_mismatch,
+                dma_guard.free_in_progress_conflict,
+                dma_guard.free_rollback,
+            );
+        }
+        "scrub" => {
+            let mut repaired_zones = 0u64;
+            let mut total_before = 0u64;
+            let mut total_after = 0u64;
+            for zone_type in mm::ZoneType::iter() {
+                let mut zone = mm::get_zone(zone_type);
+                if !zone.initialized {
+                    continue;
+                }
+                let (observed, recomputed, repaired) = zone.scrub_free_pages_locked();
+                total_before = total_before.saturating_add(observed);
+                total_after = total_after.saturating_add(recomputed);
+                if repaired {
+                    repaired_zones = repaired_zones.saturating_add(1);
+                    kprintln!(
+                        "  [zone:{}] scrubbed free_pages {} -> {}",
+                        zone.name,
+                        observed,
+                        recomputed
+                    );
+                }
+            }
+            kprintln!(
+                "MM scrub done: repaired_zones={} total_before={} total_after={}",
+                repaired_zones,
+                total_before,
+                total_after
             );
         }
         "help" | _ => {
@@ -717,6 +763,7 @@ fn execute_mm_command(args: &[&str]) {
             kprintln!("  faults    - Show page-fault statistics");
             kprintln!("  memblock  - Show early memory map (memblock)");
             kprintln!("  iommu     - Show IOMMU status");
+            kprintln!("  scrub     - Reconcile zone free-page counters");
         }
     }
 }

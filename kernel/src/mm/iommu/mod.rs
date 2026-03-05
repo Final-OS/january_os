@@ -102,6 +102,8 @@ static DMA_COHERENT_FREE_DMA_MISMATCH: AtomicU64 = AtomicU64::new(0);
 static DMA_COHERENT_FREE_PFN_OOB: AtomicU64 = AtomicU64::new(0);
 static DMA_COHERENT_FREE_OWNER_MISMATCH: AtomicU64 = AtomicU64::new(0);
 static DMA_COHERENT_FREE_ORDER_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static DMA_COHERENT_FREE_IN_PROGRESS_CONFLICT: AtomicU64 = AtomicU64::new(0);
+static DMA_COHERENT_FREE_ROLLBACK: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Default)]
 pub struct DmaCoherentGuardStats {
@@ -113,6 +115,8 @@ pub struct DmaCoherentGuardStats {
     pub free_pfn_oob: u64,
     pub free_owner_mismatch: u64,
     pub free_order_mismatch: u64,
+    pub free_in_progress_conflict: u64,
+    pub free_rollback: u64,
 }
 
 pub fn dma_coherent_guard_stats() -> DmaCoherentGuardStats {
@@ -125,12 +129,22 @@ pub fn dma_coherent_guard_stats() -> DmaCoherentGuardStats {
         free_pfn_oob: DMA_COHERENT_FREE_PFN_OOB.load(Ordering::Relaxed),
         free_owner_mismatch: DMA_COHERENT_FREE_OWNER_MISMATCH.load(Ordering::Relaxed),
         free_order_mismatch: DMA_COHERENT_FREE_ORDER_MISMATCH.load(Ordering::Relaxed),
+        free_in_progress_conflict: DMA_COHERENT_FREE_IN_PROGRESS_CONFLICT.load(Ordering::Relaxed),
+        free_rollback: DMA_COHERENT_FREE_ROLLBACK.load(Ordering::Relaxed),
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum DmaTrackState {
+    Empty = 0,
+    Live = 1,
+    Freeing = 2,
 }
 
 #[derive(Clone, Copy)]
 struct DmaCoherentMeta {
-    in_use: bool,
+    state: u8,
     virt: u64,
     dma: u64,
     size: usize,
@@ -141,13 +155,25 @@ struct DmaCoherentMeta {
 impl DmaCoherentMeta {
     const fn empty() -> Self {
         Self {
-            in_use: false,
+            state: DmaTrackState::Empty as u8,
             virt: 0,
             dma: 0,
             size: 0,
             pfn: 0,
             order: 0,
         }
+    }
+
+    fn state(&self) -> DmaTrackState {
+        match self.state {
+            1 => DmaTrackState::Live,
+            2 => DmaTrackState::Freeing,
+            _ => DmaTrackState::Empty,
+        }
+    }
+
+    fn set_state(&mut self, state: DmaTrackState) {
+        self.state = state as u8;
     }
 }
 
@@ -164,8 +190,9 @@ impl DmaCoherentTracker {
 
     fn insert(&mut self, meta: DmaCoherentMeta) -> bool {
         for slot in self.entries.iter_mut() {
-            if !slot.in_use {
+            if slot.state() == DmaTrackState::Empty {
                 *slot = meta;
+                slot.set_state(DmaTrackState::Live);
                 return true;
             }
         }
@@ -175,7 +202,29 @@ impl DmaCoherentTracker {
     fn find_by_virt(&self, virt: u64) -> Option<usize> {
         self.entries
             .iter()
-            .position(|slot| slot.in_use && slot.virt == virt)
+            .position(|slot| slot.state() != DmaTrackState::Empty && slot.virt == virt)
+    }
+}
+
+fn rollback_coherent_free(meta: DmaCoherentMeta) {
+    let mut tracker = DMA_COHERENT_TRACKER.lock();
+    if let Some(idx) = tracker.find_by_virt(meta.virt) {
+        let slot = &mut tracker.entries[idx];
+        if slot.state() == DmaTrackState::Freeing && slot.dma == meta.dma {
+            *slot = meta;
+            slot.set_state(DmaTrackState::Live);
+            DMA_COHERENT_FREE_ROLLBACK.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+fn commit_coherent_free(meta: DmaCoherentMeta) {
+    let mut tracker = DMA_COHERENT_TRACKER.lock();
+    if let Some(idx) = tracker.find_by_virt(meta.virt) {
+        let slot = &mut tracker.entries[idx];
+        if slot.state() == DmaTrackState::Freeing && slot.dma == meta.dma {
+            *slot = DmaCoherentMeta::empty();
+        }
     }
 }
 
@@ -581,7 +630,7 @@ pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAdd
     };
 
     let meta = DmaCoherentMeta {
-        in_use: true,
+        state: DmaTrackState::Live as u8,
         virt: virt as u64,
         dma: dma_addr.as_u64(),
         size,
@@ -636,6 +685,14 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
             }
         };
 
+        if tracker.entries[idx].state() == DmaTrackState::Freeing {
+            DMA_COHERENT_FREE_IN_PROGRESS_CONFLICT.fetch_add(1, Ordering::Relaxed);
+            crate::warn!(
+                "[IOMMU] dma_free_coherent in-progress conflict virt={:#x}",
+                virt_addr
+            );
+            return;
+        }
         if tracker.entries[idx].size != size {
             DMA_COHERENT_FREE_SIZE_MISMATCH.fetch_add(1, Ordering::Relaxed);
             crate::warn!(
@@ -657,20 +714,25 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
             return;
         }
 
-        let meta = tracker.entries[idx];
-        tracker.entries[idx] = DmaCoherentMeta::empty();
+        let mut meta = tracker.entries[idx];
+        meta.set_state(DmaTrackState::Freeing);
+        tracker.entries[idx].set_state(DmaTrackState::Freeing);
         meta
     };
 
-    unmap(DmaAddr::new(tracked.dma), tracked.size, DmaDirection::Bidirectional);
-
     let pages = match size_to_pages(tracked.size) {
         Some(p) => p,
-        None => return,
+        None => {
+            rollback_coherent_free(tracked);
+            return;
+        }
     };
     let order = match pages_to_order(pages) {
         Some(o) => o,
-        None => return,
+        None => {
+            rollback_coherent_free(tracked);
+            return;
+        }
     };
     if order != tracked.order {
         DMA_COHERENT_FREE_ORDER_MISMATCH.fetch_add(1, Ordering::Relaxed);
@@ -680,6 +742,7 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
             tracked.order,
             order
         );
+        rollback_coherent_free(tracked);
         return;
     }
     if tracked.pfn >= max_pfn() {
@@ -689,8 +752,11 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
             virt_addr,
             tracked.pfn
         );
+        rollback_coherent_free(tracked);
         return;
     }
+
+    unmap(DmaAddr::new(tracked.dma), tracked.size, DmaDirection::Bidirectional);
 
     unsafe {
         let page = &mut *pfn_to_page(tracked.pfn);
@@ -706,6 +772,7 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
         }
         crate::mm::page::buddy::free_pages(page, tracked.order);
     }
+    commit_coherent_free(tracked);
 }
 
 /// 映射单个缓冲区用于 DMA

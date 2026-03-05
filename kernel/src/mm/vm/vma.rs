@@ -715,7 +715,7 @@ unsafe fn release_user_mapped_phys(phys: u64) {
 
     let page = &mut *pfn_to_page(pfn);
     if page.mapcount() >= 0 {
-        page.dec_mapcount();
+        let _ = page.try_dec_mapcount();
     }
     if !page.is_reserved() && page.refcount() > 0 {
         free_page(page);

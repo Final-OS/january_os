@@ -220,17 +220,18 @@ pub unsafe fn free_pages(page: &mut Page, order: usize) {
             return;
         }
 
-        // 检测 double-free
-        if page.refcount() == 0 {
-            crate::warn!(
-                "BUG: double-free detected for page PFN {}",
-                page_to_pfn(page)
-            );
-            return;
-        }
-
-        // 减少引用计数
-        if page.put() > 0 {
+        // 减少引用计数（并拦截下溢）
+        let remaining = match page.try_put() {
+            Ok(v) => v,
+            Err(_) => {
+                crate::warn!(
+                    "BUG: double-free detected for page PFN {}",
+                    page_to_pfn(page)
+                );
+                return;
+            }
+        };
+        if remaining > 0 {
             return; // 还有其他引用
         }
 

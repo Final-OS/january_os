@@ -33,6 +33,29 @@ impl PageOwner {
     }
 }
 
+static PAGE_REF_UNDERFLOW_REJECTS: AtomicU64 = AtomicU64::new(0);
+static PAGE_MAPCOUNT_UNDERFLOW_REJECTS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy)]
+pub struct PageGuardStats {
+    pub ref_underflow_rejects: u64,
+    pub mapcount_underflow_rejects: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageCounterError {
+    RefUnderflow,
+    MapcountUnderflow,
+}
+
+#[inline]
+pub fn page_guard_stats() -> PageGuardStats {
+    PageGuardStats {
+        ref_underflow_rejects: PAGE_REF_UNDERFLOW_REJECTS.load(Ordering::Relaxed),
+        mapcount_underflow_rejects: PAGE_MAPCOUNT_UNDERFLOW_REJECTS.load(Ordering::Relaxed),
+    }
+}
+
 // ============================================================================
 // 页帧标志位
 // ============================================================================
@@ -282,9 +305,32 @@ impl Page {
 
     /// 减少引用计数，返回新值
     pub fn put(&self) -> u32 {
-        let old = self.refcount.fetch_sub(1, Ordering::Relaxed);
-        debug_assert!(old > 0, "Page refcount underflow");
-        old - 1
+        match self.try_put() {
+            Ok(new) => new,
+            Err(PageCounterError::RefUnderflow) => 0,
+            Err(PageCounterError::MapcountUnderflow) => 0,
+        }
+    }
+
+    /// 尝试减少引用计数，失败时返回下溢错误
+    pub fn try_put(&self) -> Result<u32, PageCounterError> {
+        let prev = self.refcount.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |old| old.checked_sub(1),
+        );
+        let old = match prev {
+            Ok(v) => v,
+            Err(_) => {
+                PAGE_REF_UNDERFLOW_REJECTS.fetch_add(1, Ordering::Relaxed);
+                return Err(PageCounterError::RefUnderflow);
+            }
+        };
+        if old == 0 {
+            PAGE_REF_UNDERFLOW_REJECTS.fetch_add(1, Ordering::Relaxed);
+            return Err(PageCounterError::RefUnderflow);
+        }
+        Ok(old - 1)
     }
 
     /// 设置引用计数为 1（新分配的页）
@@ -306,8 +352,34 @@ impl Page {
 
     /// 减少映射计数
     pub fn dec_mapcount(&self) -> i32 {
-        let old = self.mapcount.fetch_sub(1, Ordering::Relaxed);
-        old - 1
+        match self.try_dec_mapcount() {
+            Ok(new) => new,
+            Err(PageCounterError::MapcountUnderflow) => -1,
+            Err(PageCounterError::RefUnderflow) => -1,
+        }
+    }
+
+    /// 尝试减少映射计数，最小值限制为 -1
+    pub fn try_dec_mapcount(&self) -> Result<i32, PageCounterError> {
+        let prev = self.mapcount.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+            if old <= -1 {
+                None
+            } else {
+                Some(old - 1)
+            }
+        });
+        let old = match prev {
+            Ok(v) => v,
+            Err(_) => {
+                PAGE_MAPCOUNT_UNDERFLOW_REJECTS.fetch_add(1, Ordering::Relaxed);
+                return Err(PageCounterError::MapcountUnderflow);
+            }
+        };
+        if old <= -1 {
+            PAGE_MAPCOUNT_UNDERFLOW_REJECTS.fetch_add(1, Ordering::Relaxed);
+            return Err(PageCounterError::MapcountUnderflow);
+        }
+        Ok(old - 1)
     }
 
     // ========== Zone 和 Order ==========

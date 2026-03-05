@@ -772,7 +772,7 @@ unsafe fn release_table_page_ref(table_phys: u64) {
         return;
     }
     if page.is_reserved() {
-        let _ = page.put();
+        let _ = page.try_put();
         return;
     }
     unsafe {
@@ -1094,7 +1094,7 @@ impl PageTableManager {
             return;
         }
 
-        old_page.dec_mapcount();
+        let _ = old_page.try_dec_mapcount();
 
         if old_page.refcount() == 0 {
             return;

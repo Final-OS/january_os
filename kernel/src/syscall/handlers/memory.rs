@@ -218,7 +218,7 @@ unsafe fn unmap_and_release_pages(start: u64, end: u64, pgd: u64) {
             if pfn < mm::max_pfn() {
                 let page = &mut *mm::pfn_to_page(pfn);
                 if page.mapcount() >= 0 {
-                    page.dec_mapcount();
+                    let _ = page.try_dec_mapcount();
                 }
                 if !page.is_reserved() && page.refcount() > 0 {
                     mm::free_page(page);
