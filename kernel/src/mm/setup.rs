@@ -37,6 +37,8 @@ use crate::mm::page::memblock::{
     memblock_alloc, memblock_for_each_free_region, memblock_phys_mem_size,
     memblock_reserved_region_count, memblock_reserved_region,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::mm::arch::{PageTable, PTE_ADDR_MASK, read_cr3};
 use crate::mm::page::page::{Page, init_vmemmap, PAGE_STRUCT_SIZE};
 use crate::mm::page::zone::{Zone, ZoneType, get_zone, mark_zones_initialized};
 use crate::mm::page::buddy::init_zone_buddy;
@@ -142,6 +144,7 @@ pub unsafe fn init_memblock(
     // 保留内核占用的内存
     let kernel_size = kernel_end - kernel_start;
     memblock_reserve(kernel_start, kernel_size)?;
+    reserve_bootstrap_page_tables()?;
 
     set_stage(MmInitStage::Memblock);
     
@@ -187,8 +190,19 @@ pub unsafe fn init_buddy_system(
         }
         
         init_vmemmap(page_array, max_pfn);
+
+        // 2. 初始化所有 Page 元数据，并为 reserved PFN 预置保护属性
+        for pfn in 0..max_pfn {
+            let page = &mut *page_array.add(pfn as usize);
+            let zone_type = ZoneType::from_phys_addr(pfn * PAGE_SIZE);
+            page.init(zone_type as u8);
+            if pfn_overlaps_reserved(pfn) {
+                page.mark_reserved();
+                page.set_count_one();
+            }
+        }
         
-        // 2. 初始化 Zones
+        // 3. 初始化 Zones
         let dma_end_pfn = (crate::mm::page::zone::ZONE_DMA_LIMIT / PAGE_SIZE).min(max_pfn);
         let dma32_end_pfn = (crate::mm::page::zone::ZONE_DMA32_LIMIT / PAGE_SIZE).min(max_pfn);
         
@@ -210,25 +224,11 @@ pub unsafe fn init_buddy_system(
             zone.init(ZoneType::Normal, dma32_end_pfn, max_pfn - dma32_end_pfn);
         }
         
-        // 3. 遍历 memblock 中的空闲内存，添加到 Buddy 系统
+        // 4. 遍历 memblock 中的空闲内存，添加到 Buddy 系统
         memblock_for_each_free_region(|base, size| {
             let start_pfn = base / PAGE_SIZE;
             let end_pfn = (base + size) / PAGE_SIZE;
-            
-            // 初始化该区域的 Page 结构（再次按 reserved 过滤，避免保留页误入 buddy）
-            for pfn in start_pfn..end_pfn {
-                if pfn >= max_pfn {
-                    break;
-                }
-                if pfn_overlaps_reserved(pfn) {
-                    continue;
-                }
-                
-                let page = &mut *page_array.add(pfn as usize);
-                let zone_type = ZoneType::from_phys_addr(pfn * PAGE_SIZE);
-                page.init(zone_type as u8);
-            }
-            
+
             // 添加到对应 Zone 的 Buddy 系统
             // ZONE_DMA 部分
             if start_pfn < dma_end_pfn {
@@ -375,4 +375,36 @@ unsafe fn init_zone_buddy_filtered(
 /// 打印初始化状态
 pub fn print_mm_stats() {
     // 由调用者实现具体打印
+}
+
+#[cfg(target_arch = "x86_64")]
+fn reserve_bootstrap_page_tables() -> KernelResult<()> {
+    let root_phys = read_cr3() & PTE_ADDR_MASK;
+    if root_phys == 0 {
+        return Ok(());
+    }
+    let levels = crate::mm::page_levels().clamp(4, 5);
+    reserve_bootstrap_table_level(root_phys, levels)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn reserve_bootstrap_page_tables() -> KernelResult<()> {
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+fn reserve_bootstrap_table_level(table_phys: u64, level: u8) -> KernelResult<()> {
+    memblock_reserve(table_phys, PAGE_SIZE)?;
+    if level <= 1 {
+        return Ok(());
+    }
+
+    let table = unsafe { &*(phys_to_virt(table_phys) as *const PageTable) };
+    for entry in table.entries().iter() {
+        if !entry.is_present() || entry.is_huge() {
+            continue;
+        }
+        reserve_bootstrap_table_level(entry.phys_addr(), level - 1)?;
+    }
+    Ok(())
 }

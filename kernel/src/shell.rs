@@ -492,15 +492,21 @@ fn execute_mm_command(args: &[&str]) {
 
     match subcommand {
         "status" => {
-            let total_free: u64 = mm::ZoneType::iter()
-                .map(mm::get_zone)
-                .filter(|z| z.initialized)
-                .map(|z| z.nr_free_pages())
-                .sum();
+            let mut total_free = 0u64;
+            for zone_type in mm::ZoneType::iter() {
+                let mut zone = mm::get_zone(zone_type);
+                if !zone.initialized {
+                    continue;
+                }
+                let reconciled = zone.reconcile_free_pages_locked();
+                total_free = total_free.saturating_add(reconciled);
+            }
             let fault_stats = mm::get_fault_stats();
             let vmalloc_heal = mm::vmalloc::vmalloc_heal_stats();
             let pcp = mm::page::pcp::pcp_stats();
             let pt_reclaim = mm::pt_reclaim_stats();
+            let zone_guard = mm::zone::zone_guard_stats();
+            let dma_guard = mm::iommu::dma_coherent_guard_stats();
             let heap = mm::heap::heap_stats();
             let kmalloc = mm::slub::kmalloc_stats();
             let layout = mm::snapshot();
@@ -576,10 +582,27 @@ fn execute_mm_command(args: &[&str]) {
                 pcp.owner_mismatches,
             );
             kprintln!(
-                "  pt reclaim:  stop_non_pgtable={} stop_shared={} owner_mismatch={}",
+                "  pt reclaim:  stop_non_pgtable={} stop_shared={} owner_mismatch={} owner_healed={}",
                 pt_reclaim.stop_non_pgtable,
                 pt_reclaim.stop_shared,
                 pt_reclaim.owner_mismatch,
+                pt_reclaim.owner_healed,
+            );
+            kprintln!(
+                "  zone guard:  area_underflow={} global_underflow={}",
+                zone_guard.area_underflow_rejects,
+                zone_guard.global_underflow_rejects,
+            );
+            kprintln!(
+                "  dma guard:   track_full={} invalid_virt={} meta_miss={} size_mismatch={} dma_mismatch={} pfn_oob={} owner_mismatch={} order_mismatch={}",
+                dma_guard.track_insert_fail,
+                dma_guard.free_invalid_virt,
+                dma_guard.free_meta_miss,
+                dma_guard.free_size_mismatch,
+                dma_guard.free_dma_mismatch,
+                dma_guard.free_pfn_oob,
+                dma_guard.free_owner_mismatch,
+                dma_guard.free_order_mismatch,
             );
             kprintln!(
                 "  Faults:      total={} minor={} major={} cow={} stack_grow={}",
@@ -668,12 +691,24 @@ fn execute_mm_command(args: &[&str]) {
         }
         "iommu" => {
             let stats = mm::iommu_stats();
+            let dma_guard = mm::iommu::dma_coherent_guard_stats();
             kprintln!("IOMMU Status:");
             kprintln!("  Enabled:     {}", stats.enabled);
             kprintln!("  Type:        {:?}", stats.iommu_type);
             kprintln!("  Translation: {:?}", stats.translation_mode);
             kprintln!("  Units:       {}", stats.nr_units);
             kprintln!("  Mapped:      {} pages", stats.mapped_pages);
+            kprintln!(
+                "  DMA guard:   track_full={} invalid_virt={} meta_miss={} size_mismatch={} dma_mismatch={} pfn_oob={} owner_mismatch={} order_mismatch={}",
+                dma_guard.track_insert_fail,
+                dma_guard.free_invalid_virt,
+                dma_guard.free_meta_miss,
+                dma_guard.free_size_mismatch,
+                dma_guard.free_dma_mismatch,
+                dma_guard.free_pfn_oob,
+                dma_guard.free_owner_mismatch,
+                dma_guard.free_order_mismatch,
+            );
         }
         "help" | _ => {
             kprintln!("Usage: mm <subcommand>");

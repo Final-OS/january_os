@@ -1,6 +1,7 @@
 //! 内存管理子系统测试
 
 mod buddy;
+mod dma_coherent_guard;
 mod heap;
 mod mmap;
 mod pcp;
@@ -38,6 +39,8 @@ pub fn run_with_filter(filter: Option<&str>) {
         None | Some("all") => {
             mm_step("run case=swiotlb");
             swiotlb::run();
+            mm_step("run case=dma_coherent_guard");
+            dma_coherent_guard::run();
             mm_step("run case=slub");
             slub::run();
             mm_step("run case=buddy");
@@ -62,6 +65,10 @@ pub fn run_with_filter(filter: Option<&str>) {
         Some("slub") => {
             mm_step("run case=slub");
             slub::run();
+        }
+        Some("dma_coherent_guard") => {
+            mm_step("run case=dma_coherent_guard");
+            dma_coherent_guard::run();
         }
         Some("buddy") => {
             mm_step("run case=buddy");
@@ -94,7 +101,7 @@ pub fn run_with_filter(filter: Option<&str>) {
         Some(name) => {
             error!("Unknown MM test: {}", name);
             kprintln!(
-                "Available MM tests: swiotlb, slub, buddy, pcp, heap, mmap, pt_ownership, pt_reclaim, vmalloc_heal"
+                "Available MM tests: swiotlb, dma_coherent_guard, slub, buddy, pcp, heap, mmap, pt_ownership, pt_reclaim, vmalloc_heal"
             );
         }
     }

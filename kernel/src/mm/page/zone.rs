@@ -26,6 +26,23 @@ pub const ZONE_DMA_LIMIT: u64 = config::ZONE_DMA_LIMIT;
 /// ZONE_DMA32 上限 - 32位 PCI 设备 DMA (从配置导入)
 pub const ZONE_DMA32_LIMIT: u64 = config::ZONE_DMA32_LIMIT;
 
+static ZONE_AREA_UNDERFLOW_REJECTS: AtomicU64 = AtomicU64::new(0);
+static ZONE_GLOBAL_UNDERFLOW_REJECTS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy)]
+pub struct ZoneGuardStats {
+    pub area_underflow_rejects: u64,
+    pub global_underflow_rejects: u64,
+}
+
+#[inline]
+pub fn zone_guard_stats() -> ZoneGuardStats {
+    ZoneGuardStats {
+        area_underflow_rejects: ZONE_AREA_UNDERFLOW_REJECTS.load(Ordering::Relaxed),
+        global_underflow_rejects: ZONE_GLOBAL_UNDERFLOW_REJECTS.load(Ordering::Relaxed),
+    }
+}
+
 // ============================================================================
 // Zone 类型
 // ============================================================================
@@ -277,6 +294,31 @@ impl Zone {
     pub fn nr_free_pages(&self) -> u64 {
         self.free_pages.load(Ordering::Relaxed)
     }
+
+    /// 在持有 Zone 锁的前提下，按 free_area 重算空闲页总数并与原子计数对齐。
+    pub fn reconcile_free_pages_locked(&mut self) -> u64 {
+        let mut recomputed = 0u64;
+        for order in 0..MAX_ORDER {
+            let blocks = self.free_area[order].nr_free;
+            let pages_per_block = 1u64 << order;
+            let add = blocks.saturating_mul(pages_per_block);
+            recomputed = recomputed.saturating_add(add);
+        }
+
+        let observed = self.free_pages.load(Ordering::Relaxed);
+        if observed != recomputed {
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[zone] reconcile free_pages: zone={} observed={} recomputed={}",
+                    self.name,
+                    observed,
+                    recomputed
+                );
+            }
+            self.free_pages.store(recomputed, Ordering::Relaxed);
+        }
+        recomputed
+    }
     
     /// 结束 PFN
     #[inline]
@@ -310,18 +352,48 @@ impl Zone {
     }
     
     /// 从 Buddy 系统移除空闲块
-    pub unsafe fn remove_from_buddy(&mut self, page: &mut Page, order: usize) {
+    pub unsafe fn remove_from_buddy(&mut self, page: &mut Page, order: usize) -> bool {
         debug_assert!(order < MAX_ORDER, "Order too large");
         debug_assert!(page.is_buddy(), "Page not in buddy");
         
+        let pages = 1u64 << order;
         let area = &mut self.free_area[order];
+        if area.nr_free == 0 {
+            ZONE_AREA_UNDERFLOW_REJECTS.fetch_add(1, Ordering::Relaxed);
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[zone] remove_from_buddy underflow: zone={} order={} page_ptr={:#x}",
+                    self.name,
+                    order,
+                    page as *mut Page as usize,
+                );
+            }
+            return false;
+        }
+
         page.lru.del();
         area.nr_free -= 1;
         
         page.clear_buddy();
         
-        let pages = 1u64 << order;
+        let free_before = self.free_pages.load(Ordering::Relaxed);
+        if free_before < pages {
+            ZONE_GLOBAL_UNDERFLOW_REJECTS.fetch_add(1, Ordering::Relaxed);
+            self.free_pages.store(0, Ordering::Relaxed);
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[zone] free_pages underflow clamp: zone={} order={} free_before={} pages={}",
+                    self.name,
+                    order,
+                    free_before,
+                    pages,
+                );
+            }
+            return true;
+        }
+
         self.free_pages.fetch_sub(pages, Ordering::Relaxed);
+        true
     }
 }
 

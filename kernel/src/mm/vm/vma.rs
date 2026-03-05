@@ -19,7 +19,7 @@ use core::ptr;
 use crate::libs::mptree::MapleTree;
 use crate::mm::arch::{PageTable, PageTableEntry, PageTableManager, level_index};
 use crate::mm::page::buddy::{alloc_page, free_page};
-use crate::mm::page::page::{PageFlags, max_pfn, page_to_pfn, pfn_to_page};
+use crate::mm::page::page::{PageFlags, PageOwner, max_pfn, page_to_pfn, pfn_to_page};
 use crate::mm::page::zone::{GFP_KERNEL_ZERO, GFP_USER};
 use crate::sync::IrqSpinLock;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -917,6 +917,8 @@ pub fn mm_clone(mm: *mut Mm) -> *mut Mm {
         Some(p) => p,
         None => return ptr::null_mut(),
     };
+    new_pgd_page.set_flag(PageFlags::PGTABLE);
+    new_pgd_page.set_owner(PageOwner::Pgtable);
     let new_pgd_phys = page_to_pfn(new_pgd_page) * PAGE_SIZE;
 
     let mut dst = Mm::uninit();

@@ -399,6 +399,7 @@ static TLB_PROBE_MATCHED: AtomicU32 = AtomicU32::new(0);
 static PT_RECLAIM_STOP_NON_PGTABLE: AtomicU64 = AtomicU64::new(0);
 static PT_RECLAIM_STOP_SHARED: AtomicU64 = AtomicU64::new(0);
 static PT_RECLAIM_OWNER_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static PT_RECLAIM_OWNER_HEALED: AtomicU64 = AtomicU64::new(0);
 // 暂保留 [3GiB, 4GiB) 给 LAPIC/IOAPIC/PCI ECAM 等低地址 MMIO 访问路径；
 // 等 MMIO 路径全面切到 direct-map/ioremap 后再移除此保留窗口。
 const LOW_IDENTITY_WINDOW_BYTES: u64 = 3 * 1024 * 1024 * 1024;
@@ -409,6 +410,7 @@ pub struct PtReclaimStats {
     pub stop_non_pgtable: u64,
     pub stop_shared: u64,
     pub owner_mismatch: u64,
+    pub owner_healed: u64,
 }
 
 #[inline]
@@ -417,6 +419,7 @@ pub fn pt_reclaim_stats() -> PtReclaimStats {
         stop_non_pgtable: PT_RECLAIM_STOP_NON_PGTABLE.load(Ordering::Relaxed),
         stop_shared: PT_RECLAIM_STOP_SHARED.load(Ordering::Relaxed),
         owner_mismatch: PT_RECLAIM_OWNER_MISMATCH.load(Ordering::Relaxed),
+        owner_healed: PT_RECLAIM_OWNER_HEALED.load(Ordering::Relaxed),
     }
 }
 
@@ -710,21 +713,53 @@ unsafe fn release_table_page_ref(table_phys: u64) {
     }
     let page = unsafe { &mut *pfn_to_page(pfn) };
     if !page.is_pgtable() && !page.is_reserved() {
-        PT_RECLAIM_OWNER_MISMATCH.fetch_add(1, Ordering::Relaxed);
+        // 兼容早期路径：页表页可能缺失 PGTABLE/owner 元数据，允许在回收点按表项语义自愈。
+        // 若 refcount 为 0 则视为真正异常，保持 mismatch 统计并拒绝释放。
+        if page.refcount() == 0 {
+            PT_RECLAIM_OWNER_MISMATCH.fetch_add(1, Ordering::Relaxed);
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[pt] release table reject non-pgtable phys={:#x} pfn={} owner={:?} flags={:#x} refcount={}",
+                    table_phys,
+                    pfn,
+                    page.owner(),
+                    page.flags().bits(),
+                    page.refcount()
+                );
+            }
+            return;
+        }
+        page.set_flag(PageFlags::PGTABLE);
+        page.set_owner(PageOwner::Pgtable);
+        PT_RECLAIM_OWNER_HEALED.fetch_add(1, Ordering::Relaxed);
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
-                "\x1b[90m[diag]\x1b[0m[pt] release table reject non-pgtable phys={:#x} pfn={} owner={:?} flags={:#x} refcount={}",
+                "\x1b[90m[diag]\x1b[0m[pt] release table healed metadata phys={:#x} pfn={} refcount={}",
                 table_phys,
                 pfn,
-                page.owner(),
-                page.flags().bits(),
                 page.refcount()
             );
         }
-        return;
     }
-    if page.is_pgtable() && page.owner() != PageOwner::Pgtable {
-        PT_RECLAIM_OWNER_MISMATCH.fetch_add(1, Ordering::Relaxed);
+    if page.is_pgtable() {
+        let owner = page.owner();
+        if owner != PageOwner::Pgtable && owner != PageOwner::Reserved {
+            if page.refcount() == 0 {
+                PT_RECLAIM_OWNER_MISMATCH.fetch_add(1, Ordering::Relaxed);
+            } else {
+                page.set_owner(PageOwner::Pgtable);
+                PT_RECLAIM_OWNER_HEALED.fetch_add(1, Ordering::Relaxed);
+                if crate::config::DEBUG_VERBOSE {
+                    crate::kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[pt] release table healed owner phys={:#x} pfn={} old_owner={:?} refcount={}",
+                        table_phys,
+                        pfn,
+                        owner,
+                        page.refcount()
+                    );
+                }
+            }
+        }
     }
     if page.refcount() == 0 {
         if crate::config::DEBUG_VERBOSE {

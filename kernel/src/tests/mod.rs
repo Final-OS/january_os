@@ -57,7 +57,7 @@ pub fn run(name: &str) {
             kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once, sync_blocking");
             kprintln!("  mm [name]      - Memory management tests");
             kprintln!(
-                "                   Available: swiotlb, slub, buddy, pcp, heap, mmap, pt_ownership, pt_reclaim, vmalloc_heal"
+                "                   Available: swiotlb, dma_coherent_guard, slub, buddy, pcp, heap, mmap, pt_ownership, pt_reclaim, vmalloc_heal"
             );
             kprintln!("  smp [name]     - SMP/IPI tests");
             kprintln!(

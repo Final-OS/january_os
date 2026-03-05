@@ -135,7 +135,7 @@ fn zone_alloc_pages(zone: &mut Zone, order: usize, gfp: GfpFlags) -> Option<&'st
 
         if !area.is_empty() {
             // 找到可用块
-            return Some(unsafe { expand_and_alloc(zone, current_order, order, gfp) });
+            return unsafe { expand_and_alloc(zone, current_order, order, gfp) };
         }
 
         current_order += 1;
@@ -154,7 +154,7 @@ unsafe fn expand_and_alloc(
     high_order: usize,
     low_order: usize,
     gfp: GfpFlags,
-) -> &'static mut Page {
+) -> Option<&'static mut Page> {
     unsafe {
         // 从高 order 空闲链表取出一个块
         let area = &mut zone.free_area[high_order];
@@ -165,7 +165,9 @@ unsafe fn expand_and_alloc(
         let page = container_of!(list_ptr, Page, lru);
 
         // 从 Buddy 系统移除
-        zone.remove_from_buddy(&mut *page, high_order);
+        if !zone.remove_from_buddy(&mut *page, high_order) {
+            return None;
+        }
 
         // 分裂：从 high_order 分裂到 low_order
         let mut current_order = high_order;
@@ -202,7 +204,7 @@ unsafe fn expand_and_alloc(
             prep_compound_page(page, low_order);
         }
 
-        page
+        Some(page)
     }
 }
 
@@ -272,7 +274,9 @@ pub unsafe fn free_pages(page: &mut Page, order: usize) {
             }
 
             // 从空闲链表移除伙伴
-            zone.remove_from_buddy(&mut *buddy_page, current_order);
+            if !zone.remove_from_buddy(&mut *buddy_page, current_order) {
+                break;
+            }
 
             // 合并：使用较小的 PFN
             pfn = pfn.min(buddy_pfn);

@@ -2,8 +2,9 @@ use super::{fail, mm_step, pass};
 use crate::mm;
 
 const TEST_USER_VA_BASE: u64 = mm::USER_SPACE_START + 0x20_0000;
+const RECLAIM_STRESS_ITERS: usize = 128;
 
-fn run_reclaim_once() -> Result<(), &'static str> {
+fn run_reclaim_once(iter: usize) -> Result<(), &'static str> {
     let init_mm = mm::init_mm_ptr();
     let cloned_mm = mm::mm_clone(init_mm);
     if cloned_mm.is_null() {
@@ -14,7 +15,7 @@ fn run_reclaim_once() -> Result<(), &'static str> {
     let cloned_pgd = unsafe { (*cloned_mm).pgd };
     let pt_mgr = unsafe { mm::PageTableManager::new(cloned_pgd, direct_map) };
 
-    let va = TEST_USER_VA_BASE & !(mm::PAGE_SIZE - 1);
+    let va = (TEST_USER_VA_BASE + (iter as u64) * 0x20_0000) & !(mm::PAGE_SIZE - 1);
     let data_page = match mm::alloc_page(mm::GFP_USER) {
         Some(p) => p,
         None => {
@@ -68,11 +69,28 @@ fn run_reclaim_once() -> Result<(), &'static str> {
 }
 
 pub(super) fn run() {
-    mm_step("pt_reclaim: case=clone_map_unmap_release");
+    mm_step("pt_reclaim: case=clone_map_unmap_release_stress");
     let base_stats = mm::pt_reclaim_stats();
 
-    if let Err(msg) = run_reclaim_once() {
-        return fail("pt_reclaim", msg);
+    for iter in 0..RECLAIM_STRESS_ITERS {
+        if let Err(msg) = run_reclaim_once(iter) {
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "[test/mm][pt_reclaim] failed at iter={} of {}: {}",
+                    iter,
+                    RECLAIM_STRESS_ITERS,
+                    msg
+                );
+            }
+            return fail("pt_reclaim", msg);
+        }
+    }
+
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "[test/mm][pt_reclaim] completed {} iterations",
+            RECLAIM_STRESS_ITERS
+        );
     }
 
     let after_stats = mm::pt_reclaim_stats();
@@ -84,6 +102,12 @@ pub(super) fn run() {
     }
     if after_stats.stop_shared != base_stats.stop_shared {
         return fail("pt_reclaim", "pt reclaim shared-stop counter increased");
+    }
+    if after_stats.owner_mismatch != base_stats.owner_mismatch {
+        return fail("pt_reclaim", "pt reclaim owner-mismatch counter increased");
+    }
+    if after_stats.owner_healed != base_stats.owner_healed {
+        return fail("pt_reclaim", "pt reclaim owner-healed counter increased");
     }
 
     pass("pt_reclaim");

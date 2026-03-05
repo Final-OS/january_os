@@ -157,7 +157,9 @@ impl PerCpuPages {
             }
 
             let page = container_of!(node, Page, lru);
-            zone.remove_from_buddy(&mut *page, 0);
+            if !zone.remove_from_buddy(&mut *page, 0) {
+                break;
+            }
             (*page).set_owner(PageOwner::Pcp);
 
             // 添加到 PCP

@@ -90,6 +90,94 @@ impl DmaAddr {
 /// IOMMU 管理器
 static IOMMU_MANAGER: SpinLock<IommuManager> =
     SpinLock::with_name(IommuManager::new(), "IommuManager");
+static DMA_COHERENT_TRACKER: SpinLock<DmaCoherentTracker> =
+    SpinLock::with_name(DmaCoherentTracker::new(), "DmaCoherentTracker");
+
+const DMA_COHERENT_TRACK_CAP: usize = 256;
+static DMA_COHERENT_TRACK_INSERT_FAIL: AtomicU64 = AtomicU64::new(0);
+static DMA_COHERENT_FREE_INVALID_VIRT: AtomicU64 = AtomicU64::new(0);
+static DMA_COHERENT_FREE_META_MISS: AtomicU64 = AtomicU64::new(0);
+static DMA_COHERENT_FREE_SIZE_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static DMA_COHERENT_FREE_DMA_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static DMA_COHERENT_FREE_PFN_OOB: AtomicU64 = AtomicU64::new(0);
+static DMA_COHERENT_FREE_OWNER_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static DMA_COHERENT_FREE_ORDER_MISMATCH: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Default)]
+pub struct DmaCoherentGuardStats {
+    pub track_insert_fail: u64,
+    pub free_invalid_virt: u64,
+    pub free_meta_miss: u64,
+    pub free_size_mismatch: u64,
+    pub free_dma_mismatch: u64,
+    pub free_pfn_oob: u64,
+    pub free_owner_mismatch: u64,
+    pub free_order_mismatch: u64,
+}
+
+pub fn dma_coherent_guard_stats() -> DmaCoherentGuardStats {
+    DmaCoherentGuardStats {
+        track_insert_fail: DMA_COHERENT_TRACK_INSERT_FAIL.load(Ordering::Relaxed),
+        free_invalid_virt: DMA_COHERENT_FREE_INVALID_VIRT.load(Ordering::Relaxed),
+        free_meta_miss: DMA_COHERENT_FREE_META_MISS.load(Ordering::Relaxed),
+        free_size_mismatch: DMA_COHERENT_FREE_SIZE_MISMATCH.load(Ordering::Relaxed),
+        free_dma_mismatch: DMA_COHERENT_FREE_DMA_MISMATCH.load(Ordering::Relaxed),
+        free_pfn_oob: DMA_COHERENT_FREE_PFN_OOB.load(Ordering::Relaxed),
+        free_owner_mismatch: DMA_COHERENT_FREE_OWNER_MISMATCH.load(Ordering::Relaxed),
+        free_order_mismatch: DMA_COHERENT_FREE_ORDER_MISMATCH.load(Ordering::Relaxed),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DmaCoherentMeta {
+    in_use: bool,
+    virt: u64,
+    dma: u64,
+    size: usize,
+    pfn: u64,
+    order: usize,
+}
+
+impl DmaCoherentMeta {
+    const fn empty() -> Self {
+        Self {
+            in_use: false,
+            virt: 0,
+            dma: 0,
+            size: 0,
+            pfn: 0,
+            order: 0,
+        }
+    }
+}
+
+struct DmaCoherentTracker {
+    entries: [DmaCoherentMeta; DMA_COHERENT_TRACK_CAP],
+}
+
+impl DmaCoherentTracker {
+    const fn new() -> Self {
+        Self {
+            entries: [DmaCoherentMeta::empty(); DMA_COHERENT_TRACK_CAP],
+        }
+    }
+
+    fn insert(&mut self, meta: DmaCoherentMeta) -> bool {
+        for slot in self.entries.iter_mut() {
+            if !slot.in_use {
+                *slot = meta;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn find_by_virt(&self, virt: u64) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|slot| slot.in_use && slot.virt == virt)
+    }
+}
 
 /// IOMMU 管理器
 pub struct IommuManager {
@@ -453,7 +541,7 @@ pub fn iommu_stats() -> IommuStats {
 
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::page::buddy::alloc_pages;
-use super::page::page_to_pfn;
+use super::page::{max_pfn, page_to_pfn, pfn_to_page, PageOwner};
 
 /// 分配 DMA 一致性内存
 pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAddr)> {
@@ -491,6 +579,26 @@ pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAdd
             return None;
         }
     };
+
+    let meta = DmaCoherentMeta {
+        in_use: true,
+        virt: virt as u64,
+        dma: dma_addr.as_u64(),
+        size,
+        pfn: page_to_pfn(page),
+        order,
+    };
+    let inserted = {
+        let mut tracker = DMA_COHERENT_TRACKER.lock();
+        tracker.insert(meta)
+    };
+    if !inserted {
+        DMA_COHERENT_TRACK_INSERT_FAIL.fetch_add(1, Ordering::Relaxed);
+        crate::warn!("[IOMMU] dma_alloc_coherent tracker full (cap={})", DMA_COHERENT_TRACK_CAP);
+        unmap(dma_addr, size, DmaDirection::Bidirectional);
+        unsafe { crate::mm::page::buddy::free_pages(page, order) };
+        return None;
+    }
     
     Some((virt, dma_addr))
 }
@@ -500,9 +608,7 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
     if virt.is_null() || size == 0 {
         return;
     }
-    
-    unmap(dma_addr, size, DmaDirection::Bidirectional);
-    
+
     let direct_map_offset = {
         let mgr = IOMMU_MANAGER.lock();
         mgr.direct_map_offset
@@ -510,6 +616,7 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
 
     let virt_addr = virt as u64;
     if virt_addr < direct_map_offset {
+        DMA_COHERENT_FREE_INVALID_VIRT.fetch_add(1, Ordering::Relaxed);
         crate::warn!(
             "[IOMMU] dma_free_coherent invalid virt={:#x}, direct_map_offset={:#x}",
             virt_addr,
@@ -518,27 +625,86 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
         return;
     }
 
-    let phys = virt_addr - direct_map_offset;
-    let pfn = phys / PAGE_SIZE;
+    let tracked = {
+        let mut tracker = DMA_COHERENT_TRACKER.lock();
+        let idx = match tracker.find_by_virt(virt_addr) {
+            Some(i) => i,
+            None => {
+                DMA_COHERENT_FREE_META_MISS.fetch_add(1, Ordering::Relaxed);
+                crate::warn!("[IOMMU] dma_free_coherent metadata miss virt={:#x}", virt_addr);
+                return;
+            }
+        };
 
-    let pages = match size_to_pages(size) {
-        Some(p) => p,
-        None => {
-            crate::warn!("[IOMMU] dma_free_coherent invalid size {}", size);
+        if tracker.entries[idx].size != size {
+            DMA_COHERENT_FREE_SIZE_MISMATCH.fetch_add(1, Ordering::Relaxed);
+            crate::warn!(
+                "[IOMMU] dma_free_coherent size mismatch virt={:#x} expected={} actual={}",
+                virt_addr,
+                tracker.entries[idx].size,
+                size
+            );
             return;
         }
+        if tracker.entries[idx].dma != dma_addr.as_u64() {
+            DMA_COHERENT_FREE_DMA_MISMATCH.fetch_add(1, Ordering::Relaxed);
+            crate::warn!(
+                "[IOMMU] dma_free_coherent dma mismatch virt={:#x} expected={:#x} actual={:#x}",
+                virt_addr,
+                tracker.entries[idx].dma,
+                dma_addr.as_u64()
+            );
+            return;
+        }
+
+        let meta = tracker.entries[idx];
+        tracker.entries[idx] = DmaCoherentMeta::empty();
+        meta
     };
 
+    unmap(DmaAddr::new(tracked.dma), tracked.size, DmaDirection::Bidirectional);
+
+    let pages = match size_to_pages(tracked.size) {
+        Some(p) => p,
+        None => return,
+    };
     let order = match pages_to_order(pages) {
         Some(o) => o,
-        None => {
-            crate::warn!("[IOMMU] dma_free_coherent order overflow for pages {}", pages);
-            return;
-        }
+        None => return,
     };
-    
+    if order != tracked.order {
+        DMA_COHERENT_FREE_ORDER_MISMATCH.fetch_add(1, Ordering::Relaxed);
+        crate::warn!(
+            "[IOMMU] dma_free_coherent order mismatch virt={:#x} tracked={} derived={}",
+            virt_addr,
+            tracked.order,
+            order
+        );
+        return;
+    }
+    if tracked.pfn >= max_pfn() {
+        DMA_COHERENT_FREE_PFN_OOB.fetch_add(1, Ordering::Relaxed);
+        crate::warn!(
+            "[IOMMU] dma_free_coherent pfn out of range virt={:#x} pfn={}",
+            virt_addr,
+            tracked.pfn
+        );
+        return;
+    }
+
     unsafe {
-        crate::mm::page::buddy::free_pages(&mut *crate::mm::page::page::pfn_to_page(pfn), order);
+        let page = &mut *pfn_to_page(tracked.pfn);
+        let owner = page.owner();
+        if owner != PageOwner::Allocated && owner != PageOwner::Unknown {
+            DMA_COHERENT_FREE_OWNER_MISMATCH.fetch_add(1, Ordering::Relaxed);
+            crate::warn!(
+                "[IOMMU] dma_free_coherent owner mismatch virt={:#x} pfn={} owner={:?}",
+                virt_addr,
+                tracked.pfn,
+                owner
+            );
+        }
+        crate::mm::page::buddy::free_pages(page, tracked.order);
     }
 }
 
