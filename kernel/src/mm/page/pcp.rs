@@ -10,7 +10,7 @@ use crate::config;
 use crate::interrupt::apic::local_apic_id;
 use crate::sync::IrqSpinLock;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// container_of 宏
 macro_rules! container_of {
@@ -245,6 +245,8 @@ static NR_CPUS: AtomicU32 = AtomicU32::new(1);
 
 /// PCP 是否已初始化
 static PCP_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static PCP_INVALID_FREE_REJECTS: AtomicU64 = AtomicU64::new(0);
+static PCP_QUARANTINE_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 
 /// 临时熔断开关
 ///
@@ -305,6 +307,28 @@ fn is_page_ptr_in_vmemmap(page: *const Page) -> bool {
     let end = base.saturating_add(span_bytes);
     let ptr = page as usize;
     ptr >= base && ptr < end && ((ptr - base) % core::mem::size_of::<Page>() == 0)
+}
+
+#[inline]
+unsafe fn fallback_to_buddy(page: &mut Page, zone_idx: usize) {
+    if zone_idx >= NR_PCP_LISTS {
+        PCP_INVALID_FREE_REJECTS.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+
+    let mut zone = get_zone(idx_to_zone_type(zone_idx));
+    if !zone.initialized {
+        PCP_INVALID_FREE_REJECTS.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+
+    // 节点链指针异常时直接绕过 PCP，降级回收到 Buddy，避免静默泄漏。
+    page.lru.next = core::ptr::null_mut();
+    page.lru.prev = core::ptr::null_mut();
+    page.clear_buddy();
+    page.set_order(0);
+    zone.add_to_buddy(page, 0);
+    PCP_QUARANTINE_FALLBACKS.fetch_add(1, Ordering::Relaxed);
 }
 
 // ============================================================================
@@ -402,6 +426,7 @@ pub fn pcp_free_page(page: &mut Page) {
     }
 
     if !is_page_ptr_in_vmemmap(page as *const Page) {
+        PCP_INVALID_FREE_REJECTS.fetch_add(1, Ordering::Relaxed);
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
                 "\x1b[90m[diag]\x1b[0m[pcp] reject invalid free page pointer: page_ptr={:#x}",
@@ -415,6 +440,7 @@ pub fn pcp_free_page(page: &mut Page) {
     let zone_idx = page.zone_id() as usize;
 
     if zone_idx >= NR_PCP_LISTS {
+        PCP_INVALID_FREE_REJECTS.fetch_add(1, Ordering::Relaxed);
         return;
     }
 
@@ -423,7 +449,7 @@ pub fn pcp_free_page(page: &mut Page) {
         if !page.lru.next.is_null() || !page.lru.prev.is_null() {
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "\x1b[90m[diag]\x1b[0m[pcp] suspicious lru links on free: cpu={} zone_idx={} page_ptr={:#x} lru_next={:#x} lru_prev={:#x} -> quarantine",
+                    "\x1b[90m[diag]\x1b[0m[pcp] suspicious lru links on free: cpu={} zone_idx={} page_ptr={:#x} lru_next={:#x} lru_prev={:#x} -> buddy-fallback",
                     cpu,
                     zone_idx,
                     page as *mut Page as usize,
@@ -431,6 +457,7 @@ pub fn pcp_free_page(page: &mut Page) {
                     page.lru.prev as usize,
                 );
             }
+            fallback_to_buddy(page, zone_idx);
             return;
         }
 
@@ -511,6 +538,10 @@ pub struct PcpStats {
     pub total_cached: u64,
     /// 每个 Zone 的缓存页数
     pub per_zone: [u64; NR_PCP_LISTS],
+    /// 非法 free 请求计数
+    pub invalid_free_rejects: u64,
+    /// 可疑链表路径下的 Buddy 降级回收次数
+    pub quarantine_fallbacks: u64,
 }
 
 /// 获取 PCP 统计信息
@@ -518,6 +549,8 @@ pub fn pcp_stats() -> PcpStats {
     let mut stats = PcpStats {
         total_cached: 0,
         per_zone: [0; NR_PCP_LISTS],
+        invalid_free_rejects: PCP_INVALID_FREE_REJECTS.load(Ordering::Relaxed),
+        quarantine_fallbacks: PCP_QUARANTINE_FALLBACKS.load(Ordering::Relaxed),
     };
 
     if !pcp_initialized() {

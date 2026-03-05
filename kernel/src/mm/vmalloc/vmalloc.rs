@@ -11,7 +11,9 @@ use crate::mm::page::buddy::{alloc_page, free_page};
 use crate::mm::page::page::{page_to_pfn, pfn_to_page};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::vm::layout::PAGE_SIZE;
-use crate::mm::vm::paging::{PageTableManager, PTE_GLOBAL, PTE_NO_CACHE, PTE_PRESENT, PTE_WRITABLE};
+use crate::mm::vm::paging::{
+    PageTableManager, PTE_GLOBAL, PTE_NO_CACHE, PTE_PRESENT, PTE_WRITABLE,
+};
 use crate::sync::{Mutex, OnceCell};
 use core::panic::Location;
 use core::ptr;
@@ -141,7 +143,9 @@ static VMALLOC_STATE: OnceCell<VmallocState> = OnceCell::new();
 static WATCH_VMALLOC_PAGE_PRIMARY: AtomicU64 = AtomicU64::new(0);
 static WATCH_VMALLOC_PAGE_SECONDARY: AtomicU64 = AtomicU64::new(0);
 static VMALLOC_HEAL_IOREMAP_COUNT: AtomicU64 = AtomicU64::new(0);
+static VMALLOC_HEAL_FROM_INIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static VMALLOC_HEAL_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+static VMALLOC_HEAL_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
 pub fn set_vmalloc_watch_page(addr: u64) {
@@ -180,12 +184,21 @@ pub fn is_vmalloc_watch_page(addr: u64) -> bool {
     secondary != 0 && page == secondary
 }
 
+pub struct VmallocHealStats {
+    pub recovered_from_ioremap: u64,
+    pub recovered_from_init: u64,
+    pub heal_miss: u64,
+    pub heal_fail: u64,
+}
+
 #[inline]
-pub fn vmalloc_heal_stats() -> (u64, u64) {
-    (
-        VMALLOC_HEAL_IOREMAP_COUNT.load(Ordering::Relaxed),
-        VMALLOC_HEAL_MISS_COUNT.load(Ordering::Relaxed),
-    )
+pub fn vmalloc_heal_stats() -> VmallocHealStats {
+    VmallocHealStats {
+        recovered_from_ioremap: VMALLOC_HEAL_IOREMAP_COUNT.load(Ordering::Relaxed),
+        recovered_from_init: VMALLOC_HEAL_FROM_INIT_COUNT.load(Ordering::Relaxed),
+        heal_miss: VMALLOC_HEAL_MISS_COUNT.load(Ordering::Relaxed),
+        heal_fail: VMALLOC_HEAL_FAIL_COUNT.load(Ordering::Relaxed),
+    }
 }
 
 /// 只读查询：返回 vmalloc 地址在 current/init root 的映射状态。
@@ -216,6 +229,63 @@ pub fn vmalloc_mapping_state(addr: u64) -> Option<(u64, u64, Option<u64>, Option
         let init_phys = translate_in_root(init_root, state.direct_map, page_virt);
         Some((current_root, init_root, current_phys, init_phys))
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RootMapOutcome {
+    Unchanged,
+    Mapped,
+}
+
+unsafe fn map_page_in_root_checked(
+    root_phys: u64,
+    direct_map: u64,
+    virt: u64,
+    phys: u64,
+    flags: u64,
+) -> Option<RootMapOutcome> {
+    if root_phys == 0 {
+        return None;
+    }
+    let pt_mgr = PageTableManager::new_with_layout(
+        root_phys,
+        direct_map,
+        crate::mm::page_levels(),
+        crate::mm::va_bits(),
+    );
+    let phys_page = phys & !(PAGE_SIZE - 1);
+    if let Some(existing_phys) = pt_mgr.translate_addr(virt).map(|p| p & !(PAGE_SIZE - 1)) {
+        return if existing_phys == phys_page {
+            Some(RootMapOutcome::Unchanged)
+        } else {
+            None
+        };
+    }
+
+    if !pt_mgr.map_page(virt, phys_page, flags) {
+        return None;
+    }
+    pt_mgr.flush_tlb(virt);
+
+    if pt_mgr.translate_addr(virt).map(|p| p & !(PAGE_SIZE - 1)) == Some(phys_page) {
+        Some(RootMapOutcome::Mapped)
+    } else {
+        let _ = pt_mgr.unmap_page(virt);
+        None
+    }
+}
+
+unsafe fn unmap_page_in_root(root_phys: u64, direct_map: u64, virt: u64) {
+    if root_phys == 0 {
+        return;
+    }
+    let pt_mgr = PageTableManager::new_with_layout(
+        root_phys,
+        direct_map,
+        crate::mm::page_levels(),
+        crate::mm::va_bits(),
+    );
+    let _ = pt_mgr.unmap_page(virt);
 }
 
 // ============================================================================
@@ -481,30 +551,6 @@ fn map_vmalloc_page(virt: u64, phys: u64, flags: u64) -> bool {
         None => return false,
     };
 
-    unsafe fn map_in_root(
-        root_phys: u64,
-        direct_map: u64,
-        virt: u64,
-        phys: u64,
-        flags: u64,
-    ) -> bool {
-        let pt_mgr = PageTableManager::new_with_layout(
-            root_phys,
-            direct_map,
-            crate::mm::page_levels(),
-            crate::mm::va_bits(),
-        );
-        let ok = pt_mgr.map_page(virt, phys, flags);
-        if ok {
-            // vmalloc/ioremap 为低频路径，强制跨核刷新降低“内核映射不同步”风险。
-            pt_mgr.flush_tlb(virt);
-            if pt_mgr.translate_addr(virt).is_none() {
-                return false;
-            }
-        }
-        ok
-    }
-
     unsafe {
         let current_root = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
         let init_root = (*crate::mm::init_mm_ptr()).pgd & crate::mm::PTE_ADDR_MASK;
@@ -517,27 +563,37 @@ fn map_vmalloc_page(virt: u64, phys: u64, flags: u64) -> bool {
             );
         }
 
-        if init_root != 0 && !map_in_root(init_root, state.direct_map, virt, phys, flags) {
-            crate::kprintln!(
-                "map_vmalloc_page: map failed in init root virt={:#x} phys={:#x} root={:#x}",
-                virt,
-                phys,
-                init_root
-            );
-            return false;
-        }
+        let init_outcome = if init_root != 0 {
+            match map_page_in_root_checked(init_root, state.direct_map, virt, phys, flags) {
+                Some(outcome) => outcome,
+                None => {
+                    crate::kprintln!(
+                        "map_vmalloc_page: map failed in init root virt={:#x} phys={:#x} root={:#x}",
+                        virt,
+                        phys,
+                        init_root
+                    );
+                    return false;
+                }
+            }
+        } else {
+            RootMapOutcome::Unchanged
+        };
 
-        if current_root != 0
-            && current_root != init_root
-            && !map_in_root(current_root, state.direct_map, virt, phys, flags)
-        {
-            crate::kprintln!(
-                "map_vmalloc_page: map failed in current root virt={:#x} phys={:#x} root={:#x}",
-                virt,
-                phys,
-                current_root
-            );
-            return false;
+        if current_root != 0 && current_root != init_root {
+            if map_page_in_root_checked(current_root, state.direct_map, virt, phys, flags).is_none()
+            {
+                if init_outcome == RootMapOutcome::Mapped {
+                    unmap_page_in_root(init_root, state.direct_map, virt);
+                }
+                crate::kprintln!(
+                    "map_vmalloc_page: map failed in current root virt={:#x} phys={:#x} root={:#x}",
+                    virt,
+                    phys,
+                    current_root
+                );
+                return false;
+            }
         }
 
         true
@@ -551,25 +607,12 @@ fn unmap_vmalloc_page(virt: u64) {
         None => return,
     };
 
-    unsafe fn unmap_in_root(root_phys: u64, direct_map: u64, virt: u64) {
-        if root_phys == 0 {
-            return;
-        }
-        let pt_mgr = PageTableManager::new_with_layout(
-            root_phys,
-            direct_map,
-            crate::mm::page_levels(),
-            crate::mm::va_bits(),
-        );
-        let _ = pt_mgr.unmap_page(virt);
-    }
-
     unsafe {
         let current_root = crate::mm::arch::read_cr3() & crate::mm::PTE_ADDR_MASK;
         let init_root = (*crate::mm::init_mm_ptr()).pgd & crate::mm::PTE_ADDR_MASK;
-        unmap_in_root(init_root, state.direct_map, virt);
+        unmap_page_in_root(init_root, state.direct_map, virt);
         if current_root != init_root {
-            unmap_in_root(current_root, state.direct_map, virt);
+            unmap_page_in_root(current_root, state.direct_map, virt);
         }
     }
 }
@@ -618,7 +661,11 @@ const fn page_align_up(size: u64) -> u64 {
 #[track_caller]
 pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
     if crate::config::DEBUG_VERBOSE {
-        crate::kprintln!("\x1b[90m[diag]\x1b[0m[ioremap] enter phys={:#x} size={}", phys_addr, size);
+        crate::kprintln!(
+            "\x1b[90m[diag]\x1b[0m[ioremap] enter phys={:#x} size={}",
+            phys_addr,
+            size
+        );
     }
     if size == 0 {
         return ptr::null_mut();
@@ -667,7 +714,10 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
             }
         };
         if crate::config::DEBUG_VERBOSE {
-            crate::kprintln!("\x1b[90m[diag]\x1b[0m[ioremap] find_gap alloc_size={:#x}", alloc_size);
+            crate::kprintln!(
+                "\x1b[90m[diag]\x1b[0m[ioremap] find_gap alloc_size={:#x}",
+                alloc_size
+            );
         }
         data.ensure_addr_space();
         let vaddr = match data.addr_space.as_mut().unwrap().find_gap(
@@ -677,7 +727,10 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
         ) {
             Some(addr) => {
                 if crate::config::DEBUG_VERBOSE {
-                    crate::kprintln!("\x1b[90m[diag]\x1b[0m[ioremap] find_gap ok vaddr={:#x}", addr as u64);
+                    crate::kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[ioremap] find_gap ok vaddr={:#x}",
+                        addr as u64
+                    );
                 }
                 addr as u64
             }
@@ -746,7 +799,10 @@ pub fn ioremap(phys_addr: u64, size: usize) -> *mut u8 {
 
     // 映射每一页 (不持有 VMALLOC_DATA 锁)
     if crate::config::DEBUG_VERBOSE {
-        crate::kprintln!("\x1b[90m[diag]\x1b[0m[ioremap] mapping pages count={}", nr_pages_u64);
+        crate::kprintln!(
+            "\x1b[90m[diag]\x1b[0m[ioremap] mapping pages count={}",
+            nr_pages_u64
+        );
     }
     for i in 0..nr_pages_u64 {
         let phys = phys_base + i * PAGE_SIZE;
@@ -847,12 +903,31 @@ pub fn ensure_vmalloc_page_mapped_in_current(addr: u64) -> bool {
         };
 
         let flags = PTE_PRESENT | PTE_WRITABLE | PTE_NO_CACHE;
-        let init_ok = unsafe { map_page_in_root(init_root, direct_map, page_virt, ioremap_phys, flags) };
-        let cur_ok = unsafe { map_page_in_root(current_root, direct_map, page_virt, ioremap_phys, flags) };
-        if init_ok && cur_ok {
-            VMALLOC_HEAL_IOREMAP_COUNT.fetch_add(1, Ordering::Relaxed);
+        let init_outcome = match unsafe {
+            map_page_in_root_checked(init_root, direct_map, page_virt, ioremap_phys, flags)
+        } {
+            Some(outcome) => outcome,
+            None => {
+                VMALLOC_HEAL_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+        };
+
+        if current_root != init_root
+            && unsafe {
+                map_page_in_root_checked(current_root, direct_map, page_virt, ioremap_phys, flags)
+            }
+            .is_none()
+        {
+            if init_outcome == RootMapOutcome::Mapped {
+                unsafe { unmap_page_in_root(init_root, direct_map, page_virt) };
+            }
+            VMALLOC_HEAL_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+            return false;
         }
-        if init_ok && cur_ok && crate::config::DEBUG_VERBOSE {
+
+        VMALLOC_HEAL_IOREMAP_COUNT.fetch_add(1, Ordering::Relaxed);
+        if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
                 "\x1b[90m[diag]\x1b[0m[vmalloc] healed from ioremap metadata virt={:#x} phys={:#x} current_root={:#x} init_root={:#x}",
                 page_virt,
@@ -861,29 +936,7 @@ pub fn ensure_vmalloc_page_mapped_in_current(addr: u64) -> bool {
                 init_root
             );
         }
-        init_ok && cur_ok
-    }
-
-    unsafe fn map_page_in_root(
-        root: u64,
-        direct_map: u64,
-        virt: u64,
-        phys: u64,
-        flags: u64,
-    ) -> bool {
-        if root == 0 {
-            return false;
-        }
-        let mut pt = PageTableManager::new_with_layout(
-            root,
-            direct_map,
-            crate::mm::page_levels(),
-            crate::mm::va_bits(),
-        );
-        if pt.translate_addr(virt).is_some() {
-            return true;
-        }
-        pt.map_page(virt, phys, flags)
+        true
     }
 
     unsafe {
@@ -893,7 +946,7 @@ pub fn ensure_vmalloc_page_mapped_in_current(addr: u64) -> bool {
             return false;
         }
 
-        let mut current_pt = PageTableManager::new_with_layout(
+        let current_pt = PageTableManager::new_with_layout(
             current_root,
             state.direct_map,
             crate::mm::page_levels(),
@@ -925,7 +978,24 @@ pub fn ensure_vmalloc_page_mapped_in_current(addr: u64) -> bool {
         let phys_page = phys_with_off & !(PAGE_SIZE - 1);
         let flags = entry.flags();
 
-        let ok = current_pt.map_page(page_virt, phys_page, flags);
+        let ok = match map_page_in_root_checked(
+            current_root,
+            state.direct_map,
+            page_virt,
+            phys_page,
+            flags,
+        ) {
+            Some(outcome) => {
+                if outcome == RootMapOutcome::Mapped {
+                    VMALLOC_HEAL_FROM_INIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
+                true
+            }
+            None => {
+                VMALLOC_HEAL_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        };
         if ok && crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
                 "\x1b[90m[diag]\x1b[0m[vmalloc] healed missing mapping virt={:#x} phys={:#x} current_root={:#x} init_root={:#x}",

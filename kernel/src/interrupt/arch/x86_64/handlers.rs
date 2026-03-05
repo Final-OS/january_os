@@ -5,8 +5,8 @@
 // ============================================================================
 
 use super::idt::{InterruptFrame, InterruptFrameWithError};
+use crate::mm::fault::{handle_page_fault, FaultContext, FaultResult};
 use core::arch::asm;
-use crate::mm::fault::{FaultContext, FaultResult, handle_page_fault};
 
 // ============================================================================
 // 异常处理程序
@@ -56,12 +56,9 @@ pub extern "x86-interrupt" fn device_not_available_handler(frame: InterruptFrame
 }
 
 /// 双重故障处理程序 (#DF)
-/// 
+///
 /// 使用 IST 确保有可用的栈
-pub extern "x86-interrupt" fn double_fault_handler(
-    frame: InterruptFrame,
-    error_code: u64,
-) -> ! {
+pub extern "x86-interrupt" fn double_fault_handler(frame: InterruptFrame, error_code: u64) -> ! {
     panic!(
         "EXCEPTION: Double Fault (#DF)\nError code: {:#x}\n{:#?}",
         error_code, frame
@@ -69,10 +66,7 @@ pub extern "x86-interrupt" fn double_fault_handler(
 }
 
 /// 无效 TSS 处理程序 (#TS)
-pub extern "x86-interrupt" fn invalid_tss_handler(
-    frame: InterruptFrame,
-    error_code: u64,
-) {
+pub extern "x86-interrupt" fn invalid_tss_handler(frame: InterruptFrame, error_code: u64) {
     panic!(
         "EXCEPTION: Invalid TSS (#TS)\nError code: {:#x}\n{:#?}",
         error_code, frame
@@ -80,10 +74,7 @@ pub extern "x86-interrupt" fn invalid_tss_handler(
 }
 
 /// 段不存在处理程序 (#NP)
-pub extern "x86-interrupt" fn segment_not_present_handler(
-    frame: InterruptFrame,
-    error_code: u64,
-) {
+pub extern "x86-interrupt" fn segment_not_present_handler(frame: InterruptFrame, error_code: u64) {
     panic!(
         "EXCEPTION: Segment Not Present (#NP)\nError code: {:#x}\n{:#?}",
         error_code, frame
@@ -91,10 +82,7 @@ pub extern "x86-interrupt" fn segment_not_present_handler(
 }
 
 /// 栈故障处理程序 (#SS)
-pub extern "x86-interrupt" fn stack_fault_handler(
-    frame: InterruptFrame,
-    error_code: u64,
-) {
+pub extern "x86-interrupt" fn stack_fault_handler(frame: InterruptFrame, error_code: u64) {
     panic!(
         "EXCEPTION: Stack Fault (#SS)\nError code: {:#x}\n{:#?}",
         error_code, frame
@@ -102,10 +90,7 @@ pub extern "x86-interrupt" fn stack_fault_handler(
 }
 
 /// 通用保护故障处理程序 (#GP)
-pub extern "x86-interrupt" fn general_protection_handler(
-    frame: InterruptFrame,
-    error_code: u64,
-) {
+pub extern "x86-interrupt" fn general_protection_handler(frame: InterruptFrame, error_code: u64) {
     panic!(
         "EXCEPTION: General Protection Fault (#GP)\nError code: {:#x}\n{:#?}",
         error_code, frame
@@ -113,10 +98,7 @@ pub extern "x86-interrupt" fn general_protection_handler(
 }
 
 /// 页错误处理程序 (#PF)
-pub extern "x86-interrupt" fn page_fault_handler(
-    frame: InterruptFrame,
-    error_code: u64,
-) {
+pub extern "x86-interrupt" fn page_fault_handler(frame: InterruptFrame, error_code: u64) {
     // 获取触发页错误的地址 (CR2)
     let fault_addr: u64;
     unsafe {
@@ -129,8 +111,8 @@ pub extern "x86-interrupt" fn page_fault_handler(
 
     // 内核态 vmalloc/ioremap 缺页兜底修复：
     // 保持 I/O 快路径零额外检查，仅在异常路径尝试按元数据重建映射并重试指令。
+    // 读/写访问都可能触发首次可见性问题，这里统一处理 non-present 内核缺页。
     if !present
-        && write
         && !user
         && crate::mm::is_vmalloc_addr(fault_addr)
         && crate::mm::vmalloc::ensure_vmalloc_page_mapped_in_current(fault_addr)
@@ -176,8 +158,14 @@ pub extern "x86-interrupt" fn page_fault_handler(
                  - Reserved bit: {}\n\
                  - Instruction fetch: {}\n\
                  {:#?}",
-                fault_addr, error_code, result,
-                present, write, user, reserved, instruction_fetch,
+                fault_addr,
+                error_code,
+                result,
+                present,
+                write,
+                user,
+                reserved,
+                instruction_fetch,
                 frame
             );
         }
@@ -190,10 +178,7 @@ pub extern "x86-interrupt" fn x87_fpu_error_handler(frame: InterruptFrame) {
 }
 
 /// 对齐检查处理程序 (#AC)
-pub extern "x86-interrupt" fn alignment_check_handler(
-    frame: InterruptFrame,
-    error_code: u64,
-) {
+pub extern "x86-interrupt" fn alignment_check_handler(frame: InterruptFrame, error_code: u64) {
     panic!(
         "EXCEPTION: Alignment Check (#AC)\nError code: {:#x}\n{:#?}",
         error_code, frame
@@ -216,10 +201,7 @@ pub extern "x86-interrupt" fn virtualization_handler(frame: InterruptFrame) {
 }
 
 /// 控制保护异常处理程序 (#CP)
-pub extern "x86-interrupt" fn control_protection_handler(
-    frame: InterruptFrame,
-    error_code: u64,
-) {
+pub extern "x86-interrupt" fn control_protection_handler(frame: InterruptFrame, error_code: u64) {
     panic!(
         "EXCEPTION: Control Protection (#CP)\nError code: {:#x}\n{:#?}",
         error_code, frame
@@ -230,7 +212,7 @@ pub extern "x86-interrupt" fn control_protection_handler(
 // 硬件中断处理程序
 // ============================================================================
 
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Timer tick 计数
 static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -259,7 +241,7 @@ pub fn timer_debug_heartbeats() -> u64 {
 pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
     let ticks = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
     let _ = frame;
-    
+
     // 每秒打印一次 (假设 100Hz)
     #[cfg(debug_assertions)]
     if TIMER_DEBUG.load(Ordering::Relaxed) && ticks % 100 == 0 {
@@ -267,7 +249,7 @@ pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
         let _seconds = ticks / 100;
         TIMER_DEBUG_HEARTBEATS.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     // 发送 EOI
     super::apic::local_apic_eoi();
 }
@@ -283,12 +265,12 @@ pub extern "x86-interrupt" fn keyboard_handler(frame: InterruptFrame) {
             options(nostack, preserves_flags)
         );
     }
-    
+
     let _ = frame;
-    
+
     // 处理扫描码
     crate::drivers::input::handle_scancode(scancode);
-    
+
     // 发送 EOI
     super::apic::local_apic_eoi();
 }
@@ -304,12 +286,12 @@ pub extern "x86-interrupt" fn mouse_handler(frame: InterruptFrame) {
             options(nostack, preserves_flags)
         );
     }
-    
+
     let _ = frame;
-    
+
     // 处理鼠标数据
     crate::drivers::input::mouse_handle_interrupt(data);
-    
+
     // 发送 EOI
     super::apic::local_apic_eoi();
 }
@@ -317,10 +299,10 @@ pub extern "x86-interrupt" fn mouse_handler(frame: InterruptFrame) {
 /// 串口 (COM1) 中断处理程序
 pub extern "x86-interrupt" fn serial_handler(frame: InterruptFrame) {
     let _ = frame;
-    
+
     // 调用串口驱动处理
     crate::drivers::tty::serial_interrupt_handler();
-    
+
     // 发送 EOI
     super::apic::local_apic_eoi();
 }
@@ -328,10 +310,10 @@ pub extern "x86-interrupt" fn serial_handler(frame: InterruptFrame) {
 /// xHCI 中断处理程序
 pub extern "x86-interrupt" fn xhci_handler(frame: InterruptFrame) {
     let _ = frame;
-    
+
     // 调用 xHCI 驱动处理
     crate::drivers::usb::xhci::handle_interrupt();
-    
+
     // 发送 EOI
     super::apic::local_apic_eoi();
 }
@@ -363,7 +345,7 @@ pub extern "x86-interrupt" fn spurious_handler(frame: InterruptFrame) {
 /// 通用中断处理程序
 pub extern "x86-interrupt" fn generic_handler(frame: InterruptFrame) {
     let _ = frame;
-    
+
     // 发送 EOI
     super::apic::local_apic_eoi();
 }

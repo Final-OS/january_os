@@ -27,6 +27,16 @@ macro_rules! container_of {
 static INVALID_MM_STATE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 #[inline]
+fn sanitize_page_for_allocator(page: &mut Page, order: usize) {
+    // Page 元数据在多个子系统间复用。进入分配器路径前统一清理 owner 痕迹。
+    page.clear_flag(PageFlags::SLAB | PageFlags::PGTABLE);
+    page.set_private(core::ptr::null_mut());
+    page.lru.next = core::ptr::null_mut();
+    page.lru.prev = core::ptr::null_mut();
+    page.set_order(order as u8);
+}
+
+#[inline]
 fn mm_state_ready() -> bool {
     let base = vmemmap_base_ptr() as usize;
     let max = max_pfn();
@@ -172,8 +182,8 @@ unsafe fn expand_and_alloc(
         // 设置分配的页
         let page = &mut *page;
         page.set_count_one();
-        page.set_order(low_order as u8);
         page.clear_flag(PageFlags::BUDDY);
+        sanitize_page_for_allocator(page, low_order);
 
         // 如果请求清零
         if gfp.test(GfpFlags::ZERO) {
@@ -223,6 +233,7 @@ pub unsafe fn free_pages(page: &mut Page, order: usize) {
         if page.is_compound() {
             destroy_compound_page(page, order);
         }
+        sanitize_page_for_allocator(page, order);
 
         // order-0 优先回收到 PCP，降低 Zone 锁竞争
         if order == 0 && pcp_initialized() {
@@ -293,7 +304,7 @@ pub fn alloc_page(gfp: GfpFlags) -> Option<&'static mut Page> {
 
             // PCP 快路径同样需要满足 GFP 语义。
             page.clear_flag(PageFlags::BUDDY);
-            page.set_order(0);
+            sanitize_page_for_allocator(page, 0);
 
             if gfp.test(GfpFlags::ZERO) {
                 let addr = page_to_pfn(page) * PAGE_SIZE;

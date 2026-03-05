@@ -498,7 +498,7 @@ fn execute_mm_command(args: &[&str]) {
                 .map(|z| z.nr_free_pages())
                 .sum();
             let fault_stats = mm::get_fault_stats();
-            let (vmalloc_heal_ok, vmalloc_heal_miss) = mm::vmalloc::vmalloc_heal_stats();
+            let vmalloc_heal = mm::vmalloc::vmalloc_heal_stats();
             let heap = mm::heap::heap_stats();
             let kmalloc = mm::slub::kmalloc_stats();
             let layout = mm::snapshot();
@@ -561,9 +561,11 @@ fn execute_mm_command(args: &[&str]) {
                 heap.live_allocations
             );
             kprintln!(
-                "  vmalloc heal: ok={} miss={}",
-                vmalloc_heal_ok,
-                vmalloc_heal_miss
+                "  vmalloc heal: from-init={} from-ioremap={} miss={} fail={}",
+                vmalloc_heal.recovered_from_init,
+                vmalloc_heal.recovered_from_ioremap,
+                vmalloc_heal.heal_miss,
+                vmalloc_heal.heal_fail,
             );
             kprintln!(
                 "  Faults:      total={} minor={} major={} cow={} stack_grow={}",
