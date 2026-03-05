@@ -7,6 +7,7 @@ mod libs;
 mod mm;
 mod smp;
 mod task;
+mod vfs;
 
 use crate::kprintln;
 use alloc::vec::Vec;
@@ -37,12 +38,17 @@ pub fn run(name: &str) {
             let filter = parts.get(1).copied();
             block::run_with_filter(filter);
         }
+        Some("vfs") => {
+            let filter = parts.get(1).copied();
+            vfs::run_with_filter(filter);
+        }
         Some("all") => {
             task::run();
             libs::run();
             mm::run();
             smp::run();
             block::run();
+            vfs::run();
         }
         Some("help") | _ => {
             kprintln!("Usage: test <subcommand>");
@@ -65,6 +71,8 @@ pub fn run(name: &str) {
             );
             kprintln!("  block [name]   - Block device tests");
             kprintln!("                   Available: virtio, partition");
+            kprintln!("  vfs [name]     - VFS core tests");
+            kprintln!("                   Available: path, mount");
             kprintln!("  all            - Run all tests");
         }
     }

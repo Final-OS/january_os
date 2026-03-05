@@ -5,9 +5,12 @@
 //! - per-process fd table for `open/read/close`
 //! - lookup API for `execve` image provider
 
+pub mod vfs;
+
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::sync::Mutex;
@@ -115,6 +118,16 @@ pub struct FsDirEntry {
     pub ino: u64,
     pub file_type: u8,
     pub name: String,
+}
+
+#[inline]
+fn hash_path_impl(path: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in path.as_bytes().iter().copied() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    h
 }
 
 impl FsState {
@@ -838,12 +851,7 @@ impl FsState {
     }
 
     fn hash_path(path: &str) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in path.as_bytes().iter().copied() {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x1000_0000_01b3);
-        }
-        h
+        hash_path_impl(path)
     }
 
     fn make_regular_stat(path: &str, data_len: usize) -> FsStat {
@@ -1045,6 +1053,7 @@ pub fn init() {
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!("\x1b[90m[diag]\x1b[0m[fs] init minimal static backend");
     }
+    vfs::mount_root(Arc::new(vfs::staticfs::StaticFileSystem::new()));
 }
 
 pub fn register_static_file(path: &'static str, data: &'static [u8]) -> Result<(), i32> {
@@ -1056,7 +1065,14 @@ pub fn read_static_file(path: &str) -> Option<&'static [u8]> {
 }
 
 pub fn open_for_pid(pid: usize, path: &str, flags: u32, mode: u16) -> Result<i32, i32> {
-    FS_STATE.lock().open_for_pid(pid, path, flags, mode)
+    let resolved = {
+        let mut state = FS_STATE.lock();
+        state.resolve_path_for_pid(pid, path)?
+    };
+    let _ = vfs::lookup_path(resolved.as_str());
+    FS_STATE
+        .lock()
+        .open_for_pid(pid, resolved.as_str(), flags, mode)
 }
 
 pub fn read_for_pid(pid: usize, fd: i32, out: &mut [u8]) -> Result<usize, i32> {
@@ -1124,7 +1140,38 @@ pub fn getcwd_for_pid(pid: usize) -> String {
 }
 
 pub fn peek_dir_entry_for_pid(pid: usize, fd: i32) -> Result<Option<FsDirEntry>, i32> {
-    FS_STATE.lock().peek_dir_entry_for_pid(pid, fd)
+    let (dir_path, cursor) = {
+        let state = FS_STATE.lock();
+        let table = state.open_files.get(&pid).ok_or(EBADF)?;
+        let open_file = table.get(&fd).ok_or(EBADF)?;
+        match open_file {
+            OpenFile::Dir(dir) => (dir.path.clone(), dir.cursor),
+            _ => return Err(ENOTDIR),
+        }
+    };
+
+    let entries = FS_STATE.lock().collect_dir_entries(dir_path.as_str());
+    if cursor >= entries.len() {
+        if let Ok(inode) = vfs::lookup_path(dir_path.as_str()) {
+            let vfs_entries = inode.readdir().map_err(|e| e.errno())?;
+            if cursor >= vfs_entries.len() {
+                return Ok(None);
+            }
+            let entry = &vfs_entries[cursor];
+            let file_type = match entry.file_type {
+                vfs::FileType::Directory => DT_DIR,
+                vfs::FileType::Regular => DT_REG,
+                _ => DT_UNKNOWN,
+            };
+            return Ok(Some(FsDirEntry {
+                ino: entry.ino,
+                file_type,
+                name: entry.name.clone(),
+            }));
+        }
+        return Ok(None);
+    }
+    Ok(entries.get(cursor).cloned())
 }
 
 pub fn advance_dir_cursor_for_pid(pid: usize, fd: i32, count: usize) -> Result<(), i32> {
@@ -1136,7 +1183,36 @@ pub fn stat_path(path: &str) -> Result<FsStat, i32> {
 }
 
 pub fn stat_path_for_pid(pid: usize, path: &str) -> Result<FsStat, i32> {
-    FS_STATE.lock().stat_path_for_pid(pid, path)
+    let resolved = {
+        let mut state = FS_STATE.lock();
+        state.resolve_path_for_pid(pid, path)?
+    };
+    if let Ok(stat) = FS_STATE.lock().stat_path(resolved.as_str()) {
+        return Ok(stat);
+    }
+
+    if let Ok(inode) = vfs::lookup_path(resolved.as_str()) {
+        let meta = inode.metadata().map_err(|e| e.errno())?;
+        let mode = match meta.file_type {
+            vfs::FileType::Directory => S_IFDIR | 0o755,
+            vfs::FileType::Regular => S_IFREG | 0o644,
+            vfs::FileType::CharDevice => S_IFCHR | 0o620,
+            vfs::FileType::Fifo => S_IFIFO | 0o600,
+            vfs::FileType::Unknown => meta.mode,
+        };
+        return Ok(FsStat {
+            dev: 1,
+            ino: meta.ino,
+            mode,
+            nlink: meta.nlink as u64,
+            rdev: 0,
+            size: meta.size as i64,
+            blksize: 4096,
+            blocks: ((meta.size as i64).saturating_add(511) / 512),
+        });
+    }
+
+    Err(ENOENT)
 }
 
 pub fn stat_fd(pid: usize, fd: i32) -> Result<FsStat, i32> {
@@ -1150,3 +1226,22 @@ pub fn poll_revents_for_pid(pid: usize, fd: i32, events: i16) -> Result<i16, i32
 pub fn drop_process_fds(pid: usize) {
     FS_STATE.lock().drop_process_fds(pid);
 }
+
+pub(crate) fn backend_read_static_file(path: &str) -> Option<&'static [u8]> {
+    FS_STATE.lock().read_static_file(path)
+}
+
+pub(crate) fn backend_dir_exists(path: &str) -> bool {
+    FS_STATE.lock().dir_exists(path)
+}
+
+pub(crate) fn backend_collect_dir_entries(path: &str) -> Vec<FsDirEntry> {
+    FS_STATE.lock().collect_dir_entries(path)
+}
+
+pub(crate) fn backend_hash_path(path: &str) -> u64 {
+    hash_path_impl(path)
+}
+
+pub(crate) const BACKEND_DT_DIR: u8 = DT_DIR;
+pub(crate) const BACKEND_DT_REG: u8 = DT_REG;
