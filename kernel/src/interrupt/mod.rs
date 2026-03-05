@@ -30,46 +30,28 @@ pub mod arch;
 pub const TIMER_TICK_HZ: u64 = 100;
 
 // Re-export common types and functions from arch
-pub use arch::{init, init_ap, init_bsp, initialized, InterruptInitInfo, IrqRouteOverride};
+pub use arch::{InterruptInitInfo, IrqRouteOverride, init, init_ap, init_bsp, initialized};
 
 // Re-export arch modules
 pub use arch::{apic, gdt, handlers, idt, tsc};
 
 // Re-export specific items for compatibility/convenience
 pub use gdt::{
-    init_gdt, set_interrupt_stack, KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR, TSS_SELECTOR,
-    USER_CODE_SELECTOR, USER_DATA_SELECTOR,
+    KERNEL_CODE_SELECTOR, KERNEL_DATA_SELECTOR, TSS_SELECTOR, USER_CODE_SELECTOR,
+    USER_DATA_SELECTOR, init_gdt, set_interrupt_stack,
 };
 
 pub use idt::{
+    ALIGNMENT_CHECK, BOUND_RANGE, BREAKPOINT, CONTROL_PROTECTION, DEBUG, DEVICE_NOT_AVAILABLE,
+    DIVIDE_ERROR, DOUBLE_FAULT, GENERAL_PROTECTION, GateType, INVALID_OPCODE, INVALID_TSS,
+    IPI_TLB_PROBE, IPI_TLB_SHOOTDOWN, IRQ_BASE, IRQ_COM1, IRQ_KEYBOARD, IRQ_MOUSE, IRQ_SPURIOUS,
+    IRQ_TIMER, IRQ_XHCI, IdtEntry, InterruptFrame, MACHINE_CHECK, NMI, OVERFLOW, PAGE_FAULT,
+    SEGMENT_NOT_PRESENT, SIMD_EXCEPTION, STACK_FAULT, VIRTUALIZATION, X87_FPU_ERROR,
     disable_interrupts, enable_interrupts, halt, halt_with_interrupts, interrupts_enabled,
-    without_interrupts, GateType, IdtEntry, InterruptFrame, ALIGNMENT_CHECK, BOUND_RANGE,
-    BREAKPOINT, CONTROL_PROTECTION, DEBUG, DEVICE_NOT_AVAILABLE, DIVIDE_ERROR, DOUBLE_FAULT,
-    GENERAL_PROTECTION, INVALID_OPCODE, INVALID_TSS, IPI_TLB_PROBE, IPI_TLB_SHOOTDOWN, IRQ_BASE, IRQ_COM1,
-    IRQ_KEYBOARD, IRQ_MOUSE, IRQ_SPURIOUS, IRQ_TIMER, IRQ_XHCI, MACHINE_CHECK, NMI, OVERFLOW,
-    PAGE_FAULT, SEGMENT_NOT_PRESENT, SIMD_EXCEPTION, STACK_FAULT, VIRTUALIZATION, X87_FPU_ERROR,
+    without_interrupts,
 };
 
 pub use apic::{
-    apic_initialized,
-    apic_timer_frequency,
-    calibrate_timer,
-    init_apic_timer,
-    init_ioapic,
-    init_local_apic,
-    IoApicIrqRoute,
-    ioapic_mask_irq,
-    ioapic_read_irq_route,
-    ioapic_set_irq,
-    ioapic_unmask_irq,
-    local_apic_eoi,
-    local_apic_id,
-    send_init_ipi,
-    // IPI functions
-    send_ipi,
-    send_sipi,
-    stop_apic_timer,
-    wait_for_ipi_delivery,
     ICR_DELIVERY_FIXED,
     ICR_DELIVERY_INIT,
     ICR_DELIVERY_LOWEST,
@@ -86,6 +68,25 @@ pub use apic::{
     ICR_SHORTHAND_SELF,
     ICR_TRIGGER_EDGE,
     ICR_TRIGGER_LEVEL,
+    IoApicIrqRoute,
+    apic_initialized,
+    apic_timer_frequency,
+    calibrate_timer,
+    init_apic_timer,
+    init_ioapic,
+    init_local_apic,
+    ioapic_mask_irq,
+    ioapic_read_irq_route,
+    ioapic_set_irq,
+    ioapic_unmask_irq,
+    local_apic_eoi,
+    local_apic_id,
+    send_init_ipi,
+    // IPI functions
+    send_ipi,
+    send_sipi,
+    stop_apic_timer,
+    wait_for_ipi_delivery,
 };
 
 pub use tsc::{calibrate_tsc, rdtsc, rdtscp, tsc_frequency};

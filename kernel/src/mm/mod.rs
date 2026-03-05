@@ -38,36 +38,36 @@ pub use page::buddy::*;
 pub use page::memblock;
 pub use page::memblock::*;
 // pub use page::page; // Conflict with `pub mod page`
-pub use page::page::*;
-pub use page::zone;
-pub use page::zone::*;
 pub use page::numa;
 pub use page::numa::*;
+pub use page::page::*;
 pub use page::pcp;
 pub use page::pcp::*;
 pub use page::physical;
 pub use page::physical::*;
+pub use page::zone;
+pub use page::zone::*;
 
 // VM 模块导出
 pub use vm::address;
 pub use vm::address::*;
-pub use vm::paging;
-pub use vm::paging::*;
-pub use vm::vma;
-pub use vm::vma::*;
 pub use vm::fault;
 pub use vm::fault::*;
 pub use vm::layout;
 pub use vm::layout::*;
 pub use vm::layout_runtime;
 pub use vm::layout_runtime::*;
+pub use vm::paging;
+pub use vm::paging::*;
+pub use vm::vma;
+pub use vm::vma::*;
 
 // 堆分配器
 pub use heap::init_heap;
 
 // IOMMU
-pub use iommu::iommu_stats;
 pub use iommu::init_iommu;
+pub use iommu::iommu_stats;
 pub use iommu::{IommuType, TranslationMode};
 
 // ============================================================================
@@ -75,9 +75,8 @@ pub use iommu::{IommuType, TranslationMode};
 // ============================================================================
 
 pub use setup::{
-    MmInitStage, init_stage,
-    init_memblock, init_buddy_system, init_slub, finish_mm_init,
-    MemoryRegionInfo,
+    MemoryRegionInfo, MmInitStage, finish_mm_init, init_buddy_system, init_memblock, init_slub,
+    init_stage,
 };
 
 // ============================================================================
@@ -85,7 +84,6 @@ pub use setup::{
 // ============================================================================
 
 pub use page::memblock::{
-    memblock_init, memblock_initialized,
-    memblock_add, memblock_reserve, memblock_free,
-    memblock_alloc, memblock_alloc_range, memblock_alloc_zeroed,
+    memblock_add, memblock_alloc, memblock_alloc_range, memblock_alloc_zeroed, memblock_free,
+    memblock_init, memblock_initialized, memblock_reserve,
 };

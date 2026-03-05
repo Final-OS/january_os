@@ -51,12 +51,18 @@ impl<K, V> RbNode<K, V> {
 
 #[inline]
 unsafe fn color<K, V>(p: *mut RbNode<K, V>) -> Color {
-    if p.is_null() { Color::Black } else { (*p).color }
+    if p.is_null() {
+        Color::Black
+    } else {
+        (*p).color
+    }
 }
 
 #[inline]
 unsafe fn set_color<K, V>(p: *mut RbNode<K, V>, c: Color) {
-    if !p.is_null() { (*p).color = c; }
+    if !p.is_null() {
+        (*p).color = c;
+    }
 }
 
 unsafe fn tree_minimum<K, V>(mut p: *mut RbNode<K, V>) -> *mut RbNode<K, V> {
@@ -74,8 +80,12 @@ unsafe fn tree_maximum<K, V>(mut p: *mut RbNode<K, V>) -> *mut RbNode<K, V> {
 }
 
 unsafe fn successor<K, V>(p: *mut RbNode<K, V>) -> *mut RbNode<K, V> {
-    if p.is_null() { return ptr::null_mut(); }
-    if !(*p).right.is_null() { return tree_minimum((*p).right); }
+    if p.is_null() {
+        return ptr::null_mut();
+    }
+    if !(*p).right.is_null() {
+        return tree_minimum((*p).right);
+    }
     let mut x = p;
     let mut y = (*x).parent;
     while !y.is_null() && x == (*y).right {
@@ -86,8 +96,12 @@ unsafe fn successor<K, V>(p: *mut RbNode<K, V>) -> *mut RbNode<K, V> {
 }
 
 unsafe fn predecessor<K, V>(p: *mut RbNode<K, V>) -> *mut RbNode<K, V> {
-    if p.is_null() { return ptr::null_mut(); }
-    if !(*p).left.is_null() { return tree_maximum((*p).left); }
+    if p.is_null() {
+        return ptr::null_mut();
+    }
+    if !(*p).left.is_null() {
+        return tree_maximum((*p).left);
+    }
     let mut x = p;
     let mut y = (*x).parent;
     while !y.is_null() && x == (*y).left {
@@ -98,7 +112,9 @@ unsafe fn predecessor<K, V>(p: *mut RbNode<K, V>) -> *mut RbNode<K, V> {
 }
 
 unsafe fn free_subtree<K, V>(p: *mut RbNode<K, V>) {
-    if p.is_null() { return; }
+    if p.is_null() {
+        return;
+    }
     free_subtree((*p).left);
     free_subtree((*p).right);
     let _ = Box::from_raw(p);
@@ -111,7 +127,9 @@ unsafe fn free_subtree<K, V>(p: *mut RbNode<K, V>) {
 unsafe fn rotate_left<K, V>(root: &mut *mut RbNode<K, V>, x: *mut RbNode<K, V>) {
     let y = (*x).right;
     (*x).right = (*y).left;
-    if !(*y).left.is_null() { (*(*y).left).parent = x; }
+    if !(*y).left.is_null() {
+        (*(*y).left).parent = x;
+    }
     (*y).parent = (*x).parent;
     if (*x).parent.is_null() {
         *root = y;
@@ -127,7 +145,9 @@ unsafe fn rotate_left<K, V>(root: &mut *mut RbNode<K, V>, x: *mut RbNode<K, V>) 
 unsafe fn rotate_right<K, V>(root: &mut *mut RbNode<K, V>, x: *mut RbNode<K, V>) {
     let y = (*x).left;
     (*x).left = (*y).right;
-    if !(*y).right.is_null() { (*(*y).right).parent = x; }
+    if !(*y).right.is_null() {
+        (*(*y).right).parent = x;
+    }
     (*y).parent = (*x).parent;
     if (*x).parent.is_null() {
         *root = y;
@@ -152,7 +172,9 @@ unsafe fn transplant<K, V>(
     } else {
         (*(*u).parent).right = v;
     }
-    if !v.is_null() { (*v).parent = (*u).parent; }
+    if !v.is_null() {
+        (*v).parent = (*u).parent;
+    }
 }
 
 unsafe fn rb_insert_fixup<K, V>(root: &mut *mut RbNode<K, V>, mut z: *mut RbNode<K, V>) {
@@ -207,7 +229,9 @@ unsafe fn rb_delete_fixup<K, V>(
 ) {
     while x != *root && color(x) == Color::Black {
         let p = if !x.is_null() { (*x).parent } else { x_parent };
-        if p.is_null() { break; }
+        if p.is_null() {
+            break;
+        }
         if x == (*p).left {
             let mut w = (*p).right;
             if color(w) == Color::Red {
@@ -283,14 +307,21 @@ unsafe impl<K: Sync, V: Sync> Sync for RbTree<K, V> {}
 impl<K: Ord, V> RbTree<K, V> {
     /// 创建空树
     pub const fn new() -> Self {
-        Self { root: ptr::null_mut(), len: 0 }
+        Self {
+            root: ptr::null_mut(),
+            len: 0,
+        }
     }
 
     #[inline]
-    pub fn len(&self) -> usize { self.len }
+    pub fn len(&self) -> usize {
+        self.len
+    }
 
     #[inline]
-    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 
     // -----------------------------------------------------------------------
     // 内部查找
@@ -459,35 +490,55 @@ impl<K: Ord, V> RbTree<K, V> {
     pub fn get(&self, key: &K) -> Option<&V> {
         unsafe {
             let node = self.find_node(key);
-            if node.is_null() { None } else { Some(&(*node).value) }
+            if node.is_null() {
+                None
+            } else {
+                Some(&(*node).value)
+            }
         }
     }
 
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
         unsafe {
             let node = self.find_node(key);
-            if node.is_null() { None } else { Some(&mut (*node).value) }
+            if node.is_null() {
+                None
+            } else {
+                Some(&mut (*node).value)
+            }
         }
     }
 
     pub fn get_key_value(&self, key: &K) -> Option<(&K, &V)> {
         unsafe {
             let node = self.find_node(key);
-            if node.is_null() { None } else { Some((&(*node).key, &(*node).value)) }
+            if node.is_null() {
+                None
+            } else {
+                Some((&(*node).key, &(*node).value))
+            }
         }
     }
 
     pub fn first_key_value(&self) -> Option<(&K, &V)> {
         unsafe {
             let node = tree_minimum(self.root);
-            if node.is_null() { None } else { Some((&(*node).key, &(*node).value)) }
+            if node.is_null() {
+                None
+            } else {
+                Some((&(*node).key, &(*node).value))
+            }
         }
     }
 
     pub fn last_key_value(&self) -> Option<(&K, &V)> {
         unsafe {
             let node = tree_maximum(self.root);
-            if node.is_null() { None } else { Some((&(*node).key, &(*node).value)) }
+            if node.is_null() {
+                None
+            } else {
+                Some((&(*node).key, &(*node).value))
+            }
         }
     }
 
@@ -495,7 +546,11 @@ impl<K: Ord, V> RbTree<K, V> {
     pub fn lower_bound(&self, key: &K) -> Option<(&K, &V)> {
         unsafe {
             let node = self.lower_bound_node(key);
-            if node.is_null() { None } else { Some((&(*node).key, &(*node).value)) }
+            if node.is_null() {
+                None
+            } else {
+                Some((&(*node).key, &(*node).value))
+            }
         }
     }
 
@@ -503,7 +558,11 @@ impl<K: Ord, V> RbTree<K, V> {
     pub fn upper_bound(&self, key: &K) -> Option<(&K, &V)> {
         unsafe {
             let node = self.upper_bound_node(key);
-            if node.is_null() { None } else { Some((&(*node).key, &(*node).value)) }
+            if node.is_null() {
+                None
+            } else {
+                Some((&(*node).key, &(*node).value))
+            }
         }
     }
 
@@ -511,7 +570,11 @@ impl<K: Ord, V> RbTree<K, V> {
     pub fn floor(&self, key: &K) -> Option<(&K, &V)> {
         unsafe {
             let node = self.floor_node(key);
-            if node.is_null() { None } else { Some((&(*node).key, &(*node).value)) }
+            if node.is_null() {
+                None
+            } else {
+                Some((&(*node).key, &(*node).value))
+            }
         }
     }
 
@@ -519,7 +582,11 @@ impl<K: Ord, V> RbTree<K, V> {
     pub fn lower_than(&self, key: &K) -> Option<(&K, &V)> {
         unsafe {
             let node = self.lower_than_node(key);
-            if node.is_null() { None } else { Some((&(*node).key, &(*node).value)) }
+            if node.is_null() {
+                None
+            } else {
+                Some((&(*node).key, &(*node).value))
+            }
         }
     }
 
@@ -546,7 +613,9 @@ impl<K: Ord, V> RbTree<K, V> {
     pub fn remove(&mut self, key: &K) -> Option<V> {
         unsafe {
             let node = self.find_node(key);
-            if node.is_null() { return None; }
+            if node.is_null() {
+                return None;
+            }
             let boxed = self.internal_delete(node);
             Some(boxed.value)
         }
@@ -556,14 +625,18 @@ impl<K: Ord, V> RbTree<K, V> {
     pub fn remove_entry(&mut self, key: &K) -> Option<(K, V)> {
         unsafe {
             let node = self.find_node(key);
-            if node.is_null() { return None; }
+            if node.is_null() {
+                return None;
+            }
             let boxed = self.internal_delete(node);
             Some((boxed.key, boxed.value))
         }
     }
 
     pub fn clear(&mut self) {
-        unsafe { free_subtree(self.root); }
+        unsafe {
+            free_subtree(self.root);
+        }
         self.root = ptr::null_mut();
         self.len = 0;
     }
@@ -578,7 +651,9 @@ impl<K: Ord, V> RbTree<K, V> {
     pub fn pop_first(&mut self) -> Option<(K, V)> {
         unsafe {
             let node = tree_minimum(self.root);
-            if node.is_null() { return None; }
+            if node.is_null() {
+                return None;
+            }
             let boxed = self.internal_delete(node);
             Some((boxed.key, boxed.value))
         }
@@ -587,7 +662,9 @@ impl<K: Ord, V> RbTree<K, V> {
     pub fn pop_last(&mut self) -> Option<(K, V)> {
         unsafe {
             let node = tree_maximum(self.root);
-            if node.is_null() { return None; }
+            if node.is_null() {
+                return None;
+            }
             let boxed = self.internal_delete(node);
             Some((boxed.key, boxed.value))
         }
@@ -607,7 +684,9 @@ impl<K: Ord, V> RbTree<K, V> {
             }
         }
         for node in nodes_to_remove {
-            unsafe { self.internal_delete(node); }
+            unsafe {
+                self.internal_delete(node);
+            }
         }
     }
 
@@ -738,10 +817,18 @@ impl<'a, K: Ord, V> Entry<'a, K, V> {
 }
 
 impl<'a, K: Ord, V> OccupiedEntry<'a, K, V> {
-    pub fn key(&self) -> &K { unsafe { &(*self.node).key } }
-    pub fn get(&self) -> &V { unsafe { &(*self.node).value } }
-    pub fn get_mut(&mut self) -> &mut V { unsafe { &mut (*self.node).value } }
-    pub fn into_mut(self) -> &'a mut V { unsafe { &mut (*self.node).value } }
+    pub fn key(&self) -> &K {
+        unsafe { &(*self.node).key }
+    }
+    pub fn get(&self) -> &V {
+        unsafe { &(*self.node).value }
+    }
+    pub fn get_mut(&mut self) -> &mut V {
+        unsafe { &mut (*self.node).value }
+    }
+    pub fn into_mut(self) -> &'a mut V {
+        unsafe { &mut (*self.node).value }
+    }
 
     pub fn insert(&mut self, value: V) -> V {
         unsafe {
@@ -757,7 +844,9 @@ impl<'a, K: Ord, V> OccupiedEntry<'a, K, V> {
 }
 
 impl<'a, K: Ord, V> VacantEntry<'a, K, V> {
-    pub fn key(&self) -> &K { &self.key }
+    pub fn key(&self) -> &K {
+        &self.key
+    }
 
     pub fn insert(self, value: V) -> &'a mut V {
         let node = RbNode::new(self.key, value);
@@ -787,7 +876,9 @@ pub struct RbIter<'a, K, V> {
 impl<'a, K, V> Iterator for RbIter<'a, K, V> {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current.is_null() { return None; }
+        if self.current.is_null() {
+            return None;
+        }
         unsafe {
             let n = &*self.current;
             self.current = successor(self.current);
@@ -804,7 +895,9 @@ pub struct RbIterMut<'a, K, V> {
 impl<'a, K, V> Iterator for RbIterMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current.is_null() { return None; }
+        if self.current.is_null() {
+            return None;
+        }
         unsafe {
             let n = &mut *self.current;
             self.current = successor(self.current);
@@ -822,15 +915,21 @@ pub struct RbRangeIter<'a, K, V> {
 impl<'a, K: Ord, V> Iterator for RbRangeIter<'a, K, V> {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current.is_null() { return None; }
+        if self.current.is_null() {
+            return None;
+        }
         unsafe {
             let n = &*self.current;
             match &self.end_bound {
                 RangeEnd::Included(end) => {
-                    if n.key > **end { return None; }
+                    if n.key > **end {
+                        return None;
+                    }
                 }
                 RangeEnd::Excluded(end) => {
-                    if n.key >= **end { return None; }
+                    if n.key >= **end {
+                        return None;
+                    }
                 }
                 RangeEnd::Unbounded => {}
             }
@@ -849,15 +948,21 @@ pub struct RbRangeIterMut<'a, K, V> {
 impl<'a, K: Ord, V> Iterator for RbRangeIterMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current.is_null() { return None; }
+        if self.current.is_null() {
+            return None;
+        }
         unsafe {
             let n = &mut *self.current;
             match &self.end_bound {
                 RangeEnd::Included(end) => {
-                    if n.key > **end { return None; }
+                    if n.key > **end {
+                        return None;
+                    }
                 }
                 RangeEnd::Excluded(end) => {
-                    if n.key >= **end { return None; }
+                    if n.key >= **end {
+                        return None;
+                    }
                 }
                 RangeEnd::Unbounded => {}
             }
@@ -873,13 +978,17 @@ impl<'a, K: Ord, V> Iterator for RbRangeIterMut<'a, K, V> {
 
 impl<K, V> Drop for RbTree<K, V> {
     fn drop(&mut self) {
-        unsafe { free_subtree(self.root); }
+        unsafe {
+            free_subtree(self.root);
+        }
         self.root = ptr::null_mut();
     }
 }
 
 impl<K: Ord, V> Default for RbTree<K, V> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<K: Ord + Clone, V: Clone> Clone for RbTree<K, V> {

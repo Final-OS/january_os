@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 /// 读写锁状态常量
 const UNLOCKED: u32 = 0;
-const WRITER: u32 = 1 << 31;        // 最高位表示写锁
+const WRITER: u32 = 1 << 31; // 最高位表示写锁
 const MAX_READERS: u32 = WRITER - 1; // 最大读者数
 
 /// 读写锁
@@ -51,27 +51,23 @@ impl<T> RwLock<T> {
                 core::hint::spin_loop();
                 continue;
             }
-            
+
             // 如果没有写者，尝试增加读者计数
             if state < WRITER {
                 if state == MAX_READERS {
                     // 读者数量溢出，极端情况
                     panic!("RwLock: too many readers");
                 }
-                
-                if self.state
-                    .compare_exchange_weak(
-                        state,
-                        state + 1,
-                        Ordering::Acquire,
-                        Ordering::Relaxed,
-                    )
+
+                if self
+                    .state
+                    .compare_exchange_weak(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok()
                 {
                     return RwLockReadGuard { lock: self };
                 }
             }
-            
+
             core::hint::spin_loop();
         }
     }
@@ -82,21 +78,17 @@ impl<T> RwLock<T> {
         if self.waiting_writers.load(Ordering::Acquire) > 0 {
             return None;
         }
-        
+
         if state < WRITER && state < MAX_READERS {
-            if self.state
-                .compare_exchange(
-                    state,
-                    state + 1,
-                    Ordering::Acquire,
-                    Ordering::Relaxed,
-                )
+            if self
+                .state
+                .compare_exchange(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
                 return Some(RwLockReadGuard { lock: self });
             }
         }
-        
+
         None
     }
 
@@ -107,19 +99,15 @@ impl<T> RwLock<T> {
         self.waiting_writers.fetch_add(1, Ordering::AcqRel);
         loop {
             // 尝试从 UNLOCKED 状态获取写锁
-            if self.state
-                .compare_exchange_weak(
-                    UNLOCKED,
-                    WRITER,
-                    Ordering::Acquire,
-                    Ordering::Relaxed,
-                )
+            if self
+                .state
+                .compare_exchange_weak(UNLOCKED, WRITER, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
                 self.waiting_writers.fetch_sub(1, Ordering::AcqRel);
                 return RwLockWriteGuard { lock: self };
             }
-            
+
             core::hint::spin_loop();
         }
     }
@@ -129,13 +117,9 @@ impl<T> RwLock<T> {
         if self.waiting_writers.load(Ordering::Acquire) > 0 {
             return None;
         }
-        if self.state
-            .compare_exchange(
-                UNLOCKED,
-                WRITER,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            )
+        if self
+            .state
+            .compare_exchange(UNLOCKED, WRITER, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
             Some(RwLockWriteGuard { lock: self })

@@ -2,7 +2,8 @@
 
 use core::arch::global_asm;
 
-global_asm!(r#"
+global_asm!(
+    r#"
     .section .text
     .global __switch
     .type __switch, @function
@@ -33,11 +34,12 @@ __switch:
     pop rbp
 
     ret
-"#);
+"#
+);
 
 unsafe extern "C" {
     /// Switch context from `current_task_cx_ptr` to `next_task_cx_ptr`.
-    /// 
+    ///
     /// # Arguments
     /// * `current_task_cx_ptr` - Pointer to where to save the current stack pointer
     /// * `next_task_cx_ptr` - Pointer to where to load the next stack pointer from

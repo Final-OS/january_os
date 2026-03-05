@@ -56,7 +56,10 @@ impl<T> SpinLock<T> {
 
         // 递归死锁检测
         if self.locked.load(Ordering::Relaxed) && self.owner.load(Ordering::Relaxed) == me {
-            panic!("SpinLock::lock: Deadlock detected! Recursive locking by CPU {} on '{}'", me, self.name);
+            panic!(
+                "SpinLock::lock: Deadlock detected! Recursive locking by CPU {} on '{}'",
+                me, self.name
+            );
         }
 
         // 自旋直到获取锁
@@ -70,8 +73,10 @@ impl<T> SpinLock<T> {
             count += 1;
             if count > 10_000_000 {
                 let owner = self.owner.load(Ordering::Relaxed);
-                panic!("SpinLock::lock: Deadlock detected! Timeout waiting for '{}' (held by CPU {}) on CPU {}", 
-                    self.name, owner, me);
+                panic!(
+                    "SpinLock::lock: Deadlock detected! Timeout waiting for '{}' (held by CPU {}) on CPU {}",
+                    self.name, owner, me
+                );
             }
 
             // 自旋等待时使用 PAUSE 指令减少 CPU 功耗

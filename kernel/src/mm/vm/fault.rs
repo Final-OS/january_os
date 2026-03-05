@@ -5,11 +5,12 @@
 // ============================================================================
 
 use super::layout::PAGE_SIZE;
-use super::vma::{VmFlags, Mm};
-use crate::mm::page::page::{PageFlags, pfn_to_page, page_to_pfn};
-use crate::mm::page::zone::GfpFlags;
-use crate::mm::page::buddy::{alloc_page, free_page};
 use super::paging::PageTableManager;
+use super::vma::{Mm, VmFlags};
+use crate::fs;
+use crate::mm::page::buddy::{alloc_page, free_page};
+use crate::mm::page::page::{PageFlags, page_to_pfn, pfn_to_page};
+use crate::mm::page::zone::GfpFlags;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================================
@@ -25,17 +26,17 @@ impl PageFaultError {
     /// 保护违规 (vs 页不存在)
     pub const PRESENT: u64 = 1 << 0;
     /// 写访问 (vs 读访问)
-    pub const WRITE: u64   = 1 << 1;
+    pub const WRITE: u64 = 1 << 1;
     /// 用户态 (vs 内核态)
-    pub const USER: u64    = 1 << 2;
+    pub const USER: u64 = 1 << 2;
     /// 保留位被设置
-    pub const RSVD: u64    = 1 << 3;
+    pub const RSVD: u64 = 1 << 3;
     /// 取指访问
-    pub const INSTR: u64   = 1 << 4;
+    pub const INSTR: u64 = 1 << 4;
     /// 保护密钥违规
-    pub const PK: u64      = 1 << 5;
+    pub const PK: u64 = 1 << 5;
     /// 影子栈访问
-    pub const SS: u64      = 1 << 6;
+    pub const SS: u64 = 1 << 6;
 
     pub fn new(code: u64) -> Self {
         Self(code)
@@ -118,9 +119,9 @@ pub struct FaultContext {
     pub vma_flags: VmFlags,
     /// 文件偏移（页单位）
     pub vma_pgoff: u64,
-    /// 文件数据基址（最小静态文件后端）
+    /// 文件映射后备句柄（由 fs 层解释）
     pub vma_file: *mut (),
-    /// 文件数据长度（字节，编码在指针宽度中）
+    /// 文件映射私有字段（由 fs 层解释）
     pub vma_private_data: *mut (),
     /// 直接映射偏移
     pub direct_map_offset: u64,
@@ -319,8 +320,8 @@ fn handle_file_fault(ctx: &FaultContext) -> FaultResult {
     let address = ctx.address & !(PAGE_SIZE - 1);
 
     if !ctx.vma_file.is_null() {
-        let file_len = ctx.vma_private_data as usize;
-        if file_len == 0 {
+        let backing_id = ctx.vma_file as usize as u64;
+        if backing_id == 0 {
             return FaultResult::Sigbus;
         }
 
@@ -338,10 +339,6 @@ fn handle_file_fault(ctx: &FaultContext) -> FaultResult {
             None => return FaultResult::Sigbus,
         };
 
-        if file_offset >= file_len {
-            return FaultResult::Sigbus;
-        }
-
         let page = match alloc_page(GfpFlags::new(GfpFlags::USER | GfpFlags::ZERO)) {
             Some(p) => p,
             None => return FaultResult::Oom,
@@ -349,12 +346,25 @@ fn handle_file_fault(ctx: &FaultContext) -> FaultResult {
         page.set_flag(PageFlags::UPTODATE);
 
         let phys = page_to_pfn(page) * PAGE_SIZE;
-        let copy_len = core::cmp::min(file_len.saturating_sub(file_offset), PAGE_SIZE as usize);
-        unsafe {
-            let src = (ctx.vma_file as *const u8).add(file_offset);
+        let copied = unsafe {
             let dst = (ctx.direct_map_offset + phys) as *mut u8;
-            core::ptr::copy_nonoverlapping(src, dst, copy_len);
+            let dst_slice = core::slice::from_raw_parts_mut(dst, PAGE_SIZE as usize);
+            match fs::mmap_copy_page(backing_id, file_offset, dst_slice) {
+                Ok(n) => n,
+                Err(_) => {
+                    free_page(page);
+                    return FaultResult::Sigbus;
+                }
+            }
+        };
+        if copied == 0 {
+            unsafe {
+                free_page(page);
+            }
+            return FaultResult::Sigbus;
+        }
 
+        unsafe {
             let mut pt_mgr = PageTableManager::new((*ctx.mm).pgd, ctx.direct_map_offset);
             if !pt_mgr.map_page(address, phys, ctx.vma_flags.to_user_pte_flags()) {
                 free_page(page);

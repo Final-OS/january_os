@@ -1,6 +1,7 @@
+use crate::fs;
 use crate::syscall::{
-    err, ok, SyscallArgs, SyscallRet, E2BIG, ECHILD, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOMEM,
-    EPERM, ESRCH,
+    E2BIG, ECHILD, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOMEM, EPERM, ESRCH, SyscallArgs,
+    SyscallRet, err, ok,
 };
 use crate::task;
 use alloc::string::String;
@@ -389,17 +390,25 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         }
     };
 
-    let image = match task::load_exec_image(path.as_str()) {
-        Some(image) => image,
-        None => {
+    let pid = match task::current_pid() {
+        Some(pid) => pid.0,
+        None => return err(ESRCH),
+    };
+
+    let image = match fs::read_all_for_pid(pid, path.as_str()) {
+        Ok(image) => image,
+        Err(errno) => {
             if crate::config::DEBUG_VERBOSE {
-                crate::kprintln!("\x1b[90m[diag]\x1b[0m[execve] executable image not found path={}", path);
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[execve] executable image not found path={}",
+                    path
+                );
             }
-            return err(ENOENT);
+            return err(errno);
         }
     };
 
-    let load_plan = match task::build_elf_load_plan(image) {
+    let load_plan = match task::build_elf_load_plan(image.as_slice()) {
         Ok(plan) => plan,
         Err(errno) => {
             if crate::config::DEBUG_VERBOSE {
@@ -417,7 +426,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
     let map_preview = task::preview_pt_load_mapping(&load_plan);
     let user_frame = task::arch::build_user_enter_frame(load_plan.entry, load_plan.stack_top);
 
-    let staged_mappings = match task::stage_pt_load_mappings(image, &load_plan) {
+    let staged_mappings = match task::stage_pt_load_mappings(image.as_slice(), &load_plan) {
         Ok(mapped) => mapped,
         Err(errno) => {
             if crate::config::DEBUG_VERBOSE {
@@ -1290,7 +1299,10 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
             }
             task::WaitChildObserveResult::NoMatchedChild => {
                 if crate::config::DEBUG_VERBOSE {
-                    crate::kprintln!("\x1b[90m[diag]\x1b[0m[wait4] no matched child target={:?}", target);
+                    crate::kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[wait4] no matched child target={:?}",
+                        target
+                    );
                 }
                 return err(ECHILD);
             }
@@ -1307,7 +1319,10 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
 
                 if !logged_waiting {
                     if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!("\x1b[90m[diag]\x1b[0m[wait4] blocking wait target={:?}", target);
+                        crate::kprintln!(
+                            "\x1b[90m[diag]\x1b[0m[wait4] blocking wait target={:?}",
+                            target
+                        );
                     }
                     logged_waiting = true;
                 }

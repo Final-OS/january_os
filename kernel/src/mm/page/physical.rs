@@ -12,7 +12,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use crate::mm::vm::address::{PhysAddr, PhysFrame};
-use crate::mm::vm::layout::{page_align_up, PAGE_SIZE};
+use crate::mm::vm::layout::{PAGE_SIZE, page_align_up};
 use core::cell::UnsafeCell;
 use core::ptr;
 
@@ -348,10 +348,12 @@ impl PhysicalMemoryManager {
         // 1. 计算总物理内存大小（扫描全部内存映射条目）
         let mut max_phys_addr: u64 = 0;
         let entries_to_scan = memory_map_entries as usize;
-        
+
         for i in 0..entries_to_scan {
             let region = &*memory_map.add(i);
-            let end = region.phys_start.saturating_add(region.page_count.saturating_mul(PAGE_SIZE));
+            let end = region
+                .phys_start
+                .saturating_add(region.page_count.saturating_mul(PAGE_SIZE));
             if end > max_phys_addr {
                 max_phys_addr = end;
             }
@@ -385,7 +387,9 @@ impl PhysicalMemoryManager {
             let region = &*memory_map.add(i);
             if region.kind() == MemoryRegionType::Usable {
                 let start_frame = region.phys_start / PAGE_SIZE;
-                let end_frame = start_frame.saturating_add(region.page_count).min(total_frames);
+                let end_frame = start_frame
+                    .saturating_add(region.page_count)
+                    .min(total_frames);
 
                 let mut frame_idx = start_frame;
                 while frame_idx < end_frame {
@@ -399,7 +403,7 @@ impl PhysicalMemoryManager {
         }
 
         // 7. 保留特殊区域（使用 while 循环避免潜在的迭代器问题）
-        
+
         // 7.1 保留低端 1MB
         let low_memory_frames = 0x100000 / PAGE_SIZE;
         let mut i = 0u64;

@@ -155,7 +155,7 @@ pub fn boot_ap(apic_id: u32, direct_map_base: u64) -> bool {
 
 /// Boot AP using ACPI Multiprocessor Wakeup
 unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) -> bool {
-        crate::info!("[SMP] Booting AP {} via ACPI Wakeup...", apic_id);
+    crate::info!("[SMP] Booting AP {} via ACPI Wakeup...", apic_id);
     let mailbox_virt = MAILBOX_VIRT_ADDR.load(Ordering::Acquire);
     let mailbox = &mut *(mailbox_virt as *mut MultiprocessorWakeupMailbox);
 
@@ -172,7 +172,10 @@ unsafe fn boot_ap_acpi(apic_id: u32, _stack_top: u64) -> bool {
         MultiprocessorWakeupMailbox::COMMAND_WAKEUP,
     );
     if crate::config::DEBUG_VERBOSE {
-        crate::kprintln!("\x1b[90m[diag]\x1b[0m[smp] acpi wakeup sent apic_id={}", apic_id);
+        crate::kprintln!(
+            "\x1b[90m[diag]\x1b[0m[smp] acpi wakeup sent apic_id={}",
+            apic_id
+        );
     }
 
     // 2. 等待 AP 启动并读取完数据
@@ -230,7 +233,11 @@ unsafe fn boot_ap_legacy(apic_id: u32, direct_map_base: u64, stack_top: u64) -> 
 
     let vector = (trampoline::TRAMPOLINE_BASE >> 12) as u8; // 0x08
     if crate::config::DEBUG_VERBOSE {
-        crate::kprintln!("\x1b[90m[diag]\x1b[0m[smp] SIPI vector={:#x} apic_id={}", vector, apic_id);
+        crate::kprintln!(
+            "\x1b[90m[diag]\x1b[0m[smp] SIPI vector={:#x} apic_id={}",
+            vector,
+            apic_id
+        );
     }
     interrupt::send_sipi(apic_id, vector);
     delay_us(200);

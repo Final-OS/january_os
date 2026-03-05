@@ -4,9 +4,9 @@
 // 基于 Intel VT-d Specification 3.0
 // ============================================================================
 
+use super::{DmaAddr, PAGE_SIZE, TranslationMode};
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
-use super::{DmaAddr, TranslationMode, PAGE_SIZE};
 
 // ============================================================================
 // VT-d 寄存器偏移 (基于 Intel VT-d Spec Section 10)
@@ -300,7 +300,7 @@ impl VtdCapability {
         let num_domains = 1 << (nd + 4);
         let mgaw = ((cap & CAP_MGAW_MASK) >> CAP_MGAW_SHIFT) as u8 + 1;
         let sagaw = ((cap & CAP_SAGAW_MASK) >> CAP_SAGAW_SHIFT) as u8;
-        
+
         Self {
             num_domains,
             mgaw,
@@ -366,61 +366,63 @@ impl VtdUnit {
             direct_map_offset,
         }
     }
-    
+
     /// 初始化 VT-d 单元
     pub fn init(&mut self, mode: TranslationMode) -> Result<(), &'static str> {
         self.translation_mode = mode;
-        
+
         // 1. 读取能力寄存器
         let cap = self.read_reg64(REG_CAP);
         let ecap = self.read_reg64(REG_ECAP);
         self.capability = VtdCapability::from_regs(cap, ecap);
-        
+
         // 2. 检查是否支持所需功能
         if mode == TranslationMode::Passthrough && !self.capability.passthrough {
             return Err("VT-d does not support passthrough mode");
         }
-        
+
         // 3. 分配并初始化 Root Table
         self.init_root_table()?;
-        
+
         // 4. 设置 Root Table 地址
         self.write_reg64(REG_RTADDR, self.root_table_phys);
-        
+
         // 5. 刷新写缓冲 (如果需要)
         if self.capability.rwbf {
             self.flush_write_buffer();
         }
-        
+
         // 6. 设置 Root Table Pointer
         self.write_reg32(REG_GCMD, GCMD_SRTP);
         self.wait_for_status(GSTS_RTPS);
-        
+
         // 7. 全局无效化 Context Cache
         self.invalidate_context_cache_global();
-        
+
         // 8. 全局无效化 IOTLB
         self.invalidate_iotlb_global();
-        
+
         // 9. 启用地址翻译
         self.write_reg32(REG_GCMD, GCMD_TE);
         self.wait_for_status(GSTS_TES);
-        
+
         self.enabled = true;
         Ok(())
     }
-    
+
     /// 映射页面
     pub fn map_pages(&mut self, phys_addr: u64, size: usize) -> Option<DmaAddr> {
         if self.translation_mode == TranslationMode::Passthrough {
             // Passthrough 模式：直接返回物理地址
             return Some(DmaAddr::new(phys_addr));
         }
-        
+
         // Translate 模式：分配 DMA 地址并建立映射
         let pages = (size as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
-        let dma_addr = self.next_dma_addr.fetch_add(pages * PAGE_SIZE, Ordering::SeqCst);
-        
+        let dma_addr = self
+            .next_dma_addr
+            .fetch_add(pages * PAGE_SIZE, Ordering::SeqCst);
+
         // 建立二级页表映射
         // 这里简化处理：假设使用 Domain 0，设备使用默认 Context
         for i in 0..pages {
@@ -428,65 +430,65 @@ impl VtdUnit {
             let phys = phys_addr + i * PAGE_SIZE;
             self.map_page(0, dma, phys)?;
         }
-        
+
         // 无效化 IOTLB
         self.invalidate_iotlb_domain(0);
-        
+
         Some(DmaAddr::new(dma_addr))
     }
-    
+
     /// 取消映射页面
     pub fn unmap_pages(&mut self, dma_addr: DmaAddr, size: usize) {
         if self.translation_mode == TranslationMode::Passthrough {
             return;
         }
-        
+
         let pages = (size as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
-        
+
         for i in 0..pages {
             let dma = dma_addr.as_u64() + i * PAGE_SIZE;
             self.unmap_page(0, dma);
         }
-        
+
         self.invalidate_iotlb_domain(0);
     }
-    
+
     // ========================================================================
     // 内部方法
     // ========================================================================
-    
+
     /// 初始化 Root Table
     fn init_root_table(&mut self) -> Result<(), &'static str> {
         // 分配 Root Table (4KB, 256 entries × 16 bytes)
         let root_table = self.alloc_page()?;
         self.root_table_phys = root_table;
         self.root_table_virt = root_table + self.direct_map_offset;
-        
+
         // 清零
         unsafe {
             ptr::write_bytes(self.root_table_virt as *mut u8, 0, PAGE_SIZE as usize);
         }
-        
+
         // 为所有模式设置 Context Table
         // 即使是 Passthrough 模式，我们也需要有效的 Context Entry 来标记 Translation Type = Pass-through
         // 这里简化：假设只有一个 PCI Segment Group (0)，只设置 Bus 0
         // 实际上应该根据 ACPI DMAR 表中的 Scope 来设置
         self.setup_context_for_bus(0)?;
-        
+
         Ok(())
     }
-    
+
     /// 为指定 bus 设置 Context Table
     fn setup_context_for_bus(&mut self, bus: u8) -> Result<(), &'static str> {
         // 分配 Context Table (4KB, 256 entries × 16 bytes, 每个 devfn 一个)
         let ctx_table_phys = self.alloc_page()?;
         let ctx_table_virt = ctx_table_phys + self.direct_map_offset;
-        
+
         // 清零
         unsafe {
             ptr::write_bytes(ctx_table_virt as *mut u8, 0, PAGE_SIZE as usize);
         }
-        
+
         // 设置 Root Table Entry
         let rte_offset = (bus as u64) * 16;
         let rte_ptr = (self.root_table_virt + rte_offset) as *mut u64;
@@ -499,59 +501,59 @@ impl VtdUnit {
 
         // 如果是 Translate 模式，需要分配二级页表
         let slpt_phys = if self.translation_mode == TranslationMode::Translate {
-             self.alloc_page()?
+            self.alloc_page()?
         } else {
             0
         };
 
         if self.translation_mode == TranslationMode::Translate {
-             let slpt_virt = slpt_phys + self.direct_map_offset;
-             unsafe {
+            let slpt_virt = slpt_phys + self.direct_map_offset;
+            unsafe {
                 ptr::write_bytes(slpt_virt as *mut u8, 0, PAGE_SIZE as usize);
-             }
+            }
         }
-        
+
         // 为 bus 0 的所有设备设置 Context Entry
         for devfn in 0..256u16 {
             let cte_offset = (devfn as u64) * 16;
             let cte_ptr = (ctx_table_virt + cte_offset) as *mut u64;
-            
+
             unsafe {
                 if self.translation_mode == TranslationMode::Passthrough {
-                        // Passthrough 模式：Translation Type = Pass-through (10b)
-                        // Low 64 bits: Present + Translation Type + FPD
-                        let low = CTE_PRESENT | CTE_T_PASSTHROUGH | CTE_FPD;
-                        ptr::write_volatile(cte_ptr, low);
-                        
-                        // High 64 bits: Address Width + Domain ID
-                        // AW is bits 2:0 in High Qword
-                        let high = CTE_AW_48 | (0 << CTE_DID_SHIFT);
-                        ptr::write_volatile(cte_ptr.add(1), high);
-                    } else {
-                        // Translate 模式：Translation Type = Untranslated (00b) + SLPTPTR
-                        // Low 64 bits: Present + Translation Type + SLPTPTR
-                        let low = CTE_PRESENT | CTE_T_UNTRANSLATED | (slpt_phys & CTE_SLPTPTR_MASK);
-                        ptr::write_volatile(cte_ptr, low);
-                        
-                        // High 64 bits: Address Width + Domain ID
-                        let high = CTE_AW_48 | (0 << CTE_DID_SHIFT);
-                        ptr::write_volatile(cte_ptr.add(1), high);
-                    }
+                    // Passthrough 模式：Translation Type = Pass-through (10b)
+                    // Low 64 bits: Present + Translation Type + FPD
+                    let low = CTE_PRESENT | CTE_T_PASSTHROUGH | CTE_FPD;
+                    ptr::write_volatile(cte_ptr, low);
+
+                    // High 64 bits: Address Width + Domain ID
+                    // AW is bits 2:0 in High Qword
+                    let high = CTE_AW_48 | (0 << CTE_DID_SHIFT);
+                    ptr::write_volatile(cte_ptr.add(1), high);
+                } else {
+                    // Translate 模式：Translation Type = Untranslated (00b) + SLPTPTR
+                    // Low 64 bits: Present + Translation Type + SLPTPTR
+                    let low = CTE_PRESENT | CTE_T_UNTRANSLATED | (slpt_phys & CTE_SLPTPTR_MASK);
+                    ptr::write_volatile(cte_ptr, low);
+
+                    // High 64 bits: Address Width + Domain ID
+                    let high = CTE_AW_48 | (0 << CTE_DID_SHIFT);
+                    ptr::write_volatile(cte_ptr.add(1), high);
+                }
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// 映射单个页面 (4KB)
     fn map_page(&mut self, domain_id: u16, dma_addr: u64, phys_addr: u64) -> Option<()> {
         // 获取 Domain 0 的二级页表根 (简化：从 bus 0, devfn 0 的 Context Entry 获取)
         let ctx_table_phys = self.get_context_table_for_bus(0)?;
         let ctx_table_virt = ctx_table_phys + self.direct_map_offset;
-        
+
         let cte_ptr = ctx_table_virt as *mut u64;
         let slpt_phys = unsafe { ptr::read_volatile(cte_ptr.add(1)) & CTE_SLPTPTR_MASK };
-        
+
         // 遍历 4 级页表
         let indices = [
             (dma_addr >> 39) & 0x1FF, // PML4
@@ -559,40 +561,43 @@ impl VtdUnit {
             (dma_addr >> 21) & 0x1FF, // PD
             (dma_addr >> 12) & 0x1FF, // PT
         ];
-        
+
         let mut table_phys = slpt_phys;
-        
+
         // 遍历前 3 级，确保中间表存在
         for level in 0..3 {
             let table_virt = table_phys + self.direct_map_offset;
             let entry_ptr = (table_virt + indices[level] * 8) as *mut u64;
-            
+
             let entry = unsafe { ptr::read_volatile(entry_ptr) };
-            
+
             if entry & SLPTE_P == 0 {
                 // 需要分配新的页表
                 let new_table = self.alloc_page().ok()?;
                 let new_table_virt = new_table + self.direct_map_offset;
                 unsafe {
                     ptr::write_bytes(new_table_virt as *mut u8, 0, PAGE_SIZE as usize);
-                    ptr::write_volatile(entry_ptr, (new_table & SLPTE_ADDR_MASK) | SLPTE_R | SLPTE_W);
+                    ptr::write_volatile(
+                        entry_ptr,
+                        (new_table & SLPTE_ADDR_MASK) | SLPTE_R | SLPTE_W,
+                    );
                 }
                 table_phys = new_table;
             } else {
                 table_phys = entry & SLPTE_ADDR_MASK;
             }
         }
-        
+
         // 设置 4 级 (PT) 条目
         let pt_virt = table_phys + self.direct_map_offset;
         let pte_ptr = (pt_virt + indices[3] * 8) as *mut u64;
         unsafe {
             ptr::write_volatile(pte_ptr, (phys_addr & SLPTE_ADDR_MASK) | SLPTE_R | SLPTE_W);
         }
-        
+
         Some(())
     }
-    
+
     /// 取消映射单个页面
     fn unmap_page(&mut self, _domain_id: u16, dma_addr: u64) {
         let ctx_table_phys = match self.get_context_table_for_bus(0) {
@@ -600,31 +605,31 @@ impl VtdUnit {
             None => return,
         };
         let ctx_table_virt = ctx_table_phys + self.direct_map_offset;
-        
+
         let cte_ptr = ctx_table_virt as *mut u64;
         let slpt_phys = unsafe { ptr::read_volatile(cte_ptr.add(1)) & CTE_SLPTPTR_MASK };
-        
+
         let indices = [
             (dma_addr >> 39) & 0x1FF,
             (dma_addr >> 30) & 0x1FF,
             (dma_addr >> 21) & 0x1FF,
             (dma_addr >> 12) & 0x1FF,
         ];
-        
+
         let mut table_phys = slpt_phys;
-        
+
         // 遍历到 PT
         for level in 0..3 {
             let table_virt = table_phys + self.direct_map_offset;
             let entry_ptr = (table_virt + indices[level] * 8) as *mut u64;
             let entry = unsafe { ptr::read_volatile(entry_ptr) };
-            
+
             if entry & SLPTE_P == 0 {
                 return; // 已经不存在
             }
             table_phys = entry & SLPTE_ADDR_MASK;
         }
-        
+
         // 清除 PT 条目
         let pt_virt = table_phys + self.direct_map_offset;
         let pte_ptr = (pt_virt + indices[3] * 8) as *mut u64;
@@ -632,20 +637,20 @@ impl VtdUnit {
             ptr::write_volatile(pte_ptr, 0);
         }
     }
-    
+
     /// 获取指定 bus 的 Context Table 地址
     fn get_context_table_for_bus(&self, bus: u8) -> Option<u64> {
         let rte_offset = (bus as u64) * 16;
         let rte_ptr = (self.root_table_virt + rte_offset) as *const u64;
-        
+
         let entry = unsafe { ptr::read_volatile(rte_ptr) };
         if entry & RTE_PRESENT == 0 {
             return None;
         }
-        
+
         Some(entry & RTE_CTP_MASK)
     }
-    
+
     /// 分配一个物理页面
     fn alloc_page(&self) -> Result<u64, &'static str> {
         // IOMMU 初始化发生在 Buddy/SLUB 就绪之后，优先走标准页分配路径。
@@ -654,7 +659,7 @@ impl VtdUnit {
         };
         Ok(crate::mm::page_to_pfn(page) * PAGE_SIZE)
     }
-    
+
     /// 刷新写缓冲
     fn flush_write_buffer(&mut self) {
         self.write_reg32(REG_GCMD, GCMD_WBF);
@@ -663,7 +668,7 @@ impl VtdUnit {
             core::hint::spin_loop();
         }
     }
-    
+
     /// 全局无效化 Context Cache
     fn invalidate_context_cache_global(&mut self) {
         self.write_reg64(REG_CCMD, CCMD_ICC | CCMD_CIRG_GLOBAL);
@@ -672,37 +677,37 @@ impl VtdUnit {
             core::hint::spin_loop();
         }
     }
-    
+
     /// 全局无效化 IOTLB
     fn invalidate_iotlb_global(&mut self) {
         // IOTLB 寄存器偏移
         let iro = ((self.read_reg64(REG_ECAP) & ECAP_IRO_MASK) >> ECAP_IRO_SHIFT) as u64 * 16;
         let iotlb_reg = iro + 8; // IVA + 8 = IOTLB
-        
+
         // 全局无效化
         let cmd: u64 = (1 << 63) | (1 << 60); // IVT + IIRG (global)
         self.write_reg64(iotlb_reg, cmd);
-        
+
         // 等待完成
         while (self.read_reg64(iotlb_reg) & (1 << 63)) != 0 {
             core::hint::spin_loop();
         }
     }
-    
+
     /// 按域无效化 IOTLB
     fn invalidate_iotlb_domain(&mut self, domain_id: u16) {
         let iro = ((self.read_reg64(REG_ECAP) & ECAP_IRO_MASK) >> ECAP_IRO_SHIFT) as u64 * 16;
         let iotlb_reg = iro + 8;
-        
+
         // 域级无效化
         let cmd: u64 = (1 << 63) | (2 << 60) | ((domain_id as u64) << 32);
         self.write_reg64(iotlb_reg, cmd);
-        
+
         while (self.read_reg64(iotlb_reg) & (1 << 63)) != 0 {
             core::hint::spin_loop();
         }
     }
-    
+
     /// 等待状态位
     fn wait_for_status(&self, status_bit: u32) {
         let mut timeout = 1000000u32;
@@ -714,23 +719,23 @@ impl VtdUnit {
             }
         }
     }
-    
+
     // ========================================================================
     // 寄存器访问
     // ========================================================================
-    
+
     fn read_reg32(&self, offset: u64) -> u32 {
         unsafe { ptr::read_volatile((self.reg_base_virt + offset) as *const u32) }
     }
-    
+
     fn write_reg32(&mut self, offset: u64, value: u32) {
         unsafe { ptr::write_volatile((self.reg_base_virt + offset) as *mut u32, value) }
     }
-    
+
     fn read_reg64(&self, offset: u64) -> u64 {
         unsafe { ptr::read_volatile((self.reg_base_virt + offset) as *const u64) }
     }
-    
+
     fn write_reg64(&mut self, offset: u64, value: u64) {
         unsafe { ptr::write_volatile((self.reg_base_virt + offset) as *mut u64, value) }
     }

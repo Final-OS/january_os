@@ -5,7 +5,7 @@
 
 use crate::drivers::acpi;
 use crate::sync::{Once, OnceCell};
-use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 /// ACPI 热键事件
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

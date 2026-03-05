@@ -1,7 +1,7 @@
 use crate::fs;
 use crate::syscall::{
-    err, ok, EAGAIN, EBADF, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOSYS, ENOTDIR, ENOTTY,
-    ERANGE, ESRCH, SyscallArgs, SyscallRet,
+    EAGAIN, EBADF, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOSYS, ENOTDIR, ENOTTY, ERANGE, ESRCH,
+    SyscallArgs, SyscallRet, err, ok,
 };
 use crate::task;
 use alloc::string::String;
@@ -589,9 +589,8 @@ pub(crate) fn sys_getdents64(args: &SyscallArgs) -> SyscallRet {
             core::ptr::copy_nonoverlapping(entry.name.as_ptr(), name_ptr, name_len);
             core::ptr::write(name_ptr.add(name_len), 0);
             let pad_start = base + core::mem::size_of::<LinuxDirent64Fixed>() + name_len + 1;
-            let pad_len = reclen.saturating_sub(
-                core::mem::size_of::<LinuxDirent64Fixed>() + name_len + 1,
-            );
+            let pad_len =
+                reclen.saturating_sub(core::mem::size_of::<LinuxDirent64Fixed>() + name_len + 1);
             if pad_len > 0 {
                 core::ptr::write_bytes(pad_start as *mut u8, 0, pad_len);
             }
@@ -650,10 +649,7 @@ pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet {
 
 #[inline]
 fn write_pipe_fds_user(ptr: usize, read_fd: i32, write_fd: i32) -> Result<(), i32> {
-    validate_user_range(
-        ptr,
-        core::mem::size_of::<i32>() * PIPE_FD_COUNT,
-    )?;
+    validate_user_range(ptr, core::mem::size_of::<i32>() * PIPE_FD_COUNT)?;
 
     unsafe {
         core::ptr::write(ptr as *mut i32, read_fd);
@@ -671,10 +667,8 @@ fn sys_pipe_impl(pipefd_ptr: usize, flags: u32) -> SyscallRet {
     if pipefd_ptr == 0 {
         return err(EFAULT);
     }
-    if let Err(errno) = validate_user_range(
-        pipefd_ptr,
-        core::mem::size_of::<i32>() * PIPE_FD_COUNT,
-    ) {
+    if let Err(errno) = validate_user_range(pipefd_ptr, core::mem::size_of::<i32>() * PIPE_FD_COUNT)
+    {
         return err(errno);
     }
 

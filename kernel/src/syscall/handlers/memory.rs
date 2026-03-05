@@ -3,7 +3,9 @@ use core::cmp;
 
 use crate::fs;
 use crate::mm;
-use crate::syscall::{E2BIG, EBADF, EBUSY, EINVAL, ENOMEM, ESRCH, SyscallArgs, SyscallRet, err, ok};
+use crate::syscall::{
+    E2BIG, EBADF, EBUSY, EINVAL, ENOMEM, ESRCH, SyscallArgs, SyscallRet, err, ok,
+};
 use crate::task;
 
 const MMAP_PROT_ALLOWED: u32 =
@@ -19,7 +21,10 @@ const MMAP_FLAGS_ALLOWED: u32 = mm::mmap_flags::MAP_SHARED
 #[inline]
 fn page_align_up_usize(value: usize) -> Result<usize, i32> {
     let page = mm::PAGE_SIZE as usize;
-    value.checked_add(page.saturating_sub(1)).map(|v| v & !(page - 1)).ok_or(E2BIG)
+    value
+        .checked_add(page.saturating_sub(1))
+        .map(|v| v & !(page - 1))
+        .ok_or(E2BIG)
 }
 
 #[inline]
@@ -58,7 +63,12 @@ fn apply_pte_flags_range(pgd: u64, start: u64, end: u64, pte_flags: u64) -> Resu
     Ok(())
 }
 
-fn mprotect_range_for_mm(mm_state: &mut mm::Mm, start: u64, end: u64, prot: u32) -> Result<(), i32> {
+fn mprotect_range_for_mm(
+    mm_state: &mut mm::Mm,
+    start: u64,
+    end: u64,
+    prot: u32,
+) -> Result<(), i32> {
     let mut cursor = start;
     while cursor < end {
         let Some(vma) = mm_state.find_vma(cursor) else {
@@ -87,7 +97,12 @@ fn mprotect_range_for_mm(mm_state: &mut mm::Mm, start: u64, end: u64, prot: u32)
             return Err(EBUSY);
         }
 
-        apply_pte_flags_range(mm_state.pgd, seg_start, seg_end, protected_info.flags.to_user_pte_flags())?;
+        apply_pte_flags_range(
+            mm_state.pgd,
+            seg_start,
+            seg_end,
+            protected_info.flags.to_user_pte_flags(),
+        )?;
         cursor = seg_end;
     }
 
@@ -335,12 +350,12 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
             Ok(pid) => pid,
             Err(errno) => return err(errno),
         };
-        let file_data = match fs::mmap_file_for_pid(pid, fd) {
-            Ok(data) => data,
+        let backing_id = match fs::mmap_create_backing_for_pid(pid, fd) {
+            Ok(id) => id,
             Err(errno) => return err(errno),
         };
-        info.file = file_data.as_ptr() as *mut ();
-        info.private_data = file_data.len() as *mut ();
+        info.file = backing_id as usize as *mut ();
+        info.private_data = core::ptr::null_mut();
     }
 
     let mm_state = unsafe { &mut *mm_ptr };

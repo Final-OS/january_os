@@ -343,7 +343,12 @@ impl PhysFrame {
 
 impl fmt::Debug for PhysFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PhysFrame(pfn={}, addr={:#x})", self.0, self.0 * PAGE_SIZE)
+        write!(
+            f,
+            "PhysFrame(pfn={}, addr={:#x})",
+            self.0,
+            self.0 * PAGE_SIZE
+        )
     }
 }
 

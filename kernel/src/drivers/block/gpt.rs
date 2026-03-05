@@ -40,12 +40,16 @@ fn is_zero_guid(raw: &[u8; 16]) -> bool {
 #[inline]
 fn normalize_gpt_guid(raw: &[u8; 16]) -> [u8; 16] {
     [
-        raw[3], raw[2], raw[1], raw[0], raw[5], raw[4], raw[7], raw[6], raw[8], raw[9], raw[10], raw[11], raw[12],
-        raw[13], raw[14], raw[15],
+        raw[3], raw[2], raw[1], raw[0], raw[5], raw[4], raw[7], raw[6], raw[8], raw[9], raw[10],
+        raw[11], raw[12], raw[13], raw[14], raw[15],
     ]
 }
 
-fn read_blocks(device: &Arc<dyn BlockDevice>, start_lba: u64, block_count: usize) -> Result<Vec<u8>, PartitionError> {
+fn read_blocks(
+    device: &Arc<dyn BlockDevice>,
+    start_lba: u64,
+    block_count: usize,
+) -> Result<Vec<u8>, PartitionError> {
     let block_size = device.block_size() as usize;
     let mut out = vec![0u8; block_size.saturating_mul(block_count)];
     let mut block = vec![0u8; block_size];
@@ -60,7 +64,9 @@ fn read_blocks(device: &Arc<dyn BlockDevice>, start_lba: u64, block_count: usize
     Ok(out)
 }
 
-pub fn parse_gpt_partitions(device: Arc<dyn BlockDevice>) -> Result<Option<Vec<Partition>>, PartitionError> {
+pub fn parse_gpt_partitions(
+    device: Arc<dyn BlockDevice>,
+) -> Result<Option<Vec<Partition>>, PartitionError> {
     let block_size = device.block_size() as usize;
     if block_size < GPT_HEADER_MIN_SIZE {
         return Err(PartitionError::InvalidGpt("block size too small"));

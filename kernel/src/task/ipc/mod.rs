@@ -2,5 +2,5 @@
 //!
 //! 包含各种 IPC 机制，如信号、管道、消息队列等。
 
-pub mod signal;
 pub mod pipe;
+pub mod signal;

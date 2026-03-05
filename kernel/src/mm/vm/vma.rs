@@ -6,22 +6,17 @@
 // ============================================================================
 
 use super::layout::{
-    KERNEL_BASE,
-    PAGE_SIZE,
-    USER_MMAP_BASE,
-    USER_SPACE_END,
-    USER_SPACE_START,
-    USER_STACK_SIZE,
+    KERNEL_BASE, PAGE_SIZE, USER_MMAP_BASE, USER_SPACE_END, USER_SPACE_START, USER_STACK_SIZE,
     USER_STACK_TOP,
 };
-use alloc::boxed::Box;
-use core::ptr;
 use crate::libs::mptree::MapleTree;
 use crate::mm::arch::{PageTable, PageTableEntry, PageTableManager, level_index};
 use crate::mm::page::buddy::{alloc_page, free_page};
 use crate::mm::page::page::{PageFlags, PageOwner, max_pfn, page_to_pfn, pfn_to_page};
 use crate::mm::page::zone::{GFP_KERNEL_ZERO, GFP_USER};
 use crate::sync::IrqSpinLock;
+use alloc::boxed::Box;
+use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 // ============================================================================
@@ -36,13 +31,13 @@ pub struct VmFlags(u64);
 impl VmFlags {
     // ========== 基本权限 (与 mmap prot 对应) ==========
     /// 可读
-    pub const READ: u64      = 1 << 0;
+    pub const READ: u64 = 1 << 0;
     /// 可写
-    pub const WRITE: u64     = 1 << 1;
+    pub const WRITE: u64 = 1 << 1;
     /// 可执行
-    pub const EXEC: u64      = 1 << 2;
+    pub const EXEC: u64 = 1 << 2;
     /// 共享映射 (vs 私有)
-    pub const SHARED: u64    = 1 << 3;
+    pub const SHARED: u64 = 1 << 3;
 
     // ========== 映射类型 ==========
     /// 匿名映射 (无文件后备)
@@ -50,27 +45,27 @@ impl VmFlags {
     /// 栈区域 (向下增长)
     pub const GROWSDOWN: u64 = 1 << 5;
     /// 堆区域
-    pub const HEAP: u64      = 1 << 6;
+    pub const HEAP: u64 = 1 << 6;
     /// 代码段
-    pub const CODE: u64      = 1 << 7;
+    pub const CODE: u64 = 1 << 7;
     /// 数据段
-    pub const DATA: u64      = 1 << 8;
+    pub const DATA: u64 = 1 << 8;
     /// BSS 段
-    pub const BSS: u64       = 1 << 9;
+    pub const BSS: u64 = 1 << 9;
 
     // ========== 特殊属性 ==========
     /// 锁定在内存中 (不可换出)
-    pub const LOCKED: u64    = 1 << 10;
+    pub const LOCKED: u64 = 1 << 10;
     /// IO 映射 (设备内存)
-    pub const IO: u64        = 1 << 11;
+    pub const IO: u64 = 1 << 11;
     /// 巨页映射
-    pub const HUGETLB: u64   = 1 << 12;
+    pub const HUGETLB: u64 = 1 << 12;
     /// 不可合并
     pub const DONTMERGE: u64 = 1 << 13;
     /// 不可扩展
     pub const DONTEXPAND: u64 = 1 << 14;
     /// 写时复制
-    pub const MAYWRITE: u64  = 1 << 15;
+    pub const MAYWRITE: u64 = 1 << 15;
 
     // ========== 常用组合 ==========
     pub const RW: u64 = Self::READ | Self::WRITE;
@@ -161,9 +156,9 @@ pub struct VmaInfo {
     pub flags: VmFlags,
     /// 文件偏移 (如果是文件映射)
     pub pgoff: u64,
-    /// 关联的文件 (如果是文件映射，暂为空)
+    /// 文件映射后备句柄（由 fs 层解释）
     pub file: *mut (),
-    /// 私有数据
+    /// 文件映射私有字段（由 fs 层解释）
     pub private_data: *mut (),
 }
 
@@ -196,9 +191,9 @@ pub struct Vma {
     pub vm_flags: VmFlags,
     /// 文件偏移
     pub vm_pgoff: u64,
-    /// 文件数据基址（最小静态文件后端）
+    /// 文件映射后备句柄（由 fs 层解释）
     pub vm_file: *mut (),
-    /// 文件数据长度（字节，编码在指针宽度中）
+    /// 文件映射私有字段（由 fs 层解释）
     pub vm_private_data: *mut (),
 }
 
@@ -377,9 +372,9 @@ impl Mm {
 
     #[inline]
     fn find_vma_nolock(&self, addr: u64) -> Option<Vma> {
-        self.vma_tree.find(addr as usize).map(|(s, e, info)| {
-            Vma::from_tree(s, e, info)
-        })
+        self.vma_tree
+            .find(addr as usize)
+            .map(|(s, e, info)| Vma::from_tree(s, e, info))
     }
 
     /// 查找包含指定地址的 VMA 的标志
@@ -390,7 +385,9 @@ impl Mm {
 
     #[inline]
     fn find_vma_flags_nolock(&self, addr: u64) -> Option<VmFlags> {
-        self.vma_tree.find(addr as usize).map(|(_, _, info)| info.flags)
+        self.vma_tree
+            .find(addr as usize)
+            .map(|(_, _, info)| info.flags)
     }
 
     /// 查找与指定范围重叠的 VMA
@@ -441,7 +438,11 @@ impl Mm {
         let nr_pages = (end - start) / PAGE_SIZE;
         let flags = info.flags;
 
-        if self.vma_tree.insert(start as usize, end as usize, info).is_err() {
+        if self
+            .vma_tree
+            .insert(start as usize, end as usize, info)
+            .is_err()
+        {
             return false;
         }
 
@@ -508,7 +509,10 @@ impl Mm {
         if new_brk > old_brk {
             // 扩展堆
             // 检查是否与其他 VMA 冲突
-            if self.find_vma_intersection_nolock(old_brk, new_brk).is_some() {
+            if self
+                .find_vma_intersection_nolock(old_brk, new_brk)
+                .is_some()
+            {
                 return Err("brk conflicts with existing VMA");
             }
 
@@ -522,7 +526,10 @@ impl Mm {
                     let delta = new_brk.saturating_sub(old_end) / PAGE_SIZE;
                     let new_info = info.clone();
                     // 使用 replace 原子替换，避免 remove+insert 导致 VMA 丢失
-                    match self.vma_tree.replace(start as usize, new_brk as usize, new_info) {
+                    match self
+                        .vma_tree
+                        .replace(start as usize, new_brk as usize, new_info)
+                    {
                         Ok(_) => {
                             self.total_vm += delta;
                             expanded_existing_heap = true;
@@ -550,9 +557,16 @@ impl Mm {
                 if info.flags.contains(VmFlags::HEAP) && start <= new_brk {
                     let delta = (old_brk - new_brk) / PAGE_SIZE;
                     let new_info = info.clone();
-                    match self.vma_tree.replace(start as usize, new_brk as usize, new_info) {
-                        Ok(_) => { self.total_vm -= delta; }
-                        Err(_) => { return Err("brk shrink failed"); }
+                    match self
+                        .vma_tree
+                        .replace(start as usize, new_brk as usize, new_info)
+                    {
+                        Ok(_) => {
+                            self.total_vm -= delta;
+                        }
+                        Err(_) => {
+                            return Err("brk shrink failed");
+                        }
                     }
                 }
             }
@@ -606,8 +620,8 @@ impl Mm {
 
         let stack_info = self.vma_tree.lower_bound(page_addr as usize);
         match stack_info {
-            Some((s, _e, info)) if info.flags.contains(VmFlags::GROWSDOWN)
-                && (s as u64) > page_addr =>
+            Some((s, _e, info))
+                if info.flags.contains(VmFlags::GROWSDOWN) && (s as u64) > page_addr =>
             {
                 let vma_start = s as u64;
                 if !self.expand_stack_nolock(vma_start, page_addr) {
@@ -636,21 +650,21 @@ const fn page_align_up(addr: u64) -> u64 {
 
 /// mmap 标志 (与 Linux 兼容)
 pub mod mmap_flags {
-    pub const MAP_SHARED: u32     = 0x01;
-    pub const MAP_PRIVATE: u32    = 0x02;
-    pub const MAP_FIXED: u32      = 0x10;
-    pub const MAP_ANONYMOUS: u32  = 0x20;
-    pub const MAP_GROWSDOWN: u32  = 0x0100;
-    pub const MAP_LOCKED: u32     = 0x2000;
-    pub const MAP_HUGETLB: u32    = 0x40000;
+    pub const MAP_SHARED: u32 = 0x01;
+    pub const MAP_PRIVATE: u32 = 0x02;
+    pub const MAP_FIXED: u32 = 0x10;
+    pub const MAP_ANONYMOUS: u32 = 0x20;
+    pub const MAP_GROWSDOWN: u32 = 0x0100;
+    pub const MAP_LOCKED: u32 = 0x2000;
+    pub const MAP_HUGETLB: u32 = 0x40000;
 }
 
 /// mmap 保护标志 (与 Linux 兼容)
 pub mod prot_flags {
-    pub const PROT_NONE: u32  = 0x0;
-    pub const PROT_READ: u32  = 0x1;
+    pub const PROT_NONE: u32 = 0x0;
+    pub const PROT_READ: u32 = 0x1;
     pub const PROT_WRITE: u32 = 0x2;
-    pub const PROT_EXEC: u32  = 0x4;
+    pub const PROT_EXEC: u32 = 0x4;
 }
 
 /// 将 mmap 标志转换为 VmFlags
@@ -872,7 +886,9 @@ static INIT_MM: crate::sync::OnceCell<IrqSpinLock<Mm>> = crate::sync::OnceCell::
 
 /// 获取内核 mm (加锁)
 pub fn get_init_mm() -> crate::sync::IrqSpinLockGuard<'static, Mm> {
-    INIT_MM.get_or_init(|| IrqSpinLock::new(Mm::uninit())).lock()
+    INIT_MM
+        .get_or_init(|| IrqSpinLock::new(Mm::uninit()))
+        .lock()
 }
 
 /// 获取内核初始化地址空间的裸指针
@@ -984,13 +1000,11 @@ pub unsafe fn mm_release(mm: *mut Mm) {
     }
 
     let prev = (*mm).mm_count.fetch_sub(1, Ordering::AcqRel);
-    let _ = (*mm).mm_users.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
-        if v > 0 {
-            Some(v - 1)
-        } else {
-            Some(0)
-        }
-    });
+    let _ = (*mm)
+        .mm_users
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
+            if v > 0 { Some(v - 1) } else { Some(0) }
+        });
 
     if prev <= 1 {
         let init_pgd = init_mm_pgd_phys();
@@ -1008,7 +1022,9 @@ pub unsafe fn mm_release(mm: *mut Mm) {
 
 /// 初始化 VMA 子系统
 pub fn init_vma() {
-    let mut mm = INIT_MM.get_or_init(|| IrqSpinLock::new(Mm::uninit())).lock();
+    let mut mm = INIT_MM
+        .get_or_init(|| IrqSpinLock::new(Mm::uninit()))
+        .lock();
     mm.init(kernel_pgd_phys());
 }
 

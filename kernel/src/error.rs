@@ -9,7 +9,7 @@
 pub enum KernelError {
     /// Success (0)
     Success = 0,
-    
+
     // --- Generic Errors ---
     /// Generic failure
     Failed = -1,
@@ -29,7 +29,7 @@ pub enum KernelError {
     NotSupported = -8,
     /// Permission denied
     AccessDenied = -9,
-    
+
     // --- IO / Device Errors ---
     /// Generic IO error
     Io = -10,
@@ -39,13 +39,13 @@ pub enum KernelError {
     DeviceError = -12,
     /// Buffer too small
     BufferTooSmall = -13,
-    
+
     // --- Memory Errors ---
     /// Invalid address or alignment
     InvalidAddress = -20,
     /// Address not mapped
     NotMapped = -21,
-    
+
     // --- System Errors ---
     /// Interrupted system call/operation
     Interrupted = -30,

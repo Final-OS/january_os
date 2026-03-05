@@ -31,7 +31,9 @@ fn is_extended_type(ty: u8) -> bool {
     ty == MBR_TYPE_EXTENDED_CHS || ty == MBR_TYPE_EXTENDED_LBA || ty == MBR_TYPE_EXTENDED_LINUX
 }
 
-pub fn parse_mbr_partitions(device: Arc<dyn BlockDevice>) -> Result<Option<Vec<Partition>>, PartitionError> {
+pub fn parse_mbr_partitions(
+    device: Arc<dyn BlockDevice>,
+) -> Result<Option<Vec<Partition>>, PartitionError> {
     let block_size = device.block_size() as usize;
     if block_size < MBR_MIN_LEN {
         return Err(PartitionError::InvalidMbr("block size < 512"));
@@ -40,7 +42,9 @@ pub fn parse_mbr_partitions(device: Arc<dyn BlockDevice>) -> Result<Option<Vec<P
     let mut sector0 = vec![0u8; block_size];
     device.read_block(0, &mut sector0)?;
 
-    if sector0[MBR_SIGNATURE_OFF] != MBR_SIGNATURE0 || sector0[MBR_SIGNATURE_OFF + 1] != MBR_SIGNATURE1 {
+    if sector0[MBR_SIGNATURE_OFF] != MBR_SIGNATURE0
+        || sector0[MBR_SIGNATURE_OFF + 1] != MBR_SIGNATURE1
+    {
         return Ok(None);
     }
 

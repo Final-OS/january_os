@@ -89,7 +89,7 @@ pub fn paging_hardware_state() -> PagingHardwareState {
 }
 
 /// 设置 CR3 值 (切换页表)
-/// 
+///
 /// # Safety
 /// 必须确保新的 CR3 值指向有效的页表
 #[inline]
@@ -111,13 +111,13 @@ pub fn set_global_pages_enabled(enabled: bool) {
             out(reg) cr4,
             options(nostack, preserves_flags)
         );
-        
+
         if enabled {
             cr4 |= 1 << 7; // CR4.PGE
         } else {
             cr4 &= !(1 << 7);
         }
-        
+
         core::arch::asm!(
             "mov cr4, {}",
             in(reg) cr4,

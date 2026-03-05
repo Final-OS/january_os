@@ -88,9 +88,7 @@ impl Once {
                     // 我们获得了执行权。
                     // 使用 guard 保证：失败或 panic unwind 时状态回滚到 INCOMPLETE。
                     let mut guard = RunningGuard::new(&self.state);
-                    let f = init
-                        .take()
-                        .expect("call_once_try initializer consumed");
+                    let f = init.take().expect("call_once_try initializer consumed");
                     f()?;
                     guard.complete();
                     return Ok(());
@@ -186,7 +184,7 @@ impl<T> OnceCell<T> {
     /// 返回 Ok(()) 如果成功设置，Err(value) 如果已初始化。
     pub fn set(&self, value: T) -> Result<(), T> {
         let mut value = Some(value);
-        
+
         self.once.call_once(|| {
             let v = value.take().unwrap();
             unsafe {
@@ -202,10 +200,8 @@ impl<T> OnceCell<T> {
 
     /// 获取或初始化值
     pub fn get_or_init<F: FnOnce() -> T>(&self, f: F) -> &T {
-        self.once.call_once(|| {
-            unsafe {
-                *self.value.get() = Some(f());
-            }
+        self.once.call_once(|| unsafe {
+            *self.value.get() = Some(f());
         });
 
         unsafe { (*self.value.get()).as_ref().unwrap() }

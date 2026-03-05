@@ -133,13 +133,21 @@ impl<K: Ord, V> BTree<K, V> {
 
         if node.is_leaf {
             // 叶子节点：插入新键值对
-            let pos = node.keys.iter().position(|k| k > &key).unwrap_or(node.keys.len());
+            let pos = node
+                .keys
+                .iter()
+                .position(|k| k > &key)
+                .unwrap_or(node.keys.len());
             node.keys.insert(pos, key);
             node.values.insert(pos, value);
             None
         } else {
             // 内部节点：找到合适的子节点
-            let mut child_idx = node.keys.iter().position(|k| k > &key).unwrap_or(node.keys.len());
+            let mut child_idx = node
+                .keys
+                .iter()
+                .position(|k| k > &key)
+                .unwrap_or(node.keys.len());
 
             // 如果子节点已满，先分裂
             if node.children[child_idx].is_full() {
@@ -262,7 +270,11 @@ impl<K: Ord, V> BTree<K, V> {
         }
 
         // 内部节点：找到合适的子节点继续查找
-        let child_idx = node.keys.iter().position(|k| k > key).unwrap_or(node.keys.len());
+        let child_idx = node
+            .keys
+            .iter()
+            .position(|k| k > key)
+            .unwrap_or(node.keys.len());
         Self::get_in_node(&node.children[child_idx], key)
     }
 
@@ -279,7 +291,11 @@ impl<K: Ord, V> BTree<K, V> {
         }
 
         // 内部节点：找到合适的子节点继续查找
-        let child_idx = node.keys.iter().position(|k| k > key).unwrap_or(node.keys.len());
+        let child_idx = node
+            .keys
+            .iter()
+            .position(|k| k > key)
+            .unwrap_or(node.keys.len());
         Self::get_mut_in_node(&mut node.children[child_idx], key)
     }
 
@@ -373,7 +389,11 @@ impl<K: Ord, V> BTree<K, V> {
         }
 
         // 内部节点：找到包含该键的子节点
-        let child_idx = node.keys.iter().position(|k| k > key).unwrap_or(node.keys.len());
+        let child_idx = node
+            .keys
+            .iter()
+            .position(|k| k > key)
+            .unwrap_or(node.keys.len());
 
         // 确保子节点有足够的键
         if node.children[child_idx].keys.len() <= MIN_KEYS {
@@ -381,7 +401,11 @@ impl<K: Ord, V> BTree<K, V> {
         }
 
         // 重新查找子节点（可能因为修复而改变）
-        let child_idx = node.keys.iter().position(|k| k > key).unwrap_or(node.keys.len());
+        let child_idx = node
+            .keys
+            .iter()
+            .position(|k| k > key)
+            .unwrap_or(node.keys.len());
         let child_ptr = &mut *node.children[child_idx] as *mut BTreeNode<K, V>;
         Self::remove_from_node_static(child_ptr, key)
     }
@@ -614,13 +638,7 @@ impl<K: Ord, V> BTree<K, V> {
         let mut pred = f;
         let to_remove: Vec<K> = self
             .iter()
-            .filter_map(|(k, v)| {
-                if !pred(k, v) {
-                    Some(k.clone())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(k, v)| if !pred(k, v) { Some(k.clone()) } else { None })
             .collect();
 
         for key in to_remove {
@@ -676,4 +694,3 @@ impl<K: Ord + Clone, V> Extend<(K, V)> for BTree<K, V> {
         }
     }
 }
-

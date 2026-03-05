@@ -4,14 +4,14 @@
 // 多节点内存架构支持，为大型服务器优化内存访问
 // ============================================================================
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
-use crate::sync::Once;
-use crate::interrupt::apic::local_apic_id;
-use super::zone::{Zone, ZoneType, NR_ZONES, MAX_ORDER, FreeArea};
 use super::page::ListHead;
-use crate::mm::vm::layout::PAGE_SIZE;
+use super::zone::{FreeArea, MAX_ORDER, NR_ZONES, Zone, ZoneType};
 use crate::config;
+use crate::interrupt::apic::local_apic_id;
+use crate::mm::vm::layout::PAGE_SIZE;
+use crate::sync::Once;
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // ============================================================================
 // 常量 (从配置导入)
@@ -72,7 +72,7 @@ pub struct PgData {
     pub name: &'static str,
     /// 下一个节点
     pub next: *mut PgData,
-    
+
     // ========== 统计信息 ==========
     /// 空闲页数
     pub nr_free_pages: AtomicU32,
@@ -87,11 +87,7 @@ impl PgData {
         Self {
             node_id: 0,
             online: AtomicBool::new(false),
-            node_zones: [
-                Zone::uninit(),
-                Zone::uninit(),
-                Zone::uninit(),
-            ],
+            node_zones: [Zone::uninit(), Zone::uninit(), Zone::uninit()],
             node_start_pfn: 0,
             node_spanned_pages: 0,
             node_present_pages: 0,
@@ -102,7 +98,7 @@ impl PgData {
             nr_inactive_pages: AtomicU32::new(0),
         }
     }
-    
+
     /// 初始化节点
     pub fn init(&mut self, node_id: u32, start_pfn: u64, nr_pages: u64) {
         self.node_id = node_id;
@@ -110,7 +106,7 @@ impl PgData {
         self.node_spanned_pages = nr_pages;
         self.node_present_pages = nr_pages;
         self.online.store(true, Ordering::SeqCst);
-        
+
         // 初始化 Zones
         for zone in self.node_zones.iter_mut() {
             for area in zone.free_area.iter_mut() {
@@ -118,11 +114,11 @@ impl PgData {
             }
         }
     }
-    
+
     /// 获取节点总空闲页数
     pub fn total_free_pages(&self) -> u64 {
         use super::zone::get_zone;
-        
+
         // UMA 模式：使用全局 Zones
         if self.node_id == 0 {
             let mut total = 0u64;
@@ -134,7 +130,7 @@ impl PgData {
             }
             return total;
         }
-        
+
         // NUMA 模式：使用节点内部 Zones
         let mut total = 0u64;
         for zone in self.node_zones.iter() {
@@ -144,18 +140,18 @@ impl PgData {
         }
         total
     }
-    
+
     /// 获取指定 Zone
     pub fn get_zone(&mut self, zone_type: ZoneType) -> &mut Zone {
         &mut self.node_zones[zone_type as usize]
     }
-    
+
     /// 结束 PFN
     #[inline]
     pub fn node_end_pfn(&self) -> u64 {
         self.node_start_pfn + self.node_spanned_pages
     }
-    
+
     /// 检查 PFN 是否属于此节点
     #[inline]
     pub fn contains_pfn(&self, pfn: u64) -> bool {
@@ -239,9 +235,9 @@ fn set_apic_to_node(apic_id: usize, node_id: u32) {
 // ============================================================================
 
 /// 获取节点数据
-/// 
+///
 /// # Safety
-/// 
+///
 /// node_id 必须有效
 pub unsafe fn get_node_data(node_id: u32) -> &'static mut PgData {
     debug_assert!((node_id as usize) < MAX_NUMNODES);
@@ -274,7 +270,9 @@ pub fn node_online(node_id: u32) -> bool {
     if (node_id as usize) >= MAX_NUMNODES {
         return false;
     }
-    node_data_ref(node_id as usize).online.load(Ordering::Relaxed)
+    node_data_ref(node_id as usize)
+        .online
+        .load(Ordering::Relaxed)
 }
 
 // ============================================================================
@@ -307,12 +305,12 @@ pub fn uma_config_enabled() -> bool {
 }
 
 /// 初始化 NUMA 子系统
-/// 
+///
 /// 根据配置和硬件信息初始化：
 /// - 如果配置为 UMA 模式，使用 UMA
 /// - 如果配置启用但只有单节点，使用 UMA 模式
 /// - 否则启用完整 NUMA 支持
-/// 
+///
 /// # Arguments
 /// * `nodes` - 节点信息数组 (从 ACPI SRAT 表解析)
 pub unsafe fn init_numa(nodes: &[NumaNodeInfo]) {
@@ -321,27 +319,27 @@ pub unsafe fn init_numa(nodes: &[NumaNodeInfo]) {
         init_uma();
         return;
     }
-    
+
     if nodes.is_empty() {
         // 无 NUMA 信息，使用 UMA 模式
         init_uma();
         return;
     }
-    
+
     if nodes.len() == 1 {
         // 单节点，使用 UMA 模式
         init_uma();
         return;
     }
-    
+
     // 多节点，NUMA 模式
     IS_NUMA.store(true, Ordering::SeqCst);
-    
+
     for info in nodes.iter() {
         if (info.node_id as usize) >= MAX_NUMNODES {
             continue;
         }
-        
+
         // 更新 CPU 到节点的映射
         let mut mask = info.cpu_mask;
         let mut apic_id = 0;
@@ -354,37 +352,37 @@ pub unsafe fn init_numa(nodes: &[NumaNodeInfo]) {
             mask >>= 1;
             apic_id += 1;
         }
-        
+
         let node = node_data_mut(info.node_id as usize);
         let start_pfn = info.start_addr / PAGE_SIZE;
         let nr_pages = info.size / PAGE_SIZE;
-        
+
         node.init(info.node_id, start_pfn, nr_pages);
         NR_ONLINE_NODES.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     // 标记初始化完成（通过空闭包，因为实际初始化已在上面完成）
     NUMA_INIT.call_once(|| {});
 }
 
 /// 初始化 UMA 模式 (单节点)
-/// 
+///
 /// 从现有 Zone 统计中获取内存信息
 pub fn init_uma() {
     use super::zone::get_zone;
-    
+
     IS_NUMA.store(false, Ordering::SeqCst);
-    
+
     unsafe {
         let node = node_data_mut(0);
         node.node_id = 0;
         node.online.store(true, Ordering::SeqCst);
-        
+
         // 从全局 Zones 计算节点内存统计
         let mut total_pages = 0u64;
         let mut start_pfn = u64::MAX;
         let mut end_pfn = 0u64;
-        
+
         for zone_type in [ZoneType::Dma, ZoneType::Dma32, ZoneType::Normal] {
             let zone = get_zone(zone_type);
             if zone.initialized {
@@ -398,14 +396,14 @@ pub fn init_uma() {
                 }
             }
         }
-        
+
         node.node_start_pfn = if start_pfn == u64::MAX { 0 } else { start_pfn };
         node.node_spanned_pages = end_pfn.saturating_sub(node.node_start_pfn);
         node.node_present_pages = total_pages;
     }
-    
+
     NR_ONLINE_NODES.store(1, Ordering::SeqCst);
-    
+
     // 标记初始化完成
     NUMA_INIT.call_once(|| {});
 }
@@ -449,18 +447,18 @@ fn interleave_node() -> u32 {
     if nr_nodes <= 1 {
         return 0;
     }
-    
+
     // 简单 round-robin
     let next = INTERLEAVE_NEXT.fetch_add(1, Ordering::Relaxed);
     let mut node_id = next % nr_nodes;
-    
+
     // 确保选中的节点在线
     let mut tries = 0;
     while !node_online(node_id) && tries < nr_nodes {
         node_id = (node_id + 1) % nr_nodes;
         tries += 1;
     }
-    
+
     node_id
 }
 
@@ -469,12 +467,12 @@ pub fn get_fallback_nodes(node_id: u32) -> &'static [u32] {
     // 简化实现：返回所有其他节点
     // 真实实现应考虑 NUMA 距离
     static FALLBACK: [u32; MAX_NUMNODES] = [0, 1, 2, 3, 4, 5, 6, 7];
-    
+
     let nr_nodes = nr_online_nodes() as usize;
     if nr_nodes <= 1 {
         return &[];
     }
-    
+
     // 跳过本节点
     let start = (node_id as usize + 1) % nr_nodes;
     &FALLBACK[start..nr_nodes.min(MAX_NUMNODES)]
@@ -520,9 +518,9 @@ pub const LOCAL_DISTANCE: u8 = 10;
 pub const REMOTE_DISTANCE: u8 = 20;
 
 /// 设置节点间距离
-/// 
+///
 /// # Safety
-/// 
+///
 /// 节点 ID 必须有效
 pub unsafe fn set_numa_distance(from: u32, to: u32, distance: u8) {
     if (from as usize) < MAX_NUMNODES && (to as usize) < MAX_NUMNODES {
@@ -572,7 +570,7 @@ pub fn numa_stats() -> NumaStats {
         is_numa: is_numa(),
         nodes: [NodeStats::default(); MAX_NUMNODES],
     };
-    
+
     unsafe {
         for i in 0..MAX_NUMNODES {
             let node = node_data_ref(i);
@@ -584,6 +582,6 @@ pub fn numa_stats() -> NumaStats {
             };
         }
     }
-    
+
     stats
 }

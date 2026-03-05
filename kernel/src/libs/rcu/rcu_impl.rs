@@ -236,7 +236,8 @@ impl<T> Rcu<T> {
         self.grace_period.fetch_add(1, Ordering::Release);
 
         // 等待所有活跃读者离开
-        let can_schedule = crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some();
+        let can_schedule =
+            crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some();
         let start_ticks = crate::interrupt::timer_ticks();
         let deadline_ticks = start_ticks.saturating_add(crate::interrupt::TIMER_TICK_HZ * 5);
         let mut spins: u64 = 0;

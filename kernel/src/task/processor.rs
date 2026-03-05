@@ -2,10 +2,10 @@
 //!
 //! 管理每个 CPU 核心的任务状态。
 
-use alloc::sync::Arc;
-use crate::sync::Mutex;
-use super::task::Task;
 use super::arch::__switch;
+use super::task::Task;
+use crate::sync::Mutex;
+use alloc::sync::Arc;
 
 /// 每个 CPU 的处理器状态
 pub struct Processor {
@@ -78,9 +78,6 @@ pub(crate) fn take_current_task() -> Option<Arc<Mutex<Task>>> {
 /// 执行上下文切换
 ///
 /// 在锁外调用 __switch，避免死锁。
-pub(crate) unsafe fn do_switch(
-    prev_ctx_ptr: *mut usize,
-    next_ctx_ptr: *const usize,
-) {
+pub(crate) unsafe fn do_switch(prev_ctx_ptr: *mut usize, next_ctx_ptr: *const usize) {
     __switch(prev_ctx_ptr, next_ctx_ptr);
 }

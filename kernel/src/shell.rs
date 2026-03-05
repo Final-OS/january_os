@@ -964,7 +964,9 @@ fn execute_hotkey_command(args: &[&str]) {
                 }
                 None => {
                     kprintln!("Invalid hotkey name: '{}'", name);
-                    kprintln!("Valid names: power, sleep, hibernate, volup, voldown, mute, briup, bridown");
+                    kprintln!(
+                        "Valid names: power, sleep, hibernate, volup, voldown, mute, briup, bridown"
+                    );
                 }
             }
         }

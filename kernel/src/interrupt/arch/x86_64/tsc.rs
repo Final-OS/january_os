@@ -2,9 +2,9 @@
 // january_os - TSC (Time Stamp Counter)
 // ============================================================================
 
+use crate::drivers::acpi;
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::drivers::acpi;
 
 /// TSC 频率 (Hz)
 static TSC_FREQUENCY: AtomicU64 = AtomicU64::new(0);
@@ -61,15 +61,19 @@ pub fn calibrate_tsc() {
     let is_32bit = (fadt.flags & (1 << 8)) != 0;
     let mask = if is_32bit { 0xFFFFFFFF } else { 0x00FFFFFF };
 
-    crate::info!("[TSC] Calibrating using ACPI PM Timer at port {:#x} ({} bit)...", pm_timer_port, if is_32bit { 32 } else { 24 });
+    crate::info!(
+        "[TSC] Calibrating using ACPI PM Timer at port {:#x} ({} bit)...",
+        pm_timer_port,
+        if is_32bit { 32 } else { 24 }
+    );
 
     // 校准时长: 100ms (约 357954 ticks)
-    let calibration_ticks = PM_TIMER_FREQUENCY / 10; 
-    
+    let calibration_ticks = PM_TIMER_FREQUENCY / 10;
+
     unsafe {
         let start_pm = inl(pm_timer_port) & mask;
         let start_tsc = rdtsc();
-        
+
         loop {
             // 优化：减少 IO 端口读取频率，避免在虚拟机中产生过多 VM-Exit
             // PM Timer 频率仅为 3.58MHz，不需要极其频繁的轮询
@@ -78,26 +82,30 @@ pub fn calibrate_tsc() {
             }
 
             let current_pm = inl(pm_timer_port) & mask;
-            
+
             // 处理溢出
             let elapsed_pm = if current_pm >= start_pm {
                 current_pm - start_pm
             } else {
                 (current_pm + (mask + 1)) - start_pm
             };
-            
+
             if elapsed_pm >= calibration_ticks as u32 {
                 break;
             }
         }
-        
+
         let end_tsc = rdtsc();
         let diff_tsc = end_tsc - start_tsc;
-        
+
         // 计算频率: diff_tsc * 10
         let freq = diff_tsc * 10;
         TSC_FREQUENCY.store(freq, Ordering::SeqCst);
-        
-        crate::ok!("[TSC] Frequency detected: {} Hz ({} MHz)", freq, freq / 1_000_000);
+
+        crate::ok!(
+            "[TSC] Frequency detected: {} Hz ({} MHz)",
+            freq,
+            freq / 1_000_000
+        );
     }
 }

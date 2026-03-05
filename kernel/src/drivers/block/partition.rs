@@ -156,10 +156,17 @@ impl PartitionedDevice {
             .partition(index)
             .copied()
             .ok_or(PartitionError::OutOfRange)?;
-        Ok(Arc::new(PartitionBlockDevice::new(self.device.clone(), partition)))
+        Ok(Arc::new(PartitionBlockDevice::new(
+            self.device.clone(),
+            partition,
+        )))
     }
 
-    fn new(device: Arc<dyn BlockDevice>, table_kind: PartitionTableKind, partitions: Vec<Partition>) -> Self {
+    fn new(
+        device: Arc<dyn BlockDevice>,
+        table_kind: PartitionTableKind,
+        partitions: Vec<Partition>,
+    ) -> Self {
         Self {
             device,
             table_kind,
@@ -169,7 +176,9 @@ impl PartitionedDevice {
 }
 
 /// Detect partition table and return parsed partitions.
-pub fn discover_partitions(device: Arc<dyn BlockDevice>) -> Result<PartitionedDevice, PartitionError> {
+pub fn discover_partitions(
+    device: Arc<dyn BlockDevice>,
+) -> Result<PartitionedDevice, PartitionError> {
     match gpt::parse_gpt_partitions(device.clone())? {
         Some(partitions) => {
             return Ok(PartitionedDevice::new(
@@ -182,7 +191,11 @@ pub fn discover_partitions(device: Arc<dyn BlockDevice>) -> Result<PartitionedDe
     }
 
     match mbr::parse_mbr_partitions(device.clone())? {
-        Some(partitions) => Ok(PartitionedDevice::new(device, PartitionTableKind::Mbr, partitions)),
+        Some(partitions) => Ok(PartitionedDevice::new(
+            device,
+            PartitionTableKind::Mbr,
+            partitions,
+        )),
         None => Err(PartitionError::NoPartitionTable),
     }
 }

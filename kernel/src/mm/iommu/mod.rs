@@ -4,15 +4,15 @@
 // 实现 Intel VT-d 和软件 SWIOTLB，提供 DMA 地址映射
 // ============================================================================
 
-mod vtd;
 mod swiotlb;
+mod vtd;
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::config;
 use crate::sync::SpinLock;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-pub use vtd::{VtdUnit, VtdCapability};
 pub use swiotlb::Swiotlb;
+pub use vtd::{VtdCapability, VtdUnit};
 
 // ============================================================================
 // 常量
@@ -66,17 +66,17 @@ pub struct DmaAddr(pub u64);
 
 impl DmaAddr {
     pub const NULL: DmaAddr = DmaAddr(0);
-    
+
     #[inline]
     pub const fn new(addr: u64) -> Self {
         Self(addr)
     }
-    
+
     #[inline]
     pub fn is_null(&self) -> bool {
         self.0 == 0
     }
-    
+
     #[inline]
     pub fn as_u64(&self) -> u64 {
         self.0
@@ -273,20 +273,20 @@ impl IommuManager {
 /// 初始化 IOMMU 子系统
 pub fn init(direct_map_offset: u64) {
     let mut mgr = IOMMU_MANAGER.lock();
-    
+
     if mgr.initialized.load(Ordering::Relaxed) {
         return;
     }
-    
+
     mgr.direct_map_offset = direct_map_offset;
-    
+
     // 确定翻译模式
     mgr.translation_mode = if config::IOMMU_PASSTHROUGH {
         TranslationMode::Passthrough
     } else {
         TranslationMode::Translate
     };
-    
+
     // 检查配置
     if !config::IOMMU_ENABLED && !config::IOMMU_AUTO_DETECT {
         // IOMMU 禁用，使用 SWIOTLB
@@ -294,7 +294,7 @@ pub fn init(direct_map_offset: u64) {
         mgr.initialized.store(true, Ordering::SeqCst);
         return;
     }
-    
+
     // 尝试初始化 Intel VT-d
     if try_init_vtd(&mut mgr, direct_map_offset) {
         mgr.iommu_type = IommuType::IntelVtd;
@@ -302,10 +302,10 @@ pub fn init(direct_map_offset: u64) {
         mgr.initialized.store(true, Ordering::SeqCst);
         return;
     }
-    
+
     // 尝试探测 AMD-Vi（当前尚无硬件后端，探测到后降级到 SWIOTLB）
     let _ = try_probe_amdvi();
-    
+
     // 无硬件 IOMMU，使用 SWIOTLB
     init_swiotlb(&mut mgr);
     mgr.initialized.store(true, Ordering::SeqCst);
@@ -330,26 +330,24 @@ pub fn translation_mode() -> TranslationMode {
 }
 
 /// 映射物理地址用于 DMA
-/// 
+///
 /// # Arguments
 /// * `phys_addr` - 物理地址
 /// * `size` - 大小
 /// * `dir` - DMA 方向
-/// 
+///
 /// # Returns
 /// DMA 地址
 pub fn map(phys_addr: u64, size: usize, dir: DmaDirection) -> DmaAddr {
     let mut mgr = IOMMU_MANAGER.lock();
-    
+
     if !mgr.enabled.load(Ordering::Relaxed) {
         // 无 IOMMU，直接返回物理地址
         return DmaAddr::new(phys_addr);
     }
-    
+
     match mgr.iommu_type {
-        IommuType::IntelVtd => {
-            vtd_map(&mut mgr, phys_addr, size)
-        }
+        IommuType::IntelVtd => vtd_map(&mut mgr, phys_addr, size),
         IommuType::Swiotlb => {
             if let Some(ref mut swiotlb) = mgr.swiotlb {
                 swiotlb.map(phys_addr, size, dir)
@@ -364,11 +362,11 @@ pub fn map(phys_addr: u64, size: usize, dir: DmaDirection) -> DmaAddr {
 /// 取消 DMA 映射
 pub fn unmap(dma_addr: DmaAddr, size: usize, dir: DmaDirection) {
     let mut mgr = IOMMU_MANAGER.lock();
-    
+
     if !mgr.enabled.load(Ordering::Relaxed) {
         return;
     }
-    
+
     match mgr.iommu_type {
         IommuType::IntelVtd => {
             vtd_unmap(&mut mgr, dma_addr, size);
@@ -410,8 +408,7 @@ fn size_to_pages(size: usize) -> Option<usize> {
     }
 
     let page_size = PAGE_SIZE as usize;
-    size
-        .checked_add(page_size - 1)
+    size.checked_add(page_size - 1)
         .map(|rounded| rounded / page_size)
         .filter(|pages| *pages != 0)
 }
@@ -451,27 +448,27 @@ fn try_init_vtd(mgr: &mut IommuManager, direct_map_offset: u64) -> bool {
         Some(d) => d,
         None => return false,
     };
-    
+
     let dmar_info = crate::drivers::acpi::parse_dmar(dmar);
     if dmar_info.drhd_count == 0 {
         return false;
     }
-    
+
     // 初始化每个 DRHD 单元
     for i in 0..dmar_info.drhd_count.min(MAX_IOMMU_UNITS) {
         let drhd = &dmar_info.drhds[i];
-        
+
         let mut unit = VtdUnit::new(drhd.register_base, direct_map_offset);
-        
+
         // 初始化 VT-d 单元
         if let Err(_e) = unit.init(mgr.translation_mode) {
             continue;
         }
-        
+
         mgr.vtd_units[i] = Some(unit);
         mgr.nr_vtd_units += 1;
     }
-    
+
     mgr.nr_vtd_units > 0
 }
 
@@ -489,7 +486,10 @@ fn try_probe_amdvi() -> bool {
 
 /// 初始化 SWIOTLB
 fn init_swiotlb(mgr: &mut IommuManager) {
-    mgr.swiotlb = Some(Swiotlb::new(config::SWIOTLB_SIZE as usize, mgr.direct_map_offset));
+    mgr.swiotlb = Some(Swiotlb::new(
+        config::SWIOTLB_SIZE as usize,
+        mgr.direct_map_offset,
+    ));
     mgr.iommu_type = IommuType::Swiotlb;
     // SWIOTLB 属于软件地址翻译后端，需要走 map/unmap 路径
     mgr.enabled.store(true, Ordering::SeqCst);
@@ -501,7 +501,7 @@ fn vtd_map(mgr: &mut IommuManager, phys_addr: u64, size: usize) -> DmaAddr {
     if mgr.translation_mode == TranslationMode::Passthrough {
         return DmaAddr::new(phys_addr);
     }
-    
+
     let pages = match size_to_pages(size) {
         Some(p) => p,
         None => {
@@ -519,7 +519,7 @@ fn vtd_map(mgr: &mut IommuManager, phys_addr: u64, size: usize) -> DmaAddr {
             }
         }
     }
-    
+
     crate::warn!(
         "[IOMMU] VT-d map failed: phys={:#x} size={} mode={:?}",
         phys_addr,
@@ -542,13 +542,13 @@ fn vtd_unmap(mgr: &mut IommuManager, dma_addr: DmaAddr, size: usize) {
             return;
         }
     };
-    
+
     for i in 0..mgr.nr_vtd_units {
         if let Some(ref mut unit) = mgr.vtd_units[i] {
             unit.unmap_pages(dma_addr, size);
         }
     }
-    
+
     mapped_pages_sub(&mgr.mapped_pages, pages as u64);
 }
 
@@ -588,15 +588,15 @@ pub fn iommu_stats() -> IommuStats {
 // DMA 一致性内存 API
 // ============================================================================
 
-use crate::mm::page::zone::GfpFlags;
+use super::page::{PageOwner, max_pfn, page_to_pfn, pfn_to_page};
 use crate::mm::page::buddy::alloc_pages;
-use super::page::{max_pfn, page_to_pfn, pfn_to_page, PageOwner};
+use crate::mm::page::zone::GfpFlags;
 
 /// 分配 DMA 一致性内存
 pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAddr)> {
     let pages = size_to_pages(size)?;
     let order = pages_to_order(pages)?;
-    
+
     let page = alloc_pages(order, gfp)?;
     let phys = match page_to_pfn(page).checked_mul(PAGE_SIZE) {
         Some(p) => p,
@@ -606,9 +606,9 @@ pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAdd
             return None;
         }
     };
-    
+
     let dma_addr = map(phys, size, DmaDirection::Bidirectional);
-    
+
     if dma_addr.is_null() {
         unsafe { crate::mm::page::buddy::free_pages(page, order) };
         return None;
@@ -643,12 +643,15 @@ pub fn dma_alloc_coherent(size: usize, gfp: GfpFlags) -> Option<(*mut u8, DmaAdd
     };
     if !inserted {
         DMA_COHERENT_TRACK_INSERT_FAIL.fetch_add(1, Ordering::Relaxed);
-        crate::warn!("[IOMMU] dma_alloc_coherent tracker full (cap={})", DMA_COHERENT_TRACK_CAP);
+        crate::warn!(
+            "[IOMMU] dma_alloc_coherent tracker full (cap={})",
+            DMA_COHERENT_TRACK_CAP
+        );
         unmap(dma_addr, size, DmaDirection::Bidirectional);
         unsafe { crate::mm::page::buddy::free_pages(page, order) };
         return None;
     }
-    
+
     Some((virt, dma_addr))
 }
 
@@ -680,7 +683,10 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
             Some(i) => i,
             None => {
                 DMA_COHERENT_FREE_META_MISS.fetch_add(1, Ordering::Relaxed);
-                crate::warn!("[IOMMU] dma_free_coherent metadata miss virt={:#x}", virt_addr);
+                crate::warn!(
+                    "[IOMMU] dma_free_coherent metadata miss virt={:#x}",
+                    virt_addr
+                );
                 return;
             }
         };
@@ -756,7 +762,11 @@ pub fn dma_free_coherent(virt: *mut u8, dma_addr: DmaAddr, size: usize) {
         return;
     }
 
-    unmap(DmaAddr::new(tracked.dma), tracked.size, DmaDirection::Bidirectional);
+    unmap(
+        DmaAddr::new(tracked.dma),
+        tracked.size,
+        DmaDirection::Bidirectional,
+    );
 
     unsafe {
         let page = &mut *pfn_to_page(tracked.pfn);

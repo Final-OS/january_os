@@ -3,10 +3,10 @@
 //! 负责按顺序初始化各个子系统。
 
 use crate::arch;
-use crate::boot::{BootInfo, BOOTINFO_MAGIC, MAX_MEMORY_REGIONS};
+use crate::boot::{BOOTINFO_MAGIC, BootInfo, MAX_MEMORY_REGIONS};
 use crate::config;
 use crate::drivers::tty::fbcon;
-use crate::drivers::tty::{serial, serial_enable_rx_interrupt, SerialWriter};
+use crate::drivers::tty::{SerialWriter, serial, serial_enable_rx_interrupt};
 use crate::drivers::{self, acpi};
 use crate::fs;
 use crate::interrupt;
@@ -120,7 +120,10 @@ pub fn init_kernel(info: &BootInfo) {
 
     let kernel_stack_top = arch::current_stack_top();
     if config::DEBUG_VERBOSE {
-        kprintln!("\x1b[90m[diag]\x1b[0m[boot] kernel_stack_top={:#x}", kernel_stack_top);
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[boot] kernel_stack_top={:#x}",
+            kernel_stack_top
+        );
     }
 
     // 5. ACPI 解析
@@ -140,7 +143,10 @@ pub fn init_kernel(info: &BootInfo) {
 
     // 6. 初始化 PCP (Per-CPU Pages) - 依赖 CPU 数量
     if config::DEBUG_VERBOSE {
-        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step6: init_pcp nr_cpus={}", cpu_count);
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[boot] step6: init_pcp nr_cpus={}",
+            cpu_count
+        );
     }
     mm::init_pcp(cpu_count as u32);
 
@@ -357,8 +363,7 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
     if direct_map_span == 0 {
         panic!(
             "Invalid direct-map layout: direct_map={:#x} vmalloc_start={:#x}",
-            direct_map,
-            vmalloc_start
+            direct_map, vmalloc_start
         );
     }
 
@@ -605,7 +610,10 @@ fn init_drivers() {
 fn init_timer_and_enable_interrupts() {
     let if_step11a = interrupt::interrupts_enabled();
     if config::DEBUG_VERBOSE {
-        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11a: IF(before timer init)={}", if_step11a);
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[boot] step11a: IF(before timer init)={}",
+            if_step11a
+        );
     }
 
     // 1. 校准 TSC (System Clock)
@@ -621,7 +629,10 @@ fn init_timer_and_enable_interrupts() {
 
     let if_step11b = interrupt::interrupts_enabled();
     if config::DEBUG_VERBOSE {
-        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11b: IF(before sti)={}", if_step11b);
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[boot] step11b: IF(before sti)={}",
+            if_step11b
+        );
     }
 
     interrupt::enable_interrupts();
@@ -632,7 +643,10 @@ fn init_timer_and_enable_interrupts() {
     let if_step11c = interrupt::interrupts_enabled();
 
     if config::DEBUG_VERBOSE {
-        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11c: IF(after sti)={}", if_step11c);
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[boot] step11c: IF(after sti)={}",
+            if_step11c
+        );
     }
     mm::paging::register_tlb_shootdown_cpu();
 

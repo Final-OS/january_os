@@ -9,47 +9,36 @@ pub mod processor;
 pub mod scheduler;
 pub mod task;
 
-pub use id::{ProcessId, TaskId};
-pub use manager::find_process_by_pid;
-pub use manager::current_mm_ptr;
 pub use exec::{
-    build_elf_load_plan,
-    clear_exec_image_provider,
-    load_exec_image,
-    preview_pt_load_mapping,
-    register_exec_image_provider,
-    rollback_exec_mappings,
-    stage_pt_load_mappings,
-    ExecImageProvider,
-    ExecLoadPlan,
-    ExecMapPreview,
-    ExecMappedPage,
-    ExecMappedPageKind,
+    ExecLoadPlan, ExecMapPreview, ExecMappedPage, ExecMappedPageKind, build_elf_load_plan,
+    preview_pt_load_mapping, rollback_exec_mappings, stage_pt_load_mappings,
 };
-pub use manager::find_task_by_pid;
-pub use manager::lookup_current_exec_mapping;
-pub use manager::record_current_exec_request;
-pub use manager::set_current_exec_mappings;
-pub use manager::spawn_kernel_thread_with_mm_mode;
-pub use manager::spawn_kernel_thread_with_mm_mode_checked;
-pub use manager::spawn_kernel_thread;
+pub use id::{ProcessId, TaskId};
 pub use manager::SpawnMmMode;
 pub use manager::WaitChildConsumeEvent;
-pub use manager::WaitChildOptions;
 pub use manager::WaitChildObserveResult;
+pub use manager::WaitChildOptions;
 pub use manager::WaitChildResult;
 pub use manager::WaitCloneFilter;
 pub use manager::WaitRusageSnapshot;
 pub use manager::WaitTarget;
+pub use manager::current_mm_ptr;
+pub use manager::find_process_by_pid;
+pub use manager::find_task_by_pid;
+pub use manager::lookup_current_exec_mapping;
+pub use manager::record_current_exec_request;
+pub use manager::set_current_exec_mappings;
+pub use manager::spawn_kernel_thread;
+pub use manager::spawn_kernel_thread_with_mm_mode;
+pub use manager::spawn_kernel_thread_with_mm_mode_checked;
 pub use processor::current_task;
-pub use scheduler::snapshot_stats as scheduler_snapshot_stats;
 pub use scheduler::SchedulerStats;
+pub use scheduler::snapshot_stats as scheduler_snapshot_stats;
 pub use task::{Task, TaskStatus};
 
 /// 初始化任务子系统
 pub fn init() {
     crate::info!("[TASK] Initializing Task subsystem...");
-    register_exec_image_provider(crate::fs::read_static_file);
     manager::init();
     crate::ok!("[TASK] Task subsystem initialized.");
 }

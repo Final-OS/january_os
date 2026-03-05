@@ -34,7 +34,7 @@ impl Barrier {
     /// 返回 `BarrierWaitResult`，其中最后到达的线程是 "leader"。
     pub fn wait(&self) -> BarrierWaitResult {
         let current_gen = self.generation.load(Ordering::Relaxed);
-        
+
         // 增加等待计数
         let prev = self.count.fetch_add(1, Ordering::AcqRel);
         let arrived = prev + 1;
@@ -44,14 +44,14 @@ impl Barrier {
             // 重置计数并进入下一代
             self.count.store(0, Ordering::Release);
             self.generation.fetch_add(1, Ordering::Release);
-            
+
             BarrierWaitResult { is_leader: true }
         } else {
             // 等待其他线程
             while self.generation.load(Ordering::Acquire) == current_gen {
                 core::hint::spin_loop();
             }
-            
+
             BarrierWaitResult { is_leader: false }
         }
     }
@@ -121,20 +121,20 @@ impl ResettableBarrier {
     pub fn wait(&self) -> BarrierWaitResult {
         let current_gen = self.generation.load(Ordering::Relaxed);
         let num = self.num_threads.load(Ordering::Relaxed);
-        
+
         let prev = self.count.fetch_add(1, Ordering::AcqRel);
         let arrived = prev + 1;
 
         if arrived >= num {
             self.count.store(0, Ordering::Release);
             self.generation.fetch_add(1, Ordering::Release);
-            
+
             BarrierWaitResult { is_leader: true }
         } else {
             while self.generation.load(Ordering::Acquire) == current_gen {
                 core::hint::spin_loop();
             }
-            
+
             BarrierWaitResult { is_leader: false }
         }
     }
@@ -180,7 +180,7 @@ impl CountDownLatch {
     /// 当计数达到 0 时，所有等待的线程都会被释放。
     pub fn count_down(&self) {
         let prev = self.count.fetch_sub(1, Ordering::AcqRel);
-        
+
         // 如果这是最后一个，不需要做额外操作
         // 等待的线程会自动检测到计数为 0
         if prev == 0 {

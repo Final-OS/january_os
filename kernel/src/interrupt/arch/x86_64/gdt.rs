@@ -242,17 +242,13 @@ impl Gdt {
 
     /// 设置段描述符
     fn set_entry(&mut self, index: usize, desc: SegmentDescriptor) {
-        let bytes = unsafe {
-            core::mem::transmute::<SegmentDescriptor, u64>(desc)
-        };
+        let bytes = unsafe { core::mem::transmute::<SegmentDescriptor, u64>(desc) };
         self.entries[index] = bytes;
     }
 
     /// 设置 TSS 描述符 (占用两个槽位)
     fn set_tss(&mut self, index: usize, desc: TssDescriptor) {
-        let bytes = unsafe {
-            core::mem::transmute::<TssDescriptor, [u64; 2]>(desc)
-        };
+        let bytes = unsafe { core::mem::transmute::<TssDescriptor, [u64; 2]>(desc) };
         self.entries[index] = bytes[0];
         self.entries[index + 1] = bytes[1];
     }
@@ -284,9 +280,9 @@ impl Gdt {
     }
 
     /// 加载 GDT
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// 调用者必须确保 GDT 已正确初始化
     pub unsafe fn load(&self) {
         let gdtr = self.gdtr();
@@ -360,13 +356,13 @@ unsafe fn tss_mut(cpu_id: usize) -> &'static mut Tss {
 }
 
 /// 初始化 GDT 和 TSS
-/// 
+///
 /// # Arguments
 /// * `cpu_id` - CPU ID (0 for BSP)
 /// * `kernel_stack_top` - 该 CPU 的内核栈顶地址
-/// 
+///
 /// # Safety
-/// 
+///
 /// 必须在中断禁用时调用。
 /// 每个 CPU 必须使用唯一的 cpu_id。
 pub unsafe fn init_gdt(cpu_id: usize, kernel_stack_top: u64) {
@@ -378,17 +374,17 @@ pub unsafe fn init_gdt(cpu_id: usize, kernel_stack_top: u64) {
         // 设置 TSS
         let tss = tss_mut(cpu_id);
         tss.set_kernel_stack(kernel_stack_top);
-        
+
         // 初始化 GDT
         let gdt = gdt_mut(cpu_id);
         gdt.init(tss);
-        
+
         // 加载 GDT
         gdt.load();
-        
+
         // 重新加载段寄存器
         reload_segments();
-        
+
         // 加载 TSS
         load_tss();
     }
@@ -430,9 +426,9 @@ unsafe fn load_tss() {
 }
 
 /// 获取 TSS 可变引用
-/// 
+///
 /// # Safety
-/// 
+///
 /// 调用者必须确保没有并发访问
 pub unsafe fn get_tss_mut(cpu_id: usize) -> &'static mut Tss {
     if cpu_id >= MAX_CPUS {
@@ -442,7 +438,7 @@ pub unsafe fn get_tss_mut(cpu_id: usize) -> &'static mut Tss {
 }
 
 /// 设置中断栈
-/// 
+///
 /// # Arguments
 /// * `cpu_id` - CPU ID
 /// * `ist_index` - IST 索引 (1-7)

@@ -6,7 +6,7 @@
 pub trait Context {
     /// 创建空上下文
     fn empty() -> Self;
-    
+
     /// 创建新任务上下文
     fn new(entry: usize, sp: usize) -> Self;
 }

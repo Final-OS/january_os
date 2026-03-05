@@ -14,14 +14,7 @@ use alloc::sync::Arc;
 pub use file::File;
 pub use fs::FileSystem;
 pub use inode::Inode;
-pub use mount::{
-    mount_fs,
-    mount_root,
-    mount_snapshot,
-    resolve_mount,
-    umount_fs,
-    MountEntry,
-};
+pub use mount::{MountEntry, mount_fs, mount_root, mount_snapshot, resolve_mount, umount_fs};
 pub use path::{normalize_path, split_parent};
 pub use types::{DirEntry, FileType, FsError, Metadata, SeekWhence};
 

@@ -2,7 +2,7 @@
 //!
 //! 提供 MSI-X 的配置和启用功能
 
-use crate::drivers::pci::{find_capability, read_config_32, write_config_32, PciAddress};
+use crate::drivers::pci::{PciAddress, find_capability, read_config_32, write_config_32};
 use crate::warn;
 
 /// 启用 MSI-X 中断
@@ -20,7 +20,10 @@ pub unsafe fn enable_msix(addr: PciAddress, table_base: *mut u8, vector: u8) -> 
         let table_offset = (table_reg & !0x7) as usize;
 
         if bir != 0 {
-            warn!("[PCI] MSI-X Table in BAR {}, not supported (only BAR0 supported with provided base)", bir);
+            warn!(
+                "[PCI] MSI-X Table in BAR {}, not supported (only BAR0 supported with provided base)",
+                bir
+            );
             return false;
         }
 

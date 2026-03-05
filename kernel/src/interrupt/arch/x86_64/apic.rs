@@ -4,8 +4,8 @@
 // Local APIC 和 I/O APIC 支持 (x2APIC supported)
 // ============================================================================
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use crate::sync::OnceCell;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================================
 // Local APIC 寄存器偏移
@@ -175,14 +175,12 @@ pub fn lapic_read(reg: u32) -> u32 {
         Some(s) => s,
         None => return 0,
     };
-    
+
     if state.x2apic {
         // MSR address = 0x800 + (reg >> 4)
         unsafe { rdmsr(0x800 + (reg >> 4)) as u32 }
     } else {
-        unsafe {
-            core::ptr::read_volatile((state.base + reg as u64) as *const u32)
-        }
+        unsafe { core::ptr::read_volatile((state.base + reg as u64) as *const u32) }
     }
 }
 
@@ -193,14 +191,14 @@ pub fn lapic_write(reg: u32, value: u32) {
         Some(s) => s,
         None => return,
     };
-    
+
     if state.x2apic {
         // ICR (0x300) needs special handling in x2APIC if using high/low pair,
         // but typically we should use send_ipi for ICR.
         // For standard registers, write to MSR.
         if reg == LAPIC_ICR_LO || reg == LAPIC_ICR_HI {
-             // Use send_ipi instead
-             return;
+            // Use send_ipi instead
+            return;
         }
         unsafe { wrmsr(0x800 + (reg >> 4), value as u64) };
     } else {
@@ -216,16 +214,21 @@ pub fn lapic_write(reg: u32, value: u32) {
 /// * `apic_base_phys` - Local APIC 物理基地址 (通常从 MADT 获取)
 pub fn init_local_apic(apic_base_phys: u64) {
     // 禁用 8259 PIC
-    unsafe { disable_8259_pic(); }
+    unsafe {
+        disable_8259_pic();
+    }
 
     // 1. Per-CPU: Enable x2APIC/xAPIC
     let x2apic_supported = check_x2apic_support();
     let mut x2apic_enabled = false;
-    
+
     if x2apic_supported {
         unsafe {
             let base_msr = rdmsr(IA32_APIC_BASE);
-            wrmsr(IA32_APIC_BASE, base_msr | IA32_APIC_BASE_EXTD | IA32_APIC_BASE_ENABLE);
+            wrmsr(
+                IA32_APIC_BASE,
+                base_msr | IA32_APIC_BASE_EXTD | IA32_APIC_BASE_ENABLE,
+            );
         }
         x2apic_enabled = true;
     } else {
@@ -261,12 +264,12 @@ pub fn init_local_apic(apic_base_phys: u64) {
     lapic_write(LAPIC_TPR, 0);
 
     // 禁用 LVT 条目 (后续按需启用)
-    lapic_write(LAPIC_TIMER, 0x10000);    // Masked
-    lapic_write(LAPIC_THERMAL, 0x10000);  // Masked
-    lapic_write(LAPIC_PERF, 0x10000);     // Masked
-    lapic_write(LAPIC_LINT0, 0x10000);    // Masked
-    lapic_write(LAPIC_LINT1, 0x10000);    // Masked
-    lapic_write(LAPIC_ERROR, 0x10000);    // Masked
+    lapic_write(LAPIC_TIMER, 0x10000); // Masked
+    lapic_write(LAPIC_THERMAL, 0x10000); // Masked
+    lapic_write(LAPIC_PERF, 0x10000); // Masked
+    lapic_write(LAPIC_LINT0, 0x10000); // Masked
+    lapic_write(LAPIC_LINT1, 0x10000); // Masked
+    lapic_write(LAPIC_ERROR, 0x10000); // Masked
 
     // 发送 EOI 清除任何挂起的中断
     lapic_write(LAPIC_EOI, 0);
@@ -305,9 +308,9 @@ pub fn wait_for_ipi_delivery() {
         Some(s) => s,
         None => return,
     };
-    
+
     if state.x2apic {
-        // x2APIC has no delivery status bit, it waits automatically? 
+        // x2APIC has no delivery status bit, it waits automatically?
         // Intel SDM says: "The delivery status bit is not supported in x2APIC mode."
         // "Software does not need to check the delivery status bit..."
         return;
@@ -335,19 +338,14 @@ pub fn send_ipi(
 
     wait_for_ipi_delivery();
 
-    let icr_low = (vector as u32) |
-                  delivery_mode |
-                  ICR_DEST_PHYSICAL |
-                  level |
-                  trigger |
-                  shorthand;
+    let icr_low = (vector as u32) | delivery_mode | ICR_DEST_PHYSICAL | level | trigger | shorthand;
 
     if state.x2apic {
         // x2APIC: 64-bit MSR write to 0x830
         let dest = if shorthand == ICR_SHORTHAND_NONE {
-             (apic_id as u64) << 32 
+            (apic_id as u64) << 32
         } else {
-             0
+            0
         };
         let icr = dest | (icr_low as u64);
         unsafe { wrmsr(0x830, icr) };
@@ -402,44 +400,48 @@ pub fn calibrate_timer() -> u64 {
     let ticks_per_sec = if tsc_freq > 0 {
         // 使用 TSC 测量 100ms
         crate::info!("[APIC] Calibrating timer using TSC...");
-        
+
         // 1. 设置 APIC Timer
         // 分频: 16
         lapic_write(LAPIC_TIMER_DCR, TIMER_DIV_16);
         // 模式: One-Shot, Masked (不触发中断)
         lapic_write(LAPIC_TIMER, TIMER_ONE_SHOT | TIMER_MASKED);
-        
+
         // 2. 准备开始
         let start_tsc = super::tsc::rdtsc();
         let wait_ticks = tsc_freq / 10; // 100ms
-        
+
         // 3. 启动 APIC Timer (倒计时从最大值开始)
         lapic_write(LAPIC_TIMER_ICR, 0xFFFFFFFF);
-        
+
         // 4. 等待 100ms
         loop {
             if super::tsc::rdtsc() - start_tsc >= wait_ticks {
                 break;
             }
         }
-        
+
         // 5. 读取剩余计数
         let current_count = lapic_read(LAPIC_TIMER_CCR);
         stop_apic_timer();
-        
+
         let elapsed = 0xFFFFFFFF - current_count;
         let freq = elapsed as u64 * 10;
-        
-        crate::ok!("[APIC] Timer frequency: {} Hz ({} MHz)", freq, freq / 1_000_000);
+
+        crate::ok!(
+            "[APIC] Timer frequency: {} Hz ({} MHz)",
+            freq,
+            freq / 1_000_000
+        );
         freq
     } else {
         crate::warn!("[APIC] TSC not calibrated, using fallback frequency");
         // Fallback: 假设 APIC 频率为 10MHz
-        10_000_000 
+        10_000_000
     };
-    
+
     APIC_TIMER_TICKS_PER_SEC.store(ticks_per_sec, Ordering::SeqCst);
-    
+
     ticks_per_sec
 }
 
@@ -453,7 +455,7 @@ pub fn init_apic_timer(vector: u8, hz: u32) {
         ticks_per_sec / hz as u64
     } else {
         // Fallback if not calibrated
-        1000000 
+        1000000
     };
 
     let mode = TIMER_PERIODIC;
@@ -493,12 +495,12 @@ pub struct IoApicIrqRoute {
 }
 
 pub fn init_ioapic(addr: u64, gsi_base: u32) {
-     let addr_virt = addr + crate::mm::direct_map_offset();
-     let _ = IO_APIC.set(IoApicState {
-         base: addr_virt,
-         gsi_base,
-     });
-     // Mask all? No, we set them up as needed.
+    let addr_virt = addr + crate::mm::direct_map_offset();
+    let _ = IO_APIC.set(IoApicState {
+        base: addr_virt,
+        gsi_base,
+    });
+    // Mask all? No, we set them up as needed.
 }
 
 unsafe fn ioapic_read(reg: u32) -> u32 {
@@ -524,24 +526,24 @@ unsafe fn ioapic_write(reg: u32, value: u32) {
 pub fn ioapic_set_irq(irq: u8, vector: u8, dest: u8, level_triggered: bool, active_low: bool) {
     // Write to IOAPIC redirection table
     let reg = IOREDTBL + 2 * (irq as u32);
-    
+
     let mut low = vector as u32;
     if !level_triggered {
         low |= 0; // Edge
     } else {
         low |= 1 << 15; // Level
     }
-    
+
     if !active_low {
         low |= 0; // High active
     } else {
         low |= 1 << 13; // Low active
     }
-    
+
     low |= 1 << 16; // Masked initially
-    
+
     let high = (dest as u32) << 24;
-    
+
     unsafe {
         ioapic_write(reg, low);
         ioapic_write(reg + 1, high);

@@ -60,7 +60,9 @@ pub fn run(name: &str) {
             kprintln!("                   Default (`test task`) runs all");
             kprintln!("  libs [name]    - Data structure tests");
             kprintln!("                   Available: rbtree, lru, rdtree, btree, mptree, rcu");
-            kprintln!("                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once, sync_blocking");
+            kprintln!(
+                "                              ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once, sync_blocking"
+            );
             kprintln!("  mm [name]      - Memory management tests");
             kprintln!(
                 "                   Available: swiotlb, dma_coherent_guard, slub, buddy, page_counter_guard, status_readonly, pcp, heap, mmap, pt_ownership, pt_reclaim, vmalloc_heal"

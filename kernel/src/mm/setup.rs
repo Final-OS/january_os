@@ -32,19 +32,19 @@
 //!   - 可使用所有分配接口
 //! ```
 
-use crate::mm::page::memblock::{
-    memblock_init, memblock_initialized, memblock_add, memblock_reserve,
-    memblock_alloc, memblock_for_each_free_region, memblock_phys_mem_size,
-    memblock_reserved_region_count, memblock_reserved_region,
-};
+use crate::error::{KernelError, KernelResult};
 #[cfg(target_arch = "x86_64")]
-use crate::mm::arch::{PageTable, PTE_ADDR_MASK, read_cr3};
-use crate::mm::page::page::{Page, init_vmemmap, PAGE_STRUCT_SIZE};
-use crate::mm::page::zone::{Zone, ZoneType, get_zone, mark_zones_initialized};
+use crate::mm::arch::{PTE_ADDR_MASK, PageTable, read_cr3};
 use crate::mm::page::buddy::init_zone_buddy;
+use crate::mm::page::memblock::{
+    memblock_add, memblock_alloc, memblock_for_each_free_region, memblock_init,
+    memblock_initialized, memblock_phys_mem_size, memblock_reserve, memblock_reserved_region,
+    memblock_reserved_region_count,
+};
+use crate::mm::page::page::{PAGE_STRUCT_SIZE, Page, init_vmemmap};
+use crate::mm::page::zone::{Zone, ZoneType, get_zone, mark_zones_initialized};
 use crate::mm::slub::init_kmalloc_caches;
 use crate::mm::vm::layout::PAGE_SIZE;
-use crate::error::{KernelError, KernelResult};
 use core::sync::atomic::{AtomicU8, Ordering};
 
 // ============================================================================
@@ -108,14 +108,14 @@ pub struct MemoryRegionInfo {
 // ============================================================================
 
 /// 初始化 memblock 子系统
-/// 
+///
 /// # Arguments
 /// * `regions` - 内存区域数组（从 UEFI 获取）
 /// * `kernel_start` - 内核起始物理地址
 /// * `kernel_end` - 内核结束物理地址
-/// 
+///
 /// # Safety
-/// 
+///
 /// 必须在内核早期调用，且只能调用一次
 pub unsafe fn init_memblock(
     regions: &[MemoryRegionInfo],
@@ -147,7 +147,7 @@ pub unsafe fn init_memblock(
     reserve_bootstrap_page_tables()?;
 
     set_stage(MmInitStage::Memblock);
-    
+
     Ok(())
 }
 
@@ -156,12 +156,12 @@ pub unsafe fn init_memblock(
 // ============================================================================
 
 /// 初始化 Buddy 系统
-/// 
+///
 /// # Arguments
 /// * `max_pfn` - 最大 PFN
-/// 
+///
 /// # Safety
-/// 
+///
 /// - 必须在 Memblock 阶段之后调用
 pub unsafe fn init_buddy_system(
     _regions: &[MemoryRegionInfo],
@@ -172,23 +172,23 @@ pub unsafe fn init_buddy_system(
         if init_stage() != MmInitStage::Memblock {
             return Err(KernelError::InvalidParam);
         }
-        
+
         // 1. 使用 memblock 分配 struct page 数组
         let page_array_size = (max_pfn as usize) * PAGE_STRUCT_SIZE;
         let page_array_phys = memblock_alloc(page_array_size as u64, 64);
         if page_array_phys == 0 {
             return Err(KernelError::NoMemory);
         }
-        
+
         // 转换为虚拟地址
         let page_array = phys_to_virt(page_array_phys) as *mut Page;
-        
+
         // 初始化所有 Page 结构
         for i in 0..max_pfn {
             let page = &mut *page_array.add(i as usize);
             *page = Page::uninit();
         }
-        
+
         init_vmemmap(page_array, max_pfn);
 
         // 2. 初始化所有 Page 元数据，并为 reserved PFN 预置保护属性
@@ -201,29 +201,29 @@ pub unsafe fn init_buddy_system(
                 page.set_count_one();
             }
         }
-        
+
         // 3. 初始化 Zones
         let dma_end_pfn = (crate::mm::page::zone::ZONE_DMA_LIMIT / PAGE_SIZE).min(max_pfn);
         let dma32_end_pfn = (crate::mm::page::zone::ZONE_DMA32_LIMIT / PAGE_SIZE).min(max_pfn);
-        
+
         // ZONE_DMA: 0 - 16MB (ISA DMA)
         if dma_end_pfn > 0 {
             let mut zone = get_zone(ZoneType::Dma);
             zone.init(ZoneType::Dma, 0, dma_end_pfn);
         }
-        
+
         // ZONE_DMA32: 16MB - 4GB (32位 PCI 设备)
         if dma32_end_pfn > dma_end_pfn {
             let mut zone = get_zone(ZoneType::Dma32);
             zone.init(ZoneType::Dma32, dma_end_pfn, dma32_end_pfn - dma_end_pfn);
         }
-        
+
         // ZONE_NORMAL: 4GB+ (普通内存)
         if max_pfn > dma32_end_pfn {
             let mut zone = get_zone(ZoneType::Normal);
             zone.init(ZoneType::Normal, dma32_end_pfn, max_pfn - dma32_end_pfn);
         }
-        
+
         // 4. 遍历 memblock 中的空闲内存，添加到 Buddy 系统
         memblock_for_each_free_region(|base, size| {
             let start_pfn = base / PAGE_SIZE;
@@ -239,7 +239,7 @@ pub unsafe fn init_buddy_system(
                     init_zone_buddy_filtered(&mut zone, zone_start, zone_end, max_pfn);
                 }
             }
-            
+
             // ZONE_DMA32 部分
             if start_pfn < dma32_end_pfn && end_pfn > dma_end_pfn {
                 let zone_start = start_pfn.max(dma_end_pfn);
@@ -249,7 +249,7 @@ pub unsafe fn init_buddy_system(
                     init_zone_buddy_filtered(&mut zone, zone_start, zone_end, max_pfn);
                 }
             }
-            
+
             // ZONE_NORMAL 部分
             if end_pfn > dma32_end_pfn {
                 let zone_start = start_pfn.max(dma32_end_pfn);
@@ -259,13 +259,13 @@ pub unsafe fn init_buddy_system(
                     init_zone_buddy_filtered(&mut zone, zone_start, zone_end, max_pfn);
                 }
             }
-            
+
             true // 继续遍历
         });
-        
+
         mark_zones_initialized();
         set_stage(MmInitStage::Buddy);
-        
+
         Ok(())
     }
 }
@@ -280,10 +280,10 @@ pub unsafe fn init_slub() -> KernelResult<()> {
         if init_stage() != MmInitStage::Buddy {
             return Err(KernelError::InvalidParam);
         }
-        
+
         init_kmalloc_caches();
         set_stage(MmInitStage::Slub);
-        
+
         Ok(())
     }
 }
@@ -337,12 +337,7 @@ fn pfn_overlaps_reserved(pfn: u64) -> bool {
     false
 }
 
-unsafe fn init_zone_buddy_filtered(
-    zone: &mut Zone,
-    start_pfn: u64,
-    end_pfn: u64,
-    max_pfn: u64,
-) {
+unsafe fn init_zone_buddy_filtered(zone: &mut Zone, start_pfn: u64, end_pfn: u64, max_pfn: u64) {
     let end_pfn = end_pfn.min(max_pfn);
     if start_pfn >= end_pfn {
         return;

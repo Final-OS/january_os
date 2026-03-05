@@ -28,10 +28,10 @@
 //! 4. Buddy 初始化时，memblock 将剩余空闲内存释放给 Buddy
 //! 5. Memblock 不再使用（但保留的内存仍然有效）
 
-use core::cell::UnsafeCell;
-use core::cmp::{min, max};
-use core::sync::atomic::{AtomicBool, Ordering};
 use crate::error::{KernelError, KernelResult};
+use core::cell::UnsafeCell;
+use core::cmp::{max, min};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 // ============================================================================
 // 常量配置
@@ -220,9 +220,7 @@ pub fn memblock_initialized() -> bool {
 /// # Returns
 /// 成功返回 Ok(()), 失败返回错误信息
 pub fn memblock_add(base: u64, size: u64) -> KernelResult<()> {
-    unsafe {
-        memblock_add_range(&mut memblock_mut().memory, base, size, MemblockFlags::NONE)
-    }
+    unsafe { memblock_add_range(&mut memblock_mut().memory, base, size, MemblockFlags::NONE) }
 }
 
 /// 保留内存区域
@@ -232,7 +230,12 @@ pub fn memblock_add(base: u64, size: u64) -> KernelResult<()> {
 /// * `size` - 区域大小
 pub fn memblock_reserve(base: u64, size: u64) -> KernelResult<()> {
     unsafe {
-        memblock_add_range(&mut memblock_mut().reserved, base, size, MemblockFlags::NONE)
+        memblock_add_range(
+            &mut memblock_mut().reserved,
+            base,
+            size,
+            MemblockFlags::NONE,
+        )
     }
 }
 
@@ -264,7 +267,7 @@ pub fn memblock_alloc_range(size: u64, align: u64, start: u64, end: u64) -> u64 
 
     unsafe {
         let memblock = memblock_mut();
-        
+
         // 根据 bottom_up 决定分配方向
         if memblock.bottom_up {
             memblock_find_in_range_bottom_up(memblock, size, align, start, end)
@@ -288,16 +291,14 @@ pub fn memblock_alloc_zeroed(size: u64, align: u64) -> u64 {
 }
 
 /// 释放 memblock 中的保留内存
-/// 
+///
 /// 注意：这只是从 reserved 列表中移除，不影响 memory 列表
 pub fn memblock_free(base: u64, size: u64) -> KernelResult<()> {
-    unsafe {
-        memblock_remove_range(&mut memblock_mut().reserved, base, size)
-    }
+    unsafe { memblock_remove_range(&mut memblock_mut().reserved, base, size) }
 }
 
 /// 设置分配方向
-/// 
+///
 /// * `enable` - true 从底部分配，false 从顶部分配（默认）
 pub fn memblock_set_bottom_up(enable: bool) {
     unsafe {
@@ -338,7 +339,7 @@ pub fn memblock_end_of_phys_mem() -> u64 {
 }
 
 /// 遍历所有空闲内存区域
-/// 
+///
 /// 回调函数参数：(base, size) -> bool
 /// 返回 false 停止遍历
 pub fn memblock_for_each_free_region<F>(mut callback: F)
@@ -346,7 +347,7 @@ where
     F: FnMut(u64, u64) -> bool,
 {
     let memblock = memblock_ref();
-    
+
     for i in 0..memblock.memory.cnt {
         let mem_region = &memblock.memory.regions[i];
         if mem_region.is_empty() {
@@ -398,7 +399,7 @@ where
 /// 打印 memblock 状态
 pub fn memblock_dump() {
     let memblock = memblock_ref();
-    
+
     // 这里可以使用串口打印
     // 由于没有 kprintln 宏的直接访问，调用者需要自己打印
     let _ = memblock;
@@ -455,13 +456,13 @@ fn memblock_add_range(
     let mut insert_idx = type_.cnt;
     for i in 0..type_.cnt {
         let region = &type_.regions[i];
-        
+
         // 检查是否可以合并
         if region.base <= end && base <= region.end() {
             // 重叠或相邻，尝试合并
             return memblock_merge_regions(type_, base, size, flags);
         }
-        
+
         if base < region.base {
             insert_idx = i;
             break;
@@ -479,11 +480,7 @@ fn memblock_add_range(
         type_.regions[i + 1] = type_.regions[i];
     }
 
-    type_.regions[insert_idx] = MemblockRegion {
-        base,
-        size,
-        flags,
-    };
+    type_.regions[insert_idx] = MemblockRegion { base, size, flags };
     type_.cnt += 1;
     type_.total_size += size;
 
@@ -501,22 +498,22 @@ fn memblock_merge_regions(
 
     for i in 0..type_.cnt {
         let region = &mut type_.regions[i];
-        
+
         // 检查是否重叠或相邻
         if region.base <= end && base <= region.end() {
             let new_base = min(region.base, base);
             let new_end = max(region.end(), end);
             let old_size = region.size;
-            
+
             region.base = new_base;
             region.size = new_end - new_base;
-            
+
             // 更新总大小（增量）
             type_.total_size = type_.total_size - old_size + region.size;
-            
+
             // 尝试与下一个区域合并
             memblock_merge_adjacent(type_, i);
-            
+
             return Ok(());
         }
     }
@@ -530,20 +527,20 @@ fn memblock_merge_adjacent(type_: &mut MemblockType, start_idx: usize) {
     while i + 1 < type_.cnt {
         let current_end = type_.regions[i].end();
         let next_base = type_.regions[i + 1].base;
-        
+
         if current_end >= next_base {
             // 可以合并
             let new_end = max(current_end, type_.regions[i + 1].end());
             let old_size = type_.regions[i].size + type_.regions[i + 1].size;
-            
+
             type_.regions[i].size = new_end - type_.regions[i].base;
-            
+
             // 移除下一个区域
             for j in (i + 1)..(type_.cnt - 1) {
                 type_.regions[j] = type_.regions[j + 1];
             }
             type_.cnt -= 1;
-            
+
             // 更新总大小
             type_.total_size = type_.total_size - old_size + type_.regions[i].size;
         } else {
@@ -553,11 +550,7 @@ fn memblock_merge_adjacent(type_: &mut MemblockType, start_idx: usize) {
 }
 
 /// 从类型列表中移除区域
-fn memblock_remove_range(
-    type_: &mut MemblockType,
-    base: u64,
-    size: u64,
-) -> KernelResult<()> {
+fn memblock_remove_range(type_: &mut MemblockType, base: u64, size: u64) -> KernelResult<()> {
     if size == 0 {
         return Ok(());
     }
@@ -567,7 +560,7 @@ fn memblock_remove_range(
 
     while i < type_.cnt {
         let region = &type_.regions[i];
-        
+
         // 检查是否有重叠
         if region.base >= end || region.end() <= base {
             i += 1;
@@ -651,13 +644,8 @@ fn memblock_find_in_range_top_down(
         }
 
         // 尝试在这个区域中分配
-        if let Some(addr) = find_free_area_top_down(
-            memblock,
-            size,
-            align,
-            region_start,
-            region_end,
-        ) {
+        if let Some(addr) = find_free_area_top_down(memblock, size, align, region_start, region_end)
+        {
             // 找到了，保留这块内存
             if memblock_add_range(&mut memblock.reserved, addr, size, MemblockFlags::NONE).is_ok() {
                 return addr;
@@ -692,13 +680,9 @@ fn memblock_find_in_range_bottom_up(
         }
 
         // 尝试在这个区域中分配
-        if let Some(addr) = find_free_area_bottom_up(
-            memblock,
-            size,
-            align,
-            region_start,
-            region_end,
-        ) {
+        if let Some(addr) =
+            find_free_area_bottom_up(memblock, size, align, region_start, region_end)
+        {
             // 找到了，保留这块内存
             if memblock_add_range(&mut memblock.reserved, addr, size, MemblockFlags::NONE).is_ok() {
                 return addr;

@@ -3,10 +3,13 @@
 //! Supports both transitional (0x1001) and modern (0x1042) VirtIO block devices.
 
 use crate::config::PAGE_SIZE;
-use crate::drivers::pci::{self, driver::{PciDeviceId, PciDriver, ProbeResult}, PciAddress, PciHeader};
+use crate::drivers::pci::{
+    self, PciAddress, PciHeader,
+    driver::{PciDeviceId, PciDriver, ProbeResult},
+};
 use crate::mm::page::buddy::alloc_pages;
-use crate::mm::page::zone::{GfpFlags, GFP_DMA32};
-use crate::mm::vm::layout::{page_align_up, phys_to_virt, PAGE_SIZE as PAGE_SIZE_U64};
+use crate::mm::page::zone::{GFP_DMA32, GfpFlags};
+use crate::mm::vm::layout::{PAGE_SIZE as PAGE_SIZE_U64, page_align_up, phys_to_virt};
 use crate::mm::vmalloc::ioremap;
 use crate::sync::IrqSpinLock;
 use crate::{diag, error, info, ok, warn};
@@ -148,11 +151,19 @@ impl DmaBuffer {
         let phys = pfn * PAGE_SIZE_U64;
         let virt = phys_to_virt(phys) as *mut u8;
 
-        Some(Self { virt, phys, size: pages_pow2 * page_size })
+        Some(Self {
+            virt,
+            phys,
+            size: pages_pow2 * page_size,
+        })
     }
 
-    fn as_ptr(&self) -> *mut u8 { self.virt }
-    fn phys_addr(&self) -> u64 { self.phys }
+    fn as_ptr(&self) -> *mut u8 {
+        self.virt
+    }
+    fn phys_addr(&self) -> u64 {
+        self.phys
+    }
 }
 
 /// VirtIO capability information
@@ -247,8 +258,13 @@ impl VirtioBlkDevice {
             let cap_next = unsafe { Self::read_cap_byte(addr, offset.wrapping_add(1)) } & !0x3;
             let cap_len = unsafe { Self::read_cap_byte(addr, offset.wrapping_add(2)) };
 
-            diag!("[virtio] cap at {:#x}: vndr={:#x} next={:#x} len={}", 
-                  offset, cap_vndr, cap_next, cap_len);
+            diag!(
+                "[virtio] cap at {:#x}: vndr={:#x} next={:#x} len={}",
+                offset,
+                cap_vndr,
+                cap_next,
+                cap_len
+            );
 
             // Check if this is a Vendor-Specific capability (0x09)
             if cap_vndr == 0x09 {
@@ -261,14 +277,20 @@ impl VirtioBlkDevice {
                     // offset is at offset+8, length at offset+12
                     let cap_offset = unsafe { Self::read_cap_dword(addr, offset.wrapping_add(8)) };
                     let length = unsafe { Self::read_cap_dword(addr, offset.wrapping_add(12)) };
-                    let notify_off_multiplier = if cap_id == VIRTIO_PCI_CAP_NOTIFY_CFG && cap_len >= 20 {
-                        unsafe { Self::read_cap_dword(addr, offset.wrapping_add(16)) }
-                    } else {
-                        0
-                    };
+                    let notify_off_multiplier =
+                        if cap_id == VIRTIO_PCI_CAP_NOTIFY_CFG && cap_len >= 20 {
+                            unsafe { Self::read_cap_dword(addr, offset.wrapping_add(16)) }
+                        } else {
+                            0
+                        };
 
-                    diag!("[virtio] found cap {} at BAR{} offset {:#x} len {:#x}",
-                          cap_id, bar, cap_offset, length);
+                    diag!(
+                        "[virtio] found cap {} at BAR{} offset {:#x} len {:#x}",
+                        cap_id,
+                        bar,
+                        cap_offset,
+                        length
+                    );
 
                     return Some(VirtioCap {
                         bar,
@@ -342,7 +364,11 @@ impl VirtioBlkDevice {
         Ok(mmio_phys)
     }
 
-    fn map_capability(addr: PciAddress, cap: &VirtioCap, min_len: usize) -> Result<*mut u8, BlockError> {
+    fn map_capability(
+        addr: PciAddress,
+        cap: &VirtioCap,
+        min_len: usize,
+    ) -> Result<*mut u8, BlockError> {
         let bar_phys = Self::read_bar_phys(addr, cap.bar)?;
         let map_phys = bar_phys
             .checked_add(cap.offset as u64)
@@ -356,9 +382,7 @@ impl VirtioBlkDevice {
         if mmio_virt.is_null() {
             error!(
                 "[virtio] failed to map BAR{} offset {:#x} len {:#x}",
-                cap.bar,
-                cap.offset,
-                map_len
+                cap.bar, cap.offset, map_len
             );
             return Err(BlockError::IoError);
         }
@@ -403,10 +427,14 @@ impl VirtioBlkDevice {
         };
 
         info!("[virtio-blk] using PCI modern capabilities");
-        self.common_cfg = Self::map_capability(addr, &common_cap, core::mem::size_of::<VirtioPciCommonCfg>())?
-            as *mut VirtioPciCommonCfg;
-        self.config = Self::map_capability(addr, &device_cap, core::mem::size_of::<VirtioBlkConfig>())?
-            as *const VirtioBlkConfig;
+        self.common_cfg = Self::map_capability(
+            addr,
+            &common_cap,
+            core::mem::size_of::<VirtioPciCommonCfg>(),
+        )? as *mut VirtioPciCommonCfg;
+        self.config =
+            Self::map_capability(addr, &device_cap, core::mem::size_of::<VirtioBlkConfig>())?
+                as *const VirtioBlkConfig;
         self.notify_base = Self::map_capability(addr, &notify_cap, 2)?;
         self.notify_len = core::cmp::max(notify_cap.length as usize, 2);
         self.notify_off_multiplier = notify_cap.notify_off_multiplier;
@@ -464,7 +492,9 @@ impl VirtioBlkDevice {
         self.write_driver_features(0, driver_features_lo);
         self.write_driver_features(1, VIRTIO_F_VERSION_1);
 
-        self.set_status(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK);
+        self.set_status(
+            VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK,
+        );
         let status = self.get_status();
         if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
             error!("[virtio] feature negotiation failed");
@@ -506,7 +536,8 @@ impl VirtioBlkDevice {
         let n = self.queue_size as usize;
         let desc_size = n * core::mem::size_of::<VirtqDesc>();
         let avail_size = 4 + n * 2;
-        let used_size = page_align_up((4 + n * core::mem::size_of::<VirtqUsedElem>()) as u64) as usize;
+        let used_size =
+            page_align_up((4 + n * core::mem::size_of::<VirtqUsedElem>()) as u64) as usize;
         let total = page_align_up((desc_size + avail_size + used_size) as u64) as usize;
 
         let vq_mem = DmaBuffer::new(total).ok_or(BlockError::IoError)?;
@@ -540,8 +571,7 @@ impl VirtioBlkDevice {
         if notify_offset + core::mem::size_of::<u16>() > self.notify_len {
             error!(
                 "[virtio] notify offset out of range (off={:#x}, len={:#x})",
-                notify_offset,
-                self.notify_len
+                notify_offset, self.notify_len
             );
             return Err(BlockError::IoError);
         }
@@ -550,9 +580,7 @@ impl VirtioBlkDevice {
         if !crate::mm::vmalloc::ensure_vmalloc_page_mapped_in_current(self.queue_notify as u64) {
             error!(
                 "[virtio] queue notify mapping missing during setup: queue_notify={:#x} off={:#x} len={:#x}",
-                self.queue_notify as u64,
-                notify_offset,
-                self.notify_len
+                self.queue_notify as u64, notify_offset, self.notify_len
             );
             return Err(BlockError::IoError);
         }
@@ -579,13 +607,19 @@ impl VirtioBlkDevice {
 
         let req = req_mem.as_ptr() as *mut VirtioBlkReqHeader;
         unsafe {
-            (*req).type_ = if write_op { VIRTIO_BLK_T_OUT } else { VIRTIO_BLK_T_IN };
+            (*req).type_ = if write_op {
+                VIRTIO_BLK_T_OUT
+            } else {
+                VIRTIO_BLK_T_IN
+            };
             (*req).reserved = 0;
             (*req).sector = lba;
         }
 
         if write_op {
-            unsafe { core::ptr::copy_nonoverlapping(data, data_mem.as_ptr(), len); }
+            unsafe {
+                core::ptr::copy_nonoverlapping(data, data_mem.as_ptr(), len);
+            }
         }
 
         let desc = self.desc;
@@ -599,7 +633,8 @@ impl VirtioBlkDevice {
 
             (*desc.add(1)).addr = data_mem.phys_addr();
             (*desc.add(1)).len = len as u32;
-            (*desc.add(1)).flags = VIRTQ_DESC_F_NEXT | if write_op { 0 } else { VIRTQ_DESC_F_WRITE };
+            (*desc.add(1)).flags =
+                VIRTQ_DESC_F_NEXT | if write_op { 0 } else { VIRTQ_DESC_F_WRITE };
             (*desc.add(1)).next = 2;
 
             (*desc.add(2)).addr = resp_phys;
@@ -637,7 +672,9 @@ impl VirtioBlkDevice {
                 }
             }
         }
-        unsafe { write_volatile(self.queue_notify, 0); }
+        unsafe {
+            write_volatile(self.queue_notify, 0);
+        }
 
         let used = self.used;
         let target_used = idx.wrapping_add(1);
@@ -663,13 +700,19 @@ impl VirtioBlkDevice {
         }
 
         let status = unsafe {
-            read_volatile((req_mem.as_ptr().add(core::mem::size_of::<VirtioBlkReqHeader>()) as *const u8))
+            read_volatile(
+                (req_mem
+                    .as_ptr()
+                    .add(core::mem::size_of::<VirtioBlkReqHeader>()) as *const u8),
+            )
         };
 
         match status {
             VIRTIO_BLK_S_OK => {
                 if !write_op {
-                    unsafe { core::ptr::copy_nonoverlapping(data_mem.as_ptr(), data, len); }
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(data_mem.as_ptr(), data, len);
+                    }
                 }
                 Ok(())
             }
@@ -688,29 +731,59 @@ impl VirtioBlkDevice {
 }
 
 impl BlockDevice for VirtioBlkDevice {
-    fn block_size(&self) -> u32 { VIRTIO_BLK_SECTOR_SIZE }
-    fn block_count(&self) -> u64 { self.block_count }
-    fn name(&self) -> &str { "virtio-blk" }
+    fn block_size(&self) -> u32 {
+        VIRTIO_BLK_SECTOR_SIZE
+    }
+    fn block_count(&self) -> u64 {
+        self.block_count
+    }
+    fn name(&self) -> &str {
+        "virtio-blk"
+    }
 
     fn read_block(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-        if buf.len() < VIRTIO_BLK_SECTOR_SIZE as usize { return Err(BlockError::InvalidBufferSize); }
-        if lba >= self.block_count { return Err(BlockError::InvalidAddress); }
-        self.do_io(false, lba, buf.as_mut_ptr(), VIRTIO_BLK_SECTOR_SIZE as usize)
+        if buf.len() < VIRTIO_BLK_SECTOR_SIZE as usize {
+            return Err(BlockError::InvalidBufferSize);
+        }
+        if lba >= self.block_count {
+            return Err(BlockError::InvalidAddress);
+        }
+        self.do_io(
+            false,
+            lba,
+            buf.as_mut_ptr(),
+            VIRTIO_BLK_SECTOR_SIZE as usize,
+        )
     }
 
     fn write_block(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
-        if self.read_only { return Err(BlockError::WriteProtected); }
-        if buf.len() < VIRTIO_BLK_SECTOR_SIZE as usize { return Err(BlockError::InvalidBufferSize); }
-        if lba >= self.block_count { return Err(BlockError::InvalidAddress); }
-        self.do_io(true, lba, buf.as_ptr() as *mut u8, VIRTIO_BLK_SECTOR_SIZE as usize)
+        if self.read_only {
+            return Err(BlockError::WriteProtected);
+        }
+        if buf.len() < VIRTIO_BLK_SECTOR_SIZE as usize {
+            return Err(BlockError::InvalidBufferSize);
+        }
+        if lba >= self.block_count {
+            return Err(BlockError::InvalidAddress);
+        }
+        self.do_io(
+            true,
+            lba,
+            buf.as_ptr() as *mut u8,
+            VIRTIO_BLK_SECTOR_SIZE as usize,
+        )
     }
 
     fn flush(&self) -> Result<(), BlockError> {
-        if !self.initialized.load(Ordering::SeqCst) { return Err(BlockError::NotReady); }
+        if !self.initialized.load(Ordering::SeqCst) {
+            return Err(BlockError::NotReady);
+        }
         Ok(())
     }
 
-    fn is_read_only(&self) -> bool { self.read_only }
+    fn is_read_only(&self) -> bool {
+        self.read_only
+    }
 }
 
 static VIRTIO_BLK: IrqSpinLock<VirtioBlkDevice> = IrqSpinLock::new(VirtioBlkDevice::new());
@@ -718,7 +791,9 @@ static VIRTIO_BLK: IrqSpinLock<VirtioBlkDevice> = IrqSpinLock::new(VirtioBlkDevi
 struct VirtioBlkDriver;
 
 impl PciDriver for VirtioBlkDriver {
-    fn name(&self) -> &'static str { "virtio-blk" }
+    fn name(&self) -> &'static str {
+        "virtio-blk"
+    }
 
     fn supported_ids(&self) -> &[PciDeviceId] {
         static IDS: [PciDeviceId; 2] = [

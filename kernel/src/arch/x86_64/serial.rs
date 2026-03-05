@@ -10,13 +10,13 @@ use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 const COM1: u16 = 0x3F8;
 
 /// 串口寄存器偏移
-const DATA: u16 = 0;        // 数据寄存器
-const IER: u16 = 1;         // 中断使能寄存器
-const IIR: u16 = 2;         // 中断标识寄存器
-const FCR: u16 = 2;         // FIFO 控制寄存器
-const LCR: u16 = 3;         // 线路控制寄存器
-const MCR: u16 = 4;         // 调制解调器控制寄存器
-const LSR: u16 = 5;         // 线路状态寄存器
+const DATA: u16 = 0; // 数据寄存器
+const IER: u16 = 1; // 中断使能寄存器
+const IIR: u16 = 2; // 中断标识寄存器
+const FCR: u16 = 2; // FIFO 控制寄存器
+const LCR: u16 = 3; // 线路控制寄存器
+const MCR: u16 = 4; // 调制解调器控制寄存器
+const LSR: u16 = 5; // 线路状态寄存器
 
 /// 线路状态寄存器位
 const LSR_DATA_READY: u8 = 0x01;
@@ -81,7 +81,7 @@ pub fn serial_interrupt_handler() {
 fn push_input(c: u8) {
     let head = INPUT_HEAD.load(Ordering::Relaxed);
     let next_head = (head + 1) % INPUT_BUFFER_SIZE;
-    
+
     if next_head != INPUT_TAIL.load(Ordering::Relaxed) {
         INPUT_BUFFER[head].store(c, Ordering::Relaxed);
         INPUT_HEAD.store(next_head, Ordering::Relaxed);
@@ -92,11 +92,11 @@ fn push_input(c: u8) {
 pub fn serial_read_char() -> Option<u8> {
     let tail = INPUT_TAIL.load(Ordering::Relaxed);
     let head = INPUT_HEAD.load(Ordering::Relaxed);
-    
+
     if tail == head {
         return None;
     }
-    
+
     let c = INPUT_BUFFER[tail].load(Ordering::Relaxed);
     INPUT_TAIL.store((tail + 1) % INPUT_BUFFER_SIZE, Ordering::Relaxed);
     Some(c)

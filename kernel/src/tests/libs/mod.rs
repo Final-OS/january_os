@@ -78,7 +78,9 @@ pub fn run_with_filter(filter: Option<&str>) {
         Some("sync_blocking") => run_case("sync_blocking", collections::run_sync_blocking),
         Some(name) => {
             error!("Unknown test: {}", name);
-            kprintln!("Available tests: rbtree, lru, rdtree, btree, mptree, rcu, ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once, sync_blocking");
+            kprintln!(
+                "Available tests: rbtree, lru, rdtree, btree, mptree, rcu, ring_buffer, kfifo, bitmap, hlist, wait_queue, id_allocator, sync_once, sync_blocking"
+            );
         }
     }
 

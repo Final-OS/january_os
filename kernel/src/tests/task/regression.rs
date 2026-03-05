@@ -97,9 +97,7 @@ pub(super) fn run() {
     if !(vmemmap_sym >= kernel_file_end && vmemmap_sym < kernel_mem_end) {
         error!(
             "task: regression FAIL (VMEMMAP_BASE symbol not in expected bss range: sym={:#x} file_end={:#x} mem_end={:#x})",
-            vmemmap_sym,
-            kernel_file_end,
-            kernel_mem_end,
+            vmemmap_sym, kernel_file_end, kernel_mem_end,
         );
         return;
     }
@@ -107,9 +105,7 @@ pub(super) fn run() {
     if !(max_pfn_sym >= kernel_file_end && max_pfn_sym < kernel_mem_end) {
         error!(
             "task: regression FAIL (MAX_PFN symbol not in expected bss range: sym={:#x} file_end={:#x} mem_end={:#x})",
-            max_pfn_sym,
-            kernel_file_end,
-            kernel_mem_end,
+            max_pfn_sym, kernel_file_end, kernel_mem_end,
         );
         return;
     }
@@ -138,8 +134,7 @@ pub(super) fn run() {
     if !kernel_range_reserved {
         error!(
             "task: regression FAIL (memblock reserved range does not cover full kernel mem image [{:#x}, {:#x}))",
-            kernel_start,
-            kernel_mem_end
+            kernel_start, kernel_mem_end
         );
         return;
     }

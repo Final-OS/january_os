@@ -34,9 +34,7 @@ pub struct MapleTree<V> {
 impl<V> MapleTree<V> {
     /// 创建空树
     pub fn new() -> Self {
-        Self {
-            tree: BTree::new(),
-        }
+        Self { tree: BTree::new() }
     }
 
     /// 元素数量
@@ -55,7 +53,12 @@ impl<V> MapleTree<V> {
     }
 
     /// 插入区间
-    pub fn insert(&mut self, start: usize, end: usize, value: V) -> Result<Option<V>, MapleInsertError> {
+    pub fn insert(
+        &mut self,
+        start: usize,
+        end: usize,
+        value: V,
+    ) -> Result<Option<V>, MapleInsertError> {
         // 验证区间
         if start >= end {
             return Err(MapleInsertError::InvalidRange);
@@ -95,7 +98,9 @@ impl<V> MapleTree<V> {
 
     /// 删除区间
     pub fn remove(&mut self, start: usize) -> Option<(usize, V)> {
-        self.tree.remove(&start).map(|entry| (entry.end, entry.value))
+        self.tree
+            .remove(&start)
+            .map(|entry| (entry.end, entry.value))
     }
 
     /// 查找间隙（正向）
@@ -104,9 +109,7 @@ impl<V> MapleTree<V> {
             return None;
         }
 
-        let mut ranges: Vec<_> = self.tree.iter()
-            .map(|(_, e)| (e.start, e.end))
-            .collect();
+        let mut ranges: Vec<_> = self.tree.iter().map(|(_, e)| (e.start, e.end)).collect();
         ranges.sort_by_key(|(s, _)| *s);
 
         // 检查第一个区间前的间隙
@@ -145,9 +148,7 @@ impl<V> MapleTree<V> {
             return None;
         }
 
-        let mut ranges: Vec<_> = self.tree.iter()
-            .map(|(_, e)| (e.start, e.end))
-            .collect();
+        let mut ranges: Vec<_> = self.tree.iter().map(|(_, e)| (e.start, e.end)).collect();
         ranges.sort_by_key(|(s, _)| *s);
 
         // 检查最后一个区间后的间隙 (从 start 向下搜索到 end)
@@ -187,7 +188,9 @@ impl<V> MapleTree<V> {
 
     /// 迭代所有区间
     pub fn iter(&self) -> impl Iterator<Item = (usize, usize, &V)> {
-        self.tree.iter().map(|(_, entry)| (entry.start, entry.end, &entry.value))
+        self.tree
+            .iter()
+            .map(|(_, entry)| (entry.start, entry.end, &entry.value))
     }
 
     /// 更新区间的结束位置
@@ -276,7 +279,9 @@ impl<V> MapleTree<V> {
         }
 
         let mut removed = Vec::new();
-        let overlapping: Vec<usize> = self.tree.iter()
+        let overlapping: Vec<usize> = self
+            .tree
+            .iter()
             .filter(|(_, e)| !(end <= e.start || start >= e.end))
             .map(|(s, _)| *s)
             .collect();
@@ -296,7 +301,9 @@ impl<V> MapleTree<V> {
     where
         V: Clone,
     {
-        let entry = self.tree.iter()
+        let entry = self
+            .tree
+            .iter()
             .find(|(_, e)| point > e.start && point < e.end)
             .map(|(s, e)| (*s, e.end, e.value.clone()));
 
@@ -319,12 +326,15 @@ impl<V> MapleTree<V> {
         let mut merged_count = 0;
 
         loop {
-            let mut ranges: Vec<_> = self.tree.iter()
+            let mut ranges: Vec<_> = self
+                .tree
+                .iter()
                 .map(|(_, e)| (e.start, e.end, e.value.clone()))
                 .collect();
             ranges.sort_by_key(|(s, _, _)| *s);
 
-            let to_merge = ranges.windows(2)
+            let to_merge = ranges
+                .windows(2)
                 .find(|w| w[0].1 == w[1].0 && w[0].2 == w[1].2)
                 .map(|w| (w[0].0, w[0].1, w[1].0, w[1].1, w[0].2.clone()));
 
@@ -346,14 +356,20 @@ impl<V> MapleTree<V> {
 
     /// 查找第一个 >= start 的区间
     pub fn lower_bound(&self, start: usize) -> Option<(usize, usize, &V)> {
-        self.tree.iter()
+        self.tree
+            .iter()
             .find(|(_, e)| e.start >= start)
             .map(|(_, e)| (e.start, e.end, &e.value))
     }
 
     /// 迭代与指定范围相交的区间
-    pub fn iter_intersecting(&self, start: usize, end: usize) -> impl Iterator<Item = (usize, usize, &V)> {
-        self.tree.iter()
+    pub fn iter_intersecting(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> impl Iterator<Item = (usize, usize, &V)> {
+        self.tree
+            .iter()
             .filter(move |(_, e)| !(end <= e.start || start >= e.end))
             .map(|(_, e)| (e.start, e.end, &e.value))
     }
@@ -386,7 +402,9 @@ impl<V> MapleTree<V> {
 
     /// 弹出第一个区间
     pub fn pop_first(&mut self) -> Option<(usize, usize, V)> {
-        self.tree.pop_first().map(|(_, e)| (e.start, e.end, e.value))
+        self.tree
+            .pop_first()
+            .map(|(_, e)| (e.start, e.end, e.value))
     }
 
     /// 弹出最后一个区间
@@ -435,12 +453,15 @@ impl<V> MapleTree<V> {
 
     /// 移除所有与指定范围相交的区间
     pub fn remove_intersecting(&mut self, start: usize, end: usize) -> Vec<(usize, usize, V)> {
-        let to_remove: Vec<_> = self.tree.iter()
+        let to_remove: Vec<_> = self
+            .tree
+            .iter()
             .filter(|(_, e)| !(end <= e.start || start >= e.end))
             .map(|(k, _)| *k)
             .collect();
 
-        to_remove.into_iter()
+        to_remove
+            .into_iter()
             .filter_map(|k| self.tree.remove(&k))
             .map(|e| (e.start, e.end, e.value))
             .collect()
@@ -453,7 +474,9 @@ impl<V> MapleTree<V> {
 
     /// 检查是否有任何区间与指定范围相交
     pub fn has_intersection(&self, start: usize, end: usize) -> bool {
-        self.tree.iter().any(|(_, e)| !(end <= e.start || start >= e.end))
+        self.tree
+            .iter()
+            .any(|(_, e)| !(end <= e.start || start >= e.end))
     }
 }
 
@@ -481,7 +504,6 @@ impl<'a, V> Iterator for MapleValuesMut<'a, V> {
         None
     }
 }
-
 
 impl<V> Default for MapleTree<V> {
     fn default() -> Self {

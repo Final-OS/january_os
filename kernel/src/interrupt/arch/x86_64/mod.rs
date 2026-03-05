@@ -4,16 +4,16 @@
 
 pub mod apic;
 pub mod gdt;
-pub mod idt;
 pub mod handlers;
+pub mod idt;
 pub mod tsc;
 
-use core::sync::atomic::{AtomicBool, Ordering};
 use crate::mm;
+use apic::{init_ioapic, init_local_apic, ioapic_set_irq, ioapic_unmask_irq};
+use core::sync::atomic::{AtomicBool, Ordering};
 use gdt::{init_gdt, set_interrupt_stack};
-use apic::{init_local_apic, init_ioapic, ioapic_set_irq, ioapic_unmask_irq};
 use idt::IRQ_KEYBOARD; // Only need constants used in init
-use idt::{IRQ_MOUSE, IRQ_COM1};
+use idt::{IRQ_COM1, IRQ_MOUSE};
 
 /// 中断子系统是否已初始化
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -68,12 +68,7 @@ fn resolve_isa_irq_route(info: &InterruptInitInfo, isa_irq: u8) -> Option<(u8, b
     Some((isa_irq, false, false))
 }
 
-fn setup_isa_irq(
-    info: &InterruptInitInfo,
-    isa_irq: u8,
-    vector: u8,
-    name: &str,
-) {
+fn setup_isa_irq(info: &InterruptInitInfo, isa_irq: u8, vector: u8, name: &str) {
     let Some((gsi, level_triggered, active_low)) = resolve_isa_irq_route(info, isa_irq) else {
         crate::warn!(
             "SMP/IOAPIC: skip {} route due to invalid override source={}",
@@ -152,7 +147,12 @@ pub unsafe fn init(info: &InterruptInitInfo) -> Result<(), &'static str> {
 /// # Safety
 ///
 /// 必须在 AP 核心启动时调用，中断禁用。
-pub unsafe fn init_ap(cpu_id: usize, kernel_stack_top: u64, local_apic_addr: u64, direct_map_base: u64) -> Result<(), &'static str> {
+pub unsafe fn init_ap(
+    cpu_id: usize,
+    kernel_stack_top: u64,
+    local_apic_addr: u64,
+    direct_map_base: u64,
+) -> Result<(), &'static str> {
     crate::smp::ap_boot_probe_set_stage(31);
 
     // 1. 初始化 GDT 和 TSS (Local)

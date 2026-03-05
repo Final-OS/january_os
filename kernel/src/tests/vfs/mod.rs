@@ -268,13 +268,16 @@ fn test_fd_bridge_case() -> Result<(), alloc::string::String> {
     let rel_fd = fs::open_for_pid(pid, MOCK_BRIDGE_FILE, 0, 0)
         .map_err(|errno| format!("relative open errno={}", errno))?;
     let mut rel = [0u8; 32];
-    let rel_n =
-        fs::read_for_pid(pid, rel_fd, &mut rel).map_err(|errno| format!("relative read errno={}", errno))?;
+    let rel_n = fs::read_for_pid(pid, rel_fd, &mut rel)
+        .map_err(|errno| format!("relative read errno={}", errno))?;
     if &rel[..rel_n] != MOCK_BRIDGE_DATA {
         let _ = fs::close_for_pid(pid, rel_fd);
         fs::drop_process_fds(pid);
         let _ = vfs::umount_fs(target.as_str());
-        return Err(format!("relative content mismatch: got={:?}", &rel[..rel_n]));
+        return Err(format!(
+            "relative content mismatch: got={:?}",
+            &rel[..rel_n]
+        ));
     }
 
     let _ = fs::close_for_pid(pid, rel_fd);

@@ -4,11 +4,11 @@
 // 参考 Linux 内核，将物理内存划分为不同的 Zone
 // ============================================================================
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use super::page::{Page, ListHead, PageFlags};
-use crate::mm::vm::layout::PAGE_SIZE;
+use super::page::{ListHead, Page, PageFlags};
 use crate::config;
+use crate::mm::vm::layout::PAGE_SIZE;
 use crate::sync::{IrqSpinLock, IrqSpinLockGuard};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // ============================================================================
 // 常量定义 (从配置导入)
@@ -54,12 +54,12 @@ pub fn zone_guard_stats() -> ZoneGuardStats {
 // ============================================================================
 
 /// 内存区域类型
-/// 
+///
 /// Zone 划分：
 /// - ZONE_DMA: 0-16MB，传统 ISA DMA 设备
 /// - ZONE_DMA32: 16MB-4GB，32位 PCI 设备（无 IOMMU 时）
 /// - ZONE_NORMAL: 4GB以上，大部分内核分配
-/// 
+///
 /// 注：启用 IOMMU 后，32位设备可通过 IOMMU 映射访问高地址内存，
 /// 届时 ZONE_DMA32 的重要性会降低。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +85,7 @@ impl ZoneType {
             ZoneType::Normal
         }
     }
-    
+
     /// 获取 Zone 名称
     pub fn name(&self) -> &'static str {
         match self {
@@ -94,7 +94,7 @@ impl ZoneType {
             ZoneType::Normal => "Normal",
         }
     }
-    
+
     /// 迭代所有 Zone 类型
     pub fn iter() -> impl Iterator<Item = ZoneType> {
         [ZoneType::Dma, ZoneType::Dma32, ZoneType::Normal].into_iter()
@@ -113,46 +113,46 @@ pub struct GfpFlags(u32);
 impl GfpFlags {
     // ========== Zone 选择 ==========
     /// 从 ZONE_DMA 分配 (低 16MB)
-    pub const DMA: u32      = 1 << 0;
+    pub const DMA: u32 = 1 << 0;
     /// 从 ZONE_DMA32 分配 (低 4GB) - 32位设备 DMA
-    pub const DMA32: u32    = 1 << 1;
+    pub const DMA32: u32 = 1 << 1;
     /// 从 ZONE_NORMAL 分配（默认）
-    pub const NORMAL: u32   = 1 << 2;
-    
+    pub const NORMAL: u32 = 1 << 2;
+
     // ========== 行为修饰 ==========
     /// 清零分配的内存
-    pub const ZERO: u32     = 1 << 8;
+    pub const ZERO: u32 = 1 << 8;
     /// 原子上下文，不能睡眠
-    pub const ATOMIC: u32   = 1 << 9;
+    pub const ATOMIC: u32 = 1 << 9;
     /// 内核分配
-    pub const KERNEL: u32   = 1 << 10;
+    pub const KERNEL: u32 = 1 << 10;
     /// 用户空间分配
-    pub const USER: u32     = 1 << 11;
+    pub const USER: u32 = 1 << 11;
     /// 不等待，立即返回
-    pub const NOWAIT: u32   = 1 << 12;
+    pub const NOWAIT: u32 = 1 << 12;
     /// 失败后重试
-    pub const RETRY: u32    = 1 << 13;
+    pub const RETRY: u32 = 1 << 13;
     /// 复合页
-    pub const COMP: u32     = 1 << 14;
+    pub const COMP: u32 = 1 << 14;
     /// 高优先级
-    pub const HIGH: u32     = 1 << 15;
-    
+    pub const HIGH: u32 = 1 << 15;
+
     pub const fn empty() -> Self {
         Self(0)
     }
-    
+
     pub const fn new(bits: u32) -> Self {
         Self(bits)
     }
-    
+
     pub const fn bits(&self) -> u32 {
         self.0
     }
-    
+
     pub fn test(&self, flag: u32) -> bool {
         (self.0 & flag) != 0
     }
-    
+
     pub fn set(&mut self, flag: u32) {
         self.0 |= flag;
     }
@@ -163,7 +163,8 @@ impl GfpFlags {
 /// 正常内核分配
 pub const GFP_KERNEL: GfpFlags = GfpFlags::new(GfpFlags::KERNEL | GfpFlags::NORMAL);
 /// 原子上下文分配（中断处理等）
-pub const GFP_ATOMIC: GfpFlags = GfpFlags::new(GfpFlags::ATOMIC | GfpFlags::NORMAL | GfpFlags::HIGH);
+pub const GFP_ATOMIC: GfpFlags =
+    GfpFlags::new(GfpFlags::ATOMIC | GfpFlags::NORMAL | GfpFlags::HIGH);
 /// 用户空间分配
 pub const GFP_USER: GfpFlags = GfpFlags::new(GfpFlags::USER | GfpFlags::NORMAL);
 /// DMA 内存 (ISA, 低 16MB)
@@ -171,14 +172,15 @@ pub const GFP_DMA: GfpFlags = GfpFlags::new(GfpFlags::DMA);
 /// DMA32 内存 (32位设备, 低 4GB)
 pub const GFP_DMA32: GfpFlags = GfpFlags::new(GfpFlags::DMA32);
 /// 清零的内核内存
-pub const GFP_KERNEL_ZERO: GfpFlags = GfpFlags::new(GfpFlags::KERNEL | GfpFlags::NORMAL | GfpFlags::ZERO);
+pub const GFP_KERNEL_ZERO: GfpFlags =
+    GfpFlags::new(GfpFlags::KERNEL | GfpFlags::NORMAL | GfpFlags::ZERO);
 
 // ============================================================================
 // Free Area (Buddy 空闲区域)
 // ============================================================================
 
 /// Buddy 空闲区域
-/// 
+///
 /// 每个 order 一个，管理该 order 的空闲块链表
 #[repr(C)]
 pub struct FreeArea {
@@ -195,12 +197,12 @@ impl FreeArea {
             nr_free: 0,
         }
     }
-    
+
     pub fn init(&mut self) {
         self.free_list.init();
         self.nr_free = 0;
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.nr_free == 0
     }
@@ -217,7 +219,7 @@ impl Default for FreeArea {
 // ============================================================================
 
 /// 内存区域
-/// 
+///
 /// UMA (Uniform Memory Access) 设计 - 单一内存节点
 /// 未来可扩展为 NUMA 支持
 pub struct Zone {
@@ -261,10 +263,17 @@ impl Zone {
             present_pages: 0,
             free_pages: AtomicU64::new(0),
             free_area: [
-                FreeArea::new(), FreeArea::new(), FreeArea::new(),
-                FreeArea::new(), FreeArea::new(), FreeArea::new(),
-                FreeArea::new(), FreeArea::new(), FreeArea::new(),
-                FreeArea::new(), FreeArea::new(),
+                FreeArea::new(),
+                FreeArea::new(),
+                FreeArea::new(),
+                FreeArea::new(),
+                FreeArea::new(),
+                FreeArea::new(),
+                FreeArea::new(),
+                FreeArea::new(),
+                FreeArea::new(),
+                FreeArea::new(),
+                FreeArea::new(),
             ],
             lock: IrqSpinLock::new(()),
             watermark_min: 0,
@@ -273,7 +282,7 @@ impl Zone {
             initialized: false,
         }
     }
-    
+
     /// 初始化 Zone
     pub fn init(&mut self, zone_type: ZoneType, start_pfn: u64, page_count: u64) {
         self.zone_type = zone_type;
@@ -282,19 +291,19 @@ impl Zone {
         self.spanned_pages = page_count;
         self.present_pages = page_count;
         self.free_pages.store(0, Ordering::Relaxed);
-        
+
         for area in self.free_area.iter_mut() {
             area.init();
         }
-        
+
         // 设置水位线（简单策略）
-        self.watermark_min = page_count / 64;   // ~1.5%
-        self.watermark_low = page_count / 32;   // ~3%
-        self.watermark_high = page_count / 16;  // ~6%
-        
+        self.watermark_min = page_count / 64; // ~1.5%
+        self.watermark_low = page_count / 32; // ~3%
+        self.watermark_high = page_count / 16; // ~6%
+
         self.initialized = true;
     }
-    
+
     /// 获取空闲页数
     #[inline]
     pub fn nr_free_pages(&self) -> u64 {
@@ -347,43 +356,43 @@ impl Zone {
         }
         (observed, recomputed, false)
     }
-    
+
     /// 结束 PFN
     #[inline]
     pub fn end_pfn(&self) -> u64 {
         self.start_pfn + self.spanned_pages
     }
-    
+
     /// 检查 PFN 是否属于此 Zone
     #[inline]
     pub fn contains_pfn(&self, pfn: u64) -> bool {
         pfn >= self.start_pfn && pfn < self.end_pfn()
     }
-    
+
     /// 检查是否低于最小水位
     pub fn is_low_on_memory(&self) -> bool {
         self.nr_free_pages() < self.watermark_min
     }
-    
+
     /// 添加空闲块到 Buddy 系统
     pub unsafe fn add_to_buddy(&mut self, page: &mut Page, order: usize) {
         debug_assert!(order < MAX_ORDER, "Order too large");
-        
+
         page.mark_buddy(order as u8);
-        
+
         let area = &mut self.free_area[order];
         area.free_list.add(&mut page.lru as *mut ListHead);
         area.nr_free += 1;
-        
+
         let pages = 1u64 << order;
         self.free_pages.fetch_add(pages, Ordering::Relaxed);
     }
-    
+
     /// 从 Buddy 系统移除空闲块
     pub unsafe fn remove_from_buddy(&mut self, page: &mut Page, order: usize) -> bool {
         debug_assert!(order < MAX_ORDER, "Order too large");
         debug_assert!(page.is_buddy(), "Page not in buddy");
-        
+
         let pages = 1u64 << order;
         let area = &mut self.free_area[order];
         if area.nr_free == 0 {
@@ -401,9 +410,9 @@ impl Zone {
 
         page.lru.del();
         area.nr_free -= 1;
-        
+
         page.clear_buddy();
-        
+
         let free_before = self.free_pages.load(Ordering::Relaxed);
         if free_before < pages {
             ZONE_GLOBAL_UNDERFLOW_REJECTS.fetch_add(1, Ordering::Relaxed);
@@ -460,7 +469,7 @@ pub fn pfn_to_zone(pfn: u64) -> Option<IrqSpinLockGuard<'static, Zone>> {
 }
 
 /// 根据 GFP flags 选择合适的 Zone 列表
-/// 
+///
 /// 返回优先级从高到低的 Zone 列表
 /// 分配时按顺序尝试，直到成功
 pub fn gfp_to_zone_list(gfp: GfpFlags) -> &'static [ZoneType] {

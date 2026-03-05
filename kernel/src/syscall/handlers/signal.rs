@@ -22,7 +22,8 @@ struct RtSigAction {
     mask: u64,
 }
 
-static SIGNAL_ACTIONS: Mutex<BTreeMap<usize, [RtSigAction; MAX_SIGNAL + 1]>> = Mutex::new(BTreeMap::new());
+static SIGNAL_ACTIONS: Mutex<BTreeMap<usize, [RtSigAction; MAX_SIGNAL + 1]>> =
+    Mutex::new(BTreeMap::new());
 static SIGNAL_MASKS: Mutex<BTreeMap<usize, u64>> = Mutex::new(BTreeMap::new());
 
 #[inline]

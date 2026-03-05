@@ -4,7 +4,7 @@
 // 参考 Linux 内核设计，每个物理页帧都有一个对应的 Page 结构
 // ============================================================================
 
-use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -314,11 +314,11 @@ impl Page {
 
     /// 尝试减少引用计数，失败时返回下溢错误
     pub fn try_put(&self) -> Result<u32, PageCounterError> {
-        let prev = self.refcount.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |old| old.checked_sub(1),
-        );
+        let prev = self
+            .refcount
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                old.checked_sub(1)
+            });
         let old = match prev {
             Ok(v) => v,
             Err(_) => {
@@ -361,13 +361,11 @@ impl Page {
 
     /// 尝试减少映射计数，最小值限制为 -1
     pub fn try_dec_mapcount(&self) -> Result<i32, PageCounterError> {
-        let prev = self.mapcount.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
-            if old <= -1 {
-                None
-            } else {
-                Some(old - 1)
-            }
-        });
+        let prev = self
+            .mapcount
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                if old <= -1 { None } else { Some(old - 1) }
+            });
         let old = match prev {
             Ok(v) => v,
             Err(_) => {

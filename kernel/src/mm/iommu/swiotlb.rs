@@ -5,10 +5,10 @@
 // 用于 32 位设备访问高地址内存
 // ============================================================================
 
+use super::{DMA_ADDR_SIZE, DmaAddr, DmaDirection, PAGE_SIZE};
 use alloc::boxed::Box;
 use alloc::vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use super::{DMA_ADDR_SIZE, DmaAddr, DmaDirection, PAGE_SIZE};
 
 /// SWIOTLB 最大槽位数 (64MB / 4KB = 16384)
 const MAX_SLOTS: usize = 16384;
@@ -103,9 +103,9 @@ impl Swiotlb {
             direct_map_offset,
         }
     }
-    
+
     /// 映射物理地址到 DMA 地址
-    /// 
+    ///
     /// 如果物理地址 < 4GB，直接返回；
     /// 否则，从弹跳缓冲区分配空间并复制数据
     pub fn map(&mut self, phys_addr: u64, size: usize, dir: DmaDirection) -> DmaAddr {
@@ -155,7 +155,7 @@ impl Swiotlb {
             DmaAddr::NULL
         }
     }
-    
+
     /// 取消映射
     pub fn unmap(&mut self, dma_addr: DmaAddr, size: usize, dir: DmaDirection) {
         let addr = dma_addr.as_u64();
@@ -180,8 +180,10 @@ impl Swiotlb {
 
         // Device -> CPU 方向需要在 unmap 时回拷
         let need_copy_back =
-            matches!(meta.dir, DmaDirection::FromDevice | DmaDirection::Bidirectional)
-                || matches!(dir, DmaDirection::FromDevice | DmaDirection::Bidirectional);
+            matches!(
+                meta.dir,
+                DmaDirection::FromDevice | DmaDirection::Bidirectional
+            ) || matches!(dir, DmaDirection::FromDevice | DmaDirection::Bidirectional);
 
         if need_copy_back {
             let copy_size = core::cmp::min(meta.size, size);
@@ -200,7 +202,7 @@ impl Swiotlb {
             }
         }
     }
-    
+
     /// 分配连续槽位
     fn alloc_slots(&mut self, count: usize) -> Option<usize> {
         if count == 0 || count > self.nr_slots {
@@ -209,14 +211,19 @@ impl Swiotlb {
 
         let start = self.next_slot.load(Ordering::Relaxed) % self.nr_slots;
 
-        if let Some(slot) = self.find_contiguous_slots(start, count)
-            .or_else(|| if start > 0 { self.find_contiguous_slots(0, count) } else { None })
-        {
+        if let Some(slot) = self.find_contiguous_slots(start, count).or_else(|| {
+            if start > 0 {
+                self.find_contiguous_slots(0, count)
+            } else {
+                None
+            }
+        }) {
             for i in 0..count {
                 self.set_slot_used(slot + i, true);
             }
             self.used_slots.fetch_add(count, Ordering::Relaxed);
-            self.next_slot.store((slot + count) % self.nr_slots.max(1), Ordering::Relaxed);
+            self.next_slot
+                .store((slot + count) % self.nr_slots.max(1), Ordering::Relaxed);
             return Some(slot);
         }
 
@@ -263,14 +270,14 @@ impl Swiotlb {
 
         None
     }
-    
+
     /// 检查槽位是否已使用
     fn is_slot_used(&self, slot: usize) -> bool {
         let word = slot / 64;
         let bit = slot % 64;
         (self.slot_bitmap[word] & (1 << bit)) != 0
     }
-    
+
     /// 设置槽位状态
     fn set_slot_used(&mut self, slot: usize, used: bool) {
         let word = slot / 64;

@@ -32,21 +32,17 @@ impl Semaphore {
     pub fn acquire(&self) {
         loop {
             let count = self.count.load(Ordering::Relaxed);
-            
+
             if count > 0 {
-                if self.count
-                    .compare_exchange_weak(
-                        count,
-                        count - 1,
-                        Ordering::Acquire,
-                        Ordering::Relaxed,
-                    )
+                if self
+                    .count
+                    .compare_exchange_weak(count, count - 1, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok()
                 {
                     return;
                 }
             }
-            
+
             core::hint::spin_loop();
         }
     }
@@ -63,15 +59,10 @@ impl Semaphore {
     /// 尝试获取信号量（非阻塞）
     pub fn try_acquire(&self) -> bool {
         let count = self.count.load(Ordering::Relaxed);
-        
+
         if count > 0 {
             self.count
-                .compare_exchange(
-                    count,
-                    count - 1,
-                    Ordering::Acquire,
-                    Ordering::Relaxed,
-                )
+                .compare_exchange(count, count - 1, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
         } else {
             false
@@ -81,12 +72,13 @@ impl Semaphore {
     /// 获取多个许可
     pub fn acquire_many(&self, permits: u32) {
         let permits = permits as i32;
-        
+
         loop {
             let count = self.count.load(Ordering::Relaxed);
-            
+
             if count >= permits {
-                if self.count
+                if self
+                    .count
                     .compare_exchange_weak(
                         count,
                         count - permits,
@@ -98,7 +90,7 @@ impl Semaphore {
                     return;
                 }
             }
-            
+
             core::hint::spin_loop();
         }
     }
@@ -232,21 +224,17 @@ impl BoundedSemaphore {
     pub fn acquire(&self) {
         loop {
             let count = self.count.load(Ordering::Relaxed);
-            
+
             if count > 0 {
-                if self.count
-                    .compare_exchange_weak(
-                        count,
-                        count - 1,
-                        Ordering::Acquire,
-                        Ordering::Relaxed,
-                    )
+                if self
+                    .count
+                    .compare_exchange_weak(count, count - 1, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok()
                 {
                     return;
                 }
             }
-            
+
             core::hint::spin_loop();
         }
     }
@@ -254,15 +242,10 @@ impl BoundedSemaphore {
     /// 尝试获取许可
     pub fn try_acquire(&self) -> bool {
         let count = self.count.load(Ordering::Relaxed);
-        
+
         if count > 0 {
             self.count
-                .compare_exchange(
-                    count,
-                    count - 1,
-                    Ordering::Acquire,
-                    Ordering::Relaxed,
-                )
+                .compare_exchange(count, count - 1, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
         } else {
             false
@@ -275,18 +258,14 @@ impl BoundedSemaphore {
     pub fn release(&self) -> bool {
         loop {
             let count = self.count.load(Ordering::Relaxed);
-            
+
             if count >= self.max {
                 return false;
             }
-            
-            if self.count
-                .compare_exchange_weak(
-                    count,
-                    count + 1,
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                )
+
+            if self
+                .count
+                .compare_exchange_weak(count, count + 1, Ordering::Release, Ordering::Relaxed)
                 .is_ok()
             {
                 return true;

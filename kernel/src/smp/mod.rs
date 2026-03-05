@@ -61,11 +61,7 @@ pub fn current_cpu_id() -> usize {
         return 0;
     }
     let cpu_id = APIC_ID_TO_CPU_ID[apic_id].load(Ordering::Acquire);
-    if cpu_id == CPU_ID_UNMAPPED {
-        0
-    } else {
-        cpu_id
-    }
+    if cpu_id == CPU_ID_UNMAPPED { 0 } else { cpu_id }
 }
 
 pub(crate) fn ap_boot_probe_reset() {
@@ -164,13 +160,19 @@ fn boot_aps(madt: &Madt, direct_map_base: u64, expected_cpus: usize) {
             }
             if lapic.apic_id as u32 == bsp_lapic_id {
                 if crate::config::DEBUG_VERBOSE {
-                    kprintln!("\x1b[90m[diag]\x1b[0m[smp] skip bsp apic_id={}", lapic.apic_id);
+                    kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[smp] skip bsp apic_id={}",
+                        lapic.apic_id
+                    );
                 }
                 continue;
             }
             if !lapic.is_enabled() && !lapic.is_online_capable() {
                 if crate::config::DEBUG_VERBOSE {
-                    kprintln!("\x1b[90m[diag]\x1b[0m[smp] skip disabled apic_id={}", lapic.apic_id);
+                    kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[smp] skip disabled apic_id={}",
+                        lapic.apic_id
+                    );
                 }
                 continue;
             }

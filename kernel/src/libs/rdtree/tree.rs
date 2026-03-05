@@ -496,11 +496,7 @@ impl<V> RadixTree<V> {
             return None;
         }
         let (key, val) = self.lower_bound(start)?;
-        if key <= end {
-            Some((key, val))
-        } else {
-            None
-        }
+        if key <= end { Some((key, val)) } else { None }
     }
 
     /// 返回 [start, end] 范围内最后一个项
@@ -509,11 +505,7 @@ impl<V> RadixTree<V> {
             return None;
         }
         let (key, val) = self.floor(end)?;
-        if key >= start {
-            Some((key, val))
-        } else {
-            None
-        }
+        if key >= start { Some((key, val)) } else { None }
     }
 
     /// 有序迭代
@@ -578,7 +570,13 @@ impl<V> RadixTree<V> {
         // 收集需要删除的键
         let keys: Vec<usize> = self
             .iter()
-            .filter_map(|(k, _)| if k >= start && k <= end { Some(k) } else { None })
+            .filter_map(|(k, _)| {
+                if k >= start && k <= end {
+                    Some(k)
+                } else {
+                    None
+                }
+            })
             .collect();
 
         let mut removed = Vec::with_capacity(keys.len());
@@ -815,12 +813,8 @@ impl<'a, V> Iterator for IterMut<'a, V> {
             if self.stack.is_empty() {
                 let tree = &mut *self.tree;
                 if let Some(root) = tree.root.as_mut() {
-                    self.stack.push((
-                        root.as_mut() as *mut Node<V>,
-                        0,
-                        tree.height - 1,
-                        0,
-                    ));
+                    self.stack
+                        .push((root.as_mut() as *mut Node<V>, 0, tree.height - 1, 0));
                 } else {
                     return None;
                 }
@@ -888,7 +882,6 @@ impl<'a, V> Iterator for IterMut<'a, V> {
         }
     }
 }
-
 
 impl<V> Default for RadixTree<V> {
     fn default() -> Self {

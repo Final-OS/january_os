@@ -97,8 +97,10 @@ impl<T> Mutex<T> {
                 count += 1;
                 if count > 10_000_000 {
                     let owner = self.owner.load(Ordering::Relaxed);
-                    panic!("Mutex::lock: Deadlock detected! Timeout waiting for '{}' (held by CPU {}) on CPU {}",
-                        self.name, owner, me);
+                    panic!(
+                        "Mutex::lock: Deadlock detected! Timeout waiting for '{}' (held by CPU {}) on CPU {}",
+                        self.name, owner, me
+                    );
                 }
                 core::hint::spin_loop();
             }
@@ -286,7 +288,10 @@ impl<T> Deref for IrqMutexGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        &*self.guard.as_ref().expect("IrqMutexGuard without inner guard")
+        &*self
+            .guard
+            .as_ref()
+            .expect("IrqMutexGuard without inner guard")
     }
 }
 

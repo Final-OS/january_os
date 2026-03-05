@@ -17,19 +17,19 @@
 //! | `Barrier` | 屏障 | 多线程同步点 |
 //! | `CondVar` | 条件变量 | 条件等待与通知 |
 
-mod spinlock;
-mod mutex;
-mod rwlock;
-mod once;
-mod semaphore;
 mod barrier;
 mod condvar;
+mod mutex;
+mod once;
+mod rwlock;
+mod semaphore;
+mod spinlock;
 
 // SpinLock
 pub use spinlock::{IrqSpinLock, IrqSpinLockGuard, SpinLock, SpinLockGuard};
 
 // Mutex
-pub use mutex::{Mutex, MutexGuard, IrqMutex, IrqMutexGuard};
+pub use mutex::{IrqMutex, IrqMutexGuard, Mutex, MutexGuard};
 
 // RwLock
 pub use rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -38,10 +38,10 @@ pub use rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 pub use once::{Once, OnceCell};
 
 // Semaphore
-pub use semaphore::{Semaphore, SemaphorePermit, BoundedSemaphore};
+pub use semaphore::{BoundedSemaphore, Semaphore, SemaphorePermit};
 
 // Barrier
-pub use barrier::{Barrier, BarrierWaitResult, ResettableBarrier, CountDownLatch};
+pub use barrier::{Barrier, BarrierWaitResult, CountDownLatch, ResettableBarrier};
 
 // CondVar
 pub use condvar::CondVar;

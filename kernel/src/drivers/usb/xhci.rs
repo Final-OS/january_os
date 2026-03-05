@@ -11,7 +11,7 @@ use crate::interrupt::IRQ_XHCI;
 use crate::mm::buddy::alloc_pages;
 use crate::mm::page::page_to_pfn;
 use crate::mm::vmalloc::{ioremap, iounmap};
-use crate::mm::zone::{GfpFlags, GFP_KERNEL_ZERO};
+use crate::mm::zone::{GFP_KERNEL_ZERO, GfpFlags};
 use crate::sync::IrqSpinLock;
 use crate::{debug, error, info, kprintln, ok, warn};
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
@@ -654,10 +654,9 @@ impl XhciController {
     }
 
     unsafe fn address_device(&mut self, slot_id: u8, port_id: u8, speed: u32) -> bool {
-        info!("[USB] Addressing Device on Slot {} (Port {}, Speed {})",
-            slot_id,
-            port_id,
-            speed
+        info!(
+            "[USB] Addressing Device on Slot {} (Port {}, Speed {})",
+            slot_id, port_id, speed
         );
 
         // 1. Allocate Device Context
@@ -901,10 +900,9 @@ impl XhciController {
         let vendor = desc.id_vendor;
         let product = desc.id_product;
 
-        info!("[USB] Slot {} Vendor: {:04x}, Product: {:04x}",
-            slot_id,
-            vendor,
-            product
+        info!(
+            "[USB] Slot {} Vendor: {:04x}, Product: {:04x}",
+            slot_id, vendor, product
         );
 
         if vendor == 0x0627 && product == 0x0001 {
@@ -999,11 +997,9 @@ impl XhciController {
                 let subclass = if_desc.interface_subclass;
                 let protocol = if_desc.interface_protocol;
 
-                info!("[USB] Interface {} Class: {} Subclass: {} Protocol: {}",
-                    current_interface,
-                    class,
-                    subclass,
-                    protocol
+                info!(
+                    "[USB] Interface {} Class: {} Subclass: {} Protocol: {}",
+                    current_interface, class, subclass, protocol
                 );
 
                 if class == 3 {
@@ -1023,7 +1019,8 @@ impl XhciController {
                     }
 
                     if subclass == 1 {
-                        info!("[USB] Setting Boot Protocol and Idle for Interface {}",
+                        info!(
+                            "[USB] Setting Boot Protocol and Idle for Interface {}",
                             current_interface
                         );
                         self.set_protocol(slot_id, current_interface, 0);
@@ -1205,9 +1202,9 @@ impl XhciController {
         self.enqueue_transfer(slot_id, dci, buf_phys, length, control);
         self.ring_doorbell_ep(slot_id, dci);
 
-        info!("[USB] Queued Interrupt Transfer for Slot {} DCI {}",
-            slot_id,
-            dci
+        info!(
+            "[USB] Queued Interrupt Transfer for Slot {} DCI {}",
+            slot_id, dci
         );
     }
 }
@@ -1279,10 +1276,9 @@ pub fn init() {
         // Subclass 0x03 (USB Controller)
         // ProgIF 0x30 (xHCI)
         if header.class_code == 0x0C && header.subclass == 0x03 && header.prog_if == 0x30 {
-            info!("[USB] Found xHCI Controller at {:?} (Vendor: {:04x}, Device: {:04x})",
-                addr,
-                header.vendor_id,
-                header.device_id
+            info!(
+                "[USB] Found xHCI Controller at {:?} (Vendor: {:04x}, Device: {:04x})",
+                addr, header.vendor_id, header.device_id
             );
 
             // 初始化控制器
@@ -1298,7 +1294,10 @@ pub fn init() {
 
 unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] init_controller begin addr={:?}", addr);
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[xhci] init_controller begin addr={:?}",
+            addr
+        );
     }
 
     // 1. 启用 Bus Master 和 Memory Space
@@ -1362,7 +1361,8 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
 
     xhci_legacy_handoff(mmio_base, mmio_size, hccparams1);
 
-    info!("[USB] xHCI Version: {:x}.{:x} (Raw: {:#x}, CapLen: {})",
+    info!(
+        "[USB] xHCI Version: {:x}.{:x} (Raw: {:#x}, CapLen: {})",
         hciversion >> 8,
         hciversion & 0xFF,
         hciversion,
@@ -1403,10 +1403,9 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     let max_ints = ((hcsparams1 >> 8) & 0x7FF) as u16;
     let max_ports = ((hcsparams1 >> 24) & 0xFF) as u8;
 
-    info!("[USB] Max Slots: {}, Max Ports: {}, Max Ints: {}",
-        max_slots,
-        max_ports,
-        max_ints
+    info!(
+        "[USB] Max Slots: {}, Max Ports: {}, Max Ints: {}",
+        max_slots, max_ports, max_ints
     );
 
     // Check Context Size (CSZ, bit 2 of HCCPARAMS1)
@@ -1421,7 +1420,11 @@ unsafe fn init_controller(addr: PciAddress, header: PciHeader) {
     let dboff = read_volatile(addr_of!((*cap_regs).dboff)) & !0x3;
     let rtsoff = read_volatile(addr_of!((*cap_regs).rtsoff)) & !0x1F;
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] dboff={:#x} rtsoff={:#x}", dboff, rtsoff,);
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[xhci] dboff={:#x} rtsoff={:#x}",
+            dboff,
+            rtsoff,
+        );
     }
 
     let db_needed = (max_slots as usize).saturating_add(1) * core::mem::size_of::<u32>();
@@ -1596,10 +1599,10 @@ unsafe fn check_ports(xhci: &mut XhciController) {
                 let mut new_sc = port_sc | PORTSC_PR;
                 // 清除状态位 (Write 1 to Clear)
                 new_sc &= !(PORTSC_CSC | PORTSC_PRC); // 不要写 1 到这些位，否则会清除它们?
-                                                      // Wait, spec says RW1C. If we write 1, we clear them.
-                                                      // We want to SET PR.
-                                                      // Ideally we read, mask off RW1C bits, set PR, write back.
-                                                      // RW1C bits: CSC (17), PESC (18), WRC (19), OC (20), PRC (21), PLC (22), CEC (23)
+                // Wait, spec says RW1C. If we write 1, we clear them.
+                // We want to SET PR.
+                // Ideally we read, mask off RW1C bits, set PR, write back.
+                // RW1C bits: CSC (17), PESC (18), WRC (19), OC (20), PRC (21), PLC (22), CEC (23)
                 let change_bits = 0x00FE0000; // Bits 17-23
                 new_sc = (port_sc & !change_bits) | PORTSC_PR;
 
@@ -1652,7 +1655,10 @@ unsafe fn alloc_dma_zeroed() -> Option<(u64, *mut u8)> {
 
 unsafe fn init_memory_structures(xhci: &mut XhciController) -> bool {
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] mem init: max_slots={}", xhci.max_slots);
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[xhci] mem init: max_slots={}",
+            xhci.max_slots
+        );
     }
 
     // 1. 设置 Max Slots Enabled (CONFIG 寄存器)
@@ -1790,7 +1796,10 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
     }
 
     if crate::config::DEBUG_VERBOSE {
-        kprintln!("\x1b[90m[diag]\x1b[0m[xhci] scan ext caps start xecp={:#x}", xecp);
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[xhci] scan ext caps start xecp={:#x}",
+            xecp
+        );
     }
 
     for _ in 0..64 {
@@ -1883,7 +1892,9 @@ unsafe fn xhci_legacy_handoff(mmio_base: *mut u8, mmio_size: usize, hccparams1: 
                 }
             } else {
                 if crate::config::DEBUG_VERBOSE {
-                    kprintln!("\x1b[90m[diag]\x1b[0m[xhci] legacy handoff not required (BIOS-owned=0)");
+                    kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[xhci] legacy handoff not required (BIOS-owned=0)"
+                    );
                 }
             }
 

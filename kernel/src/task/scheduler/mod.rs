@@ -82,11 +82,7 @@ fn active_cpu_slots() -> usize {
 #[inline]
 fn runqueue_slot_index(cpu_id: usize) -> usize {
     let slots = active_cpu_slots();
-    if cpu_id < slots {
-        cpu_id
-    } else {
-        0
-    }
+    if cpu_id < slots { cpu_id } else { 0 }
 }
 
 #[inline]
@@ -97,7 +93,11 @@ fn runqueue_for_cpu(cpu_id: usize) -> &'static Mutex<RunQueue> {
 #[inline]
 fn idle_context_slot() -> &'static AtomicUsize {
     let cpu_id = current_cpu_id();
-    let idx = if cpu_id < IDLE_CONTEXT_SLOT_COUNT { cpu_id } else { 0 };
+    let idx = if cpu_id < IDLE_CONTEXT_SLOT_COUNT {
+        cpu_id
+    } else {
+        0
+    };
     &IDLE_CONTEXT_SP_SLOTS[idx]
 }
 
@@ -199,7 +199,11 @@ impl Scheduler {
     fn contains_task_anywhere(&self, target: &Arc<Mutex<Task>>) -> bool {
         for slot in 0..active_cpu_slots() {
             let rq = RUNQUEUES[slot].lock();
-            if rq.ready_queue.iter().any(|queued| Arc::ptr_eq(queued, target)) {
+            if rq
+                .ready_queue
+                .iter()
+                .any(|queued| Arc::ptr_eq(queued, target))
+            {
                 return true;
             }
         }

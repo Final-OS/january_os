@@ -4,9 +4,9 @@
 
 use super::pci::{PciAddress, PciHeader};
 use crate::diag;
+use crate::sync::Mutex;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::sync::Mutex;
 
 /// PCI device ID matching criteria
 pub struct PciDeviceId {
@@ -40,16 +40,24 @@ impl PciDeviceId {
     /// Check if this ID matches the given header
     pub fn matches(&self, header: &PciHeader) -> bool {
         if let Some(v) = self.vendor {
-            if header.vendor_id != v { return false; }
+            if header.vendor_id != v {
+                return false;
+            }
         }
         if let Some(d) = self.device {
-            if header.device_id != d { return false; }
+            if header.device_id != d {
+                return false;
+            }
         }
         if let Some(c) = self.class_code {
-            if header.class_code != c { return false; }
+            if header.class_code != c {
+                return false;
+            }
         }
         if let Some(s) = self.subclass {
-            if header.subclass != s { return false; }
+            if header.subclass != s {
+                return false;
+            }
         }
         true
     }
@@ -94,9 +102,15 @@ pub fn probe_device(addr: PciAddress, header: &PciHeader) -> bool {
     for driver in registry.iter() {
         for id in driver.supported_ids() {
             if id.matches(header) {
-                diag!("[PCI] [{:02x}:{:02x}.{:x}] {:04x}:{:04x} -> '{}'",
-                    addr.bus, addr.device, addr.function,
-                    header.vendor_id, header.device_id, driver.name());
+                diag!(
+                    "[PCI] [{:02x}:{:02x}.{:x}] {:04x}:{:04x} -> '{}'",
+                    addr.bus,
+                    addr.device,
+                    addr.function,
+                    header.vendor_id,
+                    header.device_id,
+                    driver.name()
+                );
 
                 match driver.probe(addr, header) {
                     ProbeResult::Claimed => return true,

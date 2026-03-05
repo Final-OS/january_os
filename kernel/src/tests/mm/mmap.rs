@@ -672,8 +672,7 @@ fn run_in_task_context() {
         }
         warn!(
             "mm/mmap: single-cpu environment, skip cross-cpu munmap visibility check (detected={} online={})",
-            detected_cpus,
-            online_cpus,
+            detected_cpus, online_cpus,
         );
     } else {
         let cr3 = mm::arch::read_cr3() & mm::PTE_ADDR_MASK;
