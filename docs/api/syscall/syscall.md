@@ -7,7 +7,7 @@
 - `kernel/src/syscall/`：统一参数结构、返回值编码、号表和跨架构分发接口
 - `kernel/src/syscall/arch/x86_64/`：x86_64 Linux ABI 编号表与号到组件入口的分发
 - `kernel/src/arch/x86_64/syscall/`：`syscall` 指令陷入入口、寄存器保存与返回路径
-- `kernel/src/fs/syscall/`：FS/FD/TTY/pipe/poll/select 相关 syscall-facing 入口
+- `kernel/src/fs/syscall/`：FS 域 ABI 入口；真实运行时分布在 `fs/runtime/fd/pipe/backing/vfs`
 - `kernel/src/mm/syscall/`：`mmap/munmap/mprotect/brk` 专属 ABI 入口
 - `kernel/src/task/syscall/`：`execve/fork/clone/wait4/kill/rt_sig*` 等 task 域 ABI 入口
 - `kernel/src/task/proc/` + `kernel/src/task/runtime/`：进程语义、全局表、wait/spawn 运行时
@@ -69,9 +69,9 @@ pub fn syscall_table() -> &'static [SyscallDef];
 负责：`open/stat/lstat/fstat/read/write/close/lseek/dup/dup2/fcntl/chdir/getcwd/getdents64/pipe/pipe2/ioctl/poll/select`。
 
 当前进一步拆为：
-- `kernel/src/fs/syscall/file.rs`：路径、FD、目录项与普通读写
-- `kernel/src/fs/syscall/pipe.rs`：pipe、pipe2、ioctl
-- `kernel/src/fs/syscall/poll.rs`：poll、select
+- `kernel/src/fs/syscall/file.rs`：路径、FD、目录项与普通读写 ABI
+- `kernel/src/fs/syscall/pipe.rs`：pipe、pipe2、ioctl ABI
+- `kernel/src/fs/syscall/poll.rs`：poll、select ABI
 
 ### `mm::syscall`
 

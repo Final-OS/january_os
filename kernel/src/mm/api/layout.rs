@@ -86,13 +86,13 @@ pub const USER_MMAP_BASE: u64 = config::USER_MMAP_BASE;
 /// 物理地址转换为直接映射区的虚拟地址
 #[inline]
 pub fn phys_to_virt(phys: u64) -> u64 {
-    super::layout_runtime::direct_map_phys_to_virt(phys)
+    crate::mm::virt::layout_runtime::direct_map_phys_to_virt(phys)
 }
 
 /// 直接映射区的虚拟地址转换为物理地址
 #[inline]
 pub fn virt_to_phys(virt: u64) -> u64 {
-    super::layout_runtime::direct_map_virt_to_phys(virt).unwrap_or(0)
+    crate::mm::virt::layout_runtime::direct_map_virt_to_phys(virt).unwrap_or(0)
 }
 
 /// 检查地址是否在内核空间

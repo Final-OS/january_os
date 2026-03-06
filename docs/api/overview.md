@@ -8,22 +8,22 @@
 
 | 模块 | 说明 | 文件 |
 |------|------|------|
-| [address](./mm/address.md) | 物理地址和虚拟地址类型 | `kernel/src/mm/address.rs` |
-| [memblock](./mm/memblock.md) | 早期引导内存分配器 | `kernel/src/mm/memblock.rs` |
-| [page](./mm/page.md) | 页帧描述符 | `kernel/src/mm/page.rs` |
-| [zone](./mm/zone.md) | 内存区域管理 | `kernel/src/mm/zone.rs` |
-| [buddy](./mm/buddy.md) | 伙伴系统分配器 | `kernel/src/mm/buddy.rs` |
-| [slub](./mm/slub.md) | SLUB 小对象分配器 | `kernel/src/mm/slub.rs` |
-| [vma](./mm/vma.md) | 虚拟内存区域 | `kernel/src/mm/vma.rs` |
-| [vmalloc](./mm/vmalloc.md) | 虚拟连续分配 | `kernel/src/mm/vmalloc.rs` |
-| [fault](./mm/fault.md) | 页错误处理 | `kernel/src/mm/fault.rs` |
-| [pcp](./mm/pcp.md) | Per-CPU 页缓存 | `kernel/src/mm/pcp.rs` |
-| [numa](./mm/numa.md) | NUMA 支持 | `kernel/src/mm/numa.rs` |
-| [iommu](./mm/iommu.md) | IOMMU 和 DMA | `kernel/src/mm/iommu.rs` |
-| [paging](./mm/paging.md) | 页表操作 | `kernel/src/mm/paging.rs` |
-| [heap](./mm/heap.md) | 早期堆 | `kernel/src/mm/heap.rs` |
-| [layout](./mm/layout.md) | 内存布局常量 | `kernel/src/mm/layout.rs` |
-| [init](./mm/init.md) | 内存初始化 | `kernel/src/mm/init.rs` |
+| [address](./mm/address.md) | 物理地址和虚拟地址类型 | `kernel/src/mm/virt/address.rs` |
+| [memblock](./mm/memblock.md) | 早期引导内存分配器 | `kernel/src/mm/phys/memblock.rs` |
+| [page](./mm/page.md) | 页帧描述符 | `kernel/src/mm/phys/page.rs` |
+| [zone](./mm/zone.md) | 内存区域管理 | `kernel/src/mm/phys/zone.rs` |
+| [buddy](./mm/buddy.md) | 伙伴系统分配器 | `kernel/src/mm/phys/buddy.rs` |
+| [slub](./mm/slub.md) | SLUB 小对象分配器 | `kernel/src/mm/alloc/slub.rs` |
+| [vma](./mm/vma.md) | 虚拟内存区域 | `kernel/src/mm/virt/vma.rs` |
+| [vmalloc](./mm/vmalloc.md) | 虚拟连续分配 | `kernel/src/mm/alloc/vmalloc.rs` |
+| [fault](./mm/fault.md) | 页错误处理 | `kernel/src/mm/virt/fault.rs` |
+| [pcp](./mm/pcp.md) | Per-CPU 页缓存 | `kernel/src/mm/phys/pcp.rs` |
+| [numa](./mm/numa.md) | NUMA 支持 | `kernel/src/mm/phys/numa.rs` |
+| [iommu](./mm/iommu.md) | IOMMU 和 DMA | `kernel/src/mm/dma/mod.rs` |
+| [paging](./mm/paging.md) | 页表操作 | `kernel/src/mm/virt/paging.rs` |
+| [heap](./mm/heap.md) | 早期堆 | `kernel/src/mm/alloc/heap.rs` |
+| [layout](./mm/layout.md) | 内存布局常量 | `kernel/src/mm/api/layout.rs` |
+| [init](./mm/init.md) | 内存初始化 | `kernel/src/mm/boot/setup.rs` |
 
 ### 中断处理 (interrupt)
 
@@ -54,6 +54,12 @@
 | [Semaphore](./sync/semaphore.md) | 信号量 | `kernel/src/sync/semaphore.rs` |
 | [Once](./sync/once.md) | 一次性初始化 | `kernel/src/sync/once.rs` |
 | [Barrier](./sync/barrier.md) | 屏障 | `kernel/src/sync/barrier.rs` |
+
+### 文件系统 (fs)
+
+| 模块 | 说明 | 文件 |
+|------|------|------|
+| [File](./fs/file.md) | FD、pipe、VFS 与 FS syscall 入口 | `kernel/src/fs/mod.rs` |
 
 ### 任务管理 (task)
 

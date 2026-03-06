@@ -132,7 +132,7 @@ pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
 ## 常量地址
 
 ```rust
-// kernel/src/mm/layout.rs
+// kernel/src/mm/api/layout.rs
 
 pub const DIRECT_MAP_OFFSET: u64 = 0xFFFF880000000000;
 pub const DIRECT_MAP_END: u64 = 0xFFFFC80000000000;

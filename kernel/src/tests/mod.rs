@@ -4,6 +4,7 @@
 
 mod arch;
 mod block;
+mod fs;
 mod drivers;
 mod interrupt;
 mod libs;
@@ -50,6 +51,10 @@ pub fn run(name: &str) {
         Some("sync") => sync::run(),
         Some("syscall") => syscall::run(),
         Some("virt") => virt::run(),
+        Some("fs") => {
+            let filter = parts.get(1).copied();
+            fs::run_with_filter(filter);
+        }
         Some("block") => {
             let filter = parts.get(1).copied();
             block::run_with_filter(filter);
@@ -70,6 +75,7 @@ pub fn run(name: &str) {
             smp::run();
             sync::run();
             syscall::run();
+            fs::run();
             block::run();
             virt::run();
             vfs::run();
@@ -102,6 +108,8 @@ pub fn run(name: &str) {
             kprintln!("  security       - Security skeleton tests");
             kprintln!("  sync           - Synchronization skeleton tests");
             kprintln!("  syscall        - Syscall skeleton tests");
+            kprintln!("  fs [name]      - File system tests");
+            kprintln!("                   Available: path, mount, fd_bridge");
             kprintln!("  block [name]   - Block device tests");
             kprintln!("                   Available: virtio, partition");
             kprintln!("  virt           - Virtualization skeleton tests");

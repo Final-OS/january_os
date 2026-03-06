@@ -4,9 +4,9 @@ IOMMU (Input/Output Memory Management Unit) 管理设备 DMA 访问，提供地�
 
 ## 文件
 
-- `kernel/src/mm/iommu/mod.rs` - IOMMU 主模块
-- `kernel/src/mm/iommu/vtd.rs` - Intel VT-d 实现
-- `kernel/src/mm/iommu/swiotlb.rs` - SWIOTLB 实现
+- `kernel/src/mm/dma/mod.rs` - DMA/IOMMU façade
+- `kernel/src/mm/dma/vtd.rs` - Intel VT-d 实现
+- `kernel/src/mm/dma/swiotlb.rs` - SWIOTLB 实现
 
 ## IOMMU 类型
 

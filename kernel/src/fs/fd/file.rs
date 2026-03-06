@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
-use super::inode::Inode;
-use super::types::{FsError, SeekWhence};
+use crate::fs::vfs::Inode;
+use crate::fs::api::{FsError, SeekWhence};
 
 pub trait File: Send + Sync {
     fn inode(&self) -> Arc<dyn Inode>;

@@ -1,6 +1,21 @@
 # File API
 
-文件与文件描述符相关 syscall-facing 入口现在归 `FS` 组件所有，主要实现位于 `kernel/src/fs/syscall/`，底层状态与 VFS 能力位于 `kernel/src/fs/mod.rs` 和 `kernel/src/fs/vfs/`。
+文件与文件描述符相关 syscall-facing 入口现在归 `FS` 组件所有；组件已按 `façade + 分层子目录骨架` 重组，顶层 façade 位于 `kernel/src/fs/mod.rs`，运行时与 VFS 能力分别落在 `runtime/fd/pipe/backing/vfs/syscall` 子域。
+
+## 当前目录边界
+
+```text
+kernel/src/fs/
+├── mod.rs        # façade：生命周期、稳定导出、跨域胶水
+├── api/          # Metadata、DirEntry、FsError、SeekWhence
+├── runtime/      # FS_STATE、stdin wait、初始化与状态管理
+├── fd/           # File trait、目录游标占位、FD 运行时边界
+├── vfs/          # inode/path/mount/filesystem/lookup 核心
+├── pipe/         # pipe/poll/select 运行时边界
+├── backing/      # initramfs 与 mmap 文件后备
+├── syscall/      # open/read/write/... 的 ABI 入口
+└── diag/         # dump/stats
+```
 
 ## 当前入口
 
@@ -28,20 +43,19 @@ pub(crate) fn sys_select(args: &SyscallArgs) -> SyscallRet;
 
 ## 组件职责
 
-- `kernel/src/fs/syscall/mod.rs`：共享 Linux ABI 类型、常量、等待队列与通用辅助
-- `kernel/src/uaccess.rs`：跨组件共享的用户态访问基础设施；FS 仅在 `fs/syscall/uaccess.rs` 保留本组件专属 ABI 辅助
-- `kernel/src/fs/syscall/stdin.rs`：stdin 等待队列、TTY 输入读取与唤醒
-- `kernel/src/fs/syscall/file.rs`：路径、FD、目录项与普通读写入口
-- `kernel/src/fs/syscall/pipe.rs`：pipe、pipe2、ioctl 入口
-- `kernel/src/fs/syscall/poll.rs`：poll/select 入口
-- FD 表、cwd、pipe 状态和 mmap 文件后备都归 `FS_STATE`
-- TTY、键盘、串口输入等待队列归 `FS` 组件管理
-- `syscall` 顶层不再保存文件语义实现
+- `kernel/src/fs/runtime/manager.rs`：FD 表、cwd、pipe 状态、mmap 文件后备与初始化主路径
+- `kernel/src/fs/runtime/stdin.rs`：stdin 等待队列与唤醒兼容入口
+- `kernel/src/fs/fd/`：打开文件/目录运行时边界与 `File` trait
+- `kernel/src/fs/vfs/`：路径解析、inode、mount、filesystem 抽象
+- `kernel/src/fs/backing/initramfs.rs`：initramfs 后端
+- `kernel/src/fs/backing/mmap.rs`：mmap 文件后备引用计数与页复制接口
+- `kernel/src/fs/syscall/`：仅保留 ABI 解码和用户态访问辅助
 
 ## 当前实现状态
 
 - `read/write/close/stat/fstat/lstat/poll/pipe/select/pipe2` 已具备运行路径
 - `open/ioctl/lseek/dup/dup2/fcntl/chdir/getcwd/getdents64` 已有实现，但仍属于最小/受限语义
+- `fs::runtime::*` 与 `fs::backing::*` 兼容入口仍保留，供 `task/mm/shell/tests` 调用
 
 ## 相关文档
 

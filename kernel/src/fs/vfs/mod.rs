@@ -2,21 +2,19 @@
 
 pub mod initramfs;
 
-mod file;
-mod fs;
+mod filesystem;
 mod inode;
 mod mount;
 mod path;
-mod types;
 
 use alloc::sync::Arc;
 
-pub use file::File;
-pub use fs::FileSystem;
+pub use crate::fs::fd::file::File;
+pub use filesystem::FileSystem;
 pub use inode::Inode;
 pub use mount::{mount_fs, mount_root, mount_snapshot, resolve_mount, umount_fs, MountEntry};
 pub use path::{normalize_path, split_parent};
-pub use types::{DirEntry, FileType, FsError, Metadata, SeekWhence};
+pub use crate::fs::api::{DirEntry, FileType, FsError, Metadata, SeekWhence};
 
 pub fn lookup_path(path: &str) -> Result<Arc<dyn Inode>, FsError> {
     let (mount_target, fs) = resolve_mount(path).ok_or(FsError::NotFound)?;

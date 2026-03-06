@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use super::inode::Inode;
-use super::types::FsError;
+use crate::fs::api::FsError;
 
 pub trait FileSystem: Send + Sync {
     fn name(&self) -> &str;

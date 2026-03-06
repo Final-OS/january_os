@@ -68,7 +68,7 @@
 | ACPI 表完整传递 | 🟡 | 仅 RSDP，缺完整表 | v0.4 |
 | 引导参数解析 | 🟡 | 缺少内核命令行 | v0.4 |
 | LA57 切换约束 | 🟡 | 已支持启动期 4->5 trampoline + 自动回退；aux 页表池优先放在 4GiB 以下并已补齐 root/CR3 失配可观测性，但底层切换仍依赖 5-level root 位于 4GiB 内 | v0.4 |
-| 组件边界治理 | 🟡 | 启动期已引入组件注册/依赖编排；`arch/drivers/interrupt/smp/syscall/net/security/virt/task` 已补齐 façade + 分层子目录骨架，其中 `virt` 采用 `platform/<isa>` 平台后端、`task` 已重组为 `api/runtime/proc/thread/sched/diag/syscall/arch`。当前主要剩余债务集中在 `mm/fs/drivers` 的深层直接互调与旧入口收口 | v0.5 |
+| 组件边界治理 | 🟡 | 启动期已引入组件注册/依赖编排；`arch/mm/fs/interrupt/smp/syscall/net/security/virt/task` 已补齐 façade + 分层子目录骨架，其中 `virt` 采用 `platform/<isa>` 平台后端，`task` 已重组为 `api/runtime/proc/thread/sched/diag/syscall/arch`，`mm` 已重组为 `api/runtime/boot/phys/virt/alloc/dma/diag/syscall/arch`，`fs` 已重组为 `api/runtime/fd/vfs/pipe/backing/syscall/diag/arch`。当前主要剩余债务集中在 `drivers` 的深层直接互调与旧入口收口 | v0.5 |
 | 完整占位向实装偿债 | 🟡 | `net/security/virt` 已具备完整可编译骨架、syscall/VFS 钩子与测试壳，但运行能力默认返回 `NotSupported/ENOSYS`；需逐批替换为真实实现 | v0.5/v0.6 |
 
 ---

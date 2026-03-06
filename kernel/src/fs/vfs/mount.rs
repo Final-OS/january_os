@@ -5,9 +5,9 @@ use alloc::vec::Vec;
 
 use crate::sync::Mutex;
 
-use super::fs::FileSystem;
+use super::filesystem::FileSystem;
 use super::path::normalize_path;
-use super::types::FsError;
+use crate::fs::api::FsError;
 
 #[derive(Clone)]
 pub struct MountEntry {

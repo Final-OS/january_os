@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::types::{DirEntry, FsError, Metadata};
+use crate::fs::api::{DirEntry, FsError, Metadata};
 
 pub trait Inode: Send + Sync {
     fn metadata(&self) -> Result<Metadata, FsError>;

@@ -152,7 +152,7 @@ pub(crate) use pipe::{sys_ioctl, sys_pipe, sys_pipe2};
 pub(crate) use poll::{sys_poll, sys_select};
 pub(crate) use stdin::{
     dequeue_current_stdin_waiter, enqueue_current_stdin_waiter, read_tty_byte,
-    wake_stdin_waiters_if_ready,
+    stdin_has_pending_input, wake_stdin_waiters_if_ready,
 };
 pub(crate) use uaccess::{
     current_pid_raw, linux_stat_from_fs, read_user_cstring, read_user_struct,

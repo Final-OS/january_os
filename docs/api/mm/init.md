@@ -1,6 +1,23 @@
 # init - 内存初始化
 
-内存初始化模块协调各内存组件的初始化顺序。
+内存初始化编排已按组件化宏内核规范重组到 `kernel/src/mm/boot/setup.rs`，并由 `kernel/src/mm/mod.rs` 作为 façade 统一导出。
+
+## 当前目录边界
+
+```text
+kernel/src/mm/
+├── mod.rs        # façade：生命周期、稳定导出、跨域胶水
+├── api/          # layout 等稳定常量与接口
+├── runtime/      # init stage / 运行态占位
+├── boot/         # 启动期内存导入与 setup
+├── phys/         # memblock/page/zone/buddy/numa/pcp
+├── virt/         # address/vma/fault/paging/layout_runtime
+├── alloc/        # heap/slub/vmalloc
+├── dma/          # iommu/swiotlb/vtd
+├── syscall/      # mmap/munmap/mprotect/brk ABI
+├── diag/         # dump/stats
+└── arch/         # 架构后端
+```
 
 ## API
 
@@ -8,10 +25,11 @@
 
 ```rust
 pub enum MmInitStage {
-    Early,           // Memblock 初始化
-    Buddy,          // Buddy System 初始化
-    Slub,            // SLUB 初始化
-    Finished,        // 完成
+    None,
+    Memblock,
+    Buddy,
+    Slub,
+    Complete,
 }
 
 pub fn init_stage() -> MmInitStage
@@ -20,88 +38,32 @@ pub fn init_stage() -> MmInitStage
 ### 初始化函数
 
 ```rust
-pub fn init_memblock(
+pub unsafe fn init_memblock(
     regions: &[MemoryRegionInfo],
     kernel_start: u64,
-    kernel_end: u64
-) -> Result<(), MmError>
+    kernel_end: u64,
+) -> KernelResult<()>;
 
-pub fn init_buddy_system(
+pub unsafe fn init_buddy_system(
     regions: &[MemoryRegionInfo],
     max_pfn: u64,
-    direct_map_offset: u64
-) -> Result<(), MmError>
+    direct_map_offset: u64,
+) -> KernelResult<()>;
 
-pub fn init_slub() -> Result<(), SlubError>
-pub fn finish_mm_init()
+pub unsafe fn init_slub() -> KernelResult<()>;
+pub fn finish_mm_init() -> KernelResult<()>;
 
-pub fn init_heap(start: usize, size: usize)
-pub fn init_pcp(batch_size: usize)
-pub fn init_vma()
-pub fn init_uma()
-pub fn init_numa(srat: &Srat) -> Result<(), NumaError>
+pub fn init_heap(target_bytes: usize) -> usize;
+pub fn init_pcp(batch_size: usize);
+pub fn init_vma();
+pub fn init_uma();
+pub fn init_numa(srat: &Srat) -> Result<(), NumaError>;
 ```
 
 ## 初始化顺序
 
-```
-1. Memblock 初始化
-   │
-   ├─> 解析 UEFI 内存映射
-   ├─> 添加可用区域
-   ├─> 保留内核区域
-   └─> 设置分配方向
-        │
-        ▼
-2. struct page 初始化
-   │
-   ├─> 初始化页描述符数组
-   └─> 设置初始标志
-        │
-        ▼
-3. Buddy System 初始化
-   │
-   ├─> 初始化 ZONE_DMA
-   ├─> 初始化 ZONE_DMA32
-   └─> 初始化 ZONE_NORMAL
-        │
-        ▼
-4. SLUB 初始化
-   │
-   ├─> 创建大小缓存
-   └─> 初始化 Per-CPU slab
-        │
-        ▼
-5. 堆初始化
-   │
-   └─> 初始化全局堆
-        │
-        ▼
-6. PCP 初始化
-   │
-   └─> 初始化 Per-CPU 缓存
-        │
-        ▼
-7. VMA 初始化
-   │
-   ├─> 创建初始 VMA
-   └─> 设置地址空间
-        │
-        ▼
-8. NUMA 初始化
-   │
-   ├─> 解析 SRAT (如果是 NUMA)
-   └─> 设置 NUMA 节点
-        │
-        ▼
-9. IOMMU 初始化
-   │
-   ├─> 解析 DMAR
-   ├─> 初始化 Intel VT-d
-   └─> 回退到 SWIOTLB
-        │
-        ▼
-内存管理就绪
+```text
+memblock -> struct page/vmemmap -> buddy -> SLUB -> heap/PCP/VMA -> NUMA -> IOMMU -> complete
 ```
 
 ## MemoryRegionInfo
@@ -116,69 +78,13 @@ pub struct MemoryRegionInfo {
 }
 ```
 
-**使用**:
-```rust
-let regions = &[
-    MemoryRegionInfo {
-        phys_start: 0x10000000,
-        page_count: 16384,
-        is_usable: true,
-    },
-    // ...
-];
+## 当前边界
 
-init_memblock(regions, kernel_start, kernel_end)?;
-```
-
-## 初始化检查
-
-```rust
-pub fn memblock_initialized() -> bool
-pub fn buddy_initialized() -> bool
-pub fn slub_initialized() -> bool
-```
-
-## 使用示例
-
-### 完整初始化
-
-```rust
-use kernel::mm::{
-    init_memblock, init_buddy_system, init_slub,
-    finish_mm_init, init_heap, init_pcp, init_vma,
-    init_uma, MemoryRegionInfo,
-};
-
-// 内存区域
-let regions = parse_uefi_memory_map(uefi_mmap);
-
-// 内核范围
-let kernel_start = 0x100000;
-let kernel_end = 0x200000;
-
-// 按顺序初始化
-init_memblock(&regions, kernel_start, kernel_end)?;
-
-let max_pfn = calculate_max_pfn(&regions);
-init_buddy_system(&regions, max_pfn, direct_map)?;
-
-init_slub()?;
-finish_mm_init()?;
-
-// 堆
-let heap_page = alloc_pages(8, GFP_KERNEL)?;
-let heap_virt = direct_map + page_to_pfn(heap_page) * 4096;
-init_heap(heap_virt as usize, 256 * 4096);
-
-// PCP
-init_pcp(16);
-
-// VMA
-init_vma();
-
-// NUMA
-init_uma();
-```
+- `boot/setup.rs`：启动期初始化顺序、阶段推进、保留区与 zone/vmemmap 编排
+- `phys/`：memblock、page、zone、buddy、numa、pcp 真实实现
+- `alloc/`：SLUB 与堆增长策略
+- `virt/`：布局运行态、VMA 初始化与页表协作
+- `dma/`：IOMMU/SWIOTLB 最后接入
 
 ## 相关文档
 

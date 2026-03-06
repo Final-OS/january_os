@@ -1,7 +1,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::types::FsError;
+use crate::fs::api::FsError;
 
 pub fn normalize_path(cwd: &str, input: &str) -> Result<String, FsError> {
     if input.is_empty() {
