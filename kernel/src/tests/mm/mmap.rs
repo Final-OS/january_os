@@ -1,8 +1,9 @@
 use super::{fail, mm_step, pass};
 use crate::fs;
+use crate::errno;
 use crate::mm;
 use crate::syscall;
-use crate::syscall::handlers::{sys_mmap, sys_mprotect, sys_munmap};
+use crate::mm::syscall::{sys_mmap, sys_mprotect, sys_munmap};
 use crate::{kprintln, warn};
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -105,7 +106,7 @@ fn run_in_task_context() {
     if expect_errno(
         "zero-len",
         do_mmap(0, 0, prot_rw, map_flags, usize::MAX, 0),
-        syscall::EINVAL,
+        errno::EINVAL,
     )
     .is_err()
     {
@@ -123,7 +124,7 @@ fn run_in_task_context() {
             usize::MAX,
             0,
         ),
-        syscall::EINVAL,
+        errno::EINVAL,
     )
     .is_err()
     {
@@ -134,7 +135,7 @@ fn run_in_task_context() {
     if expect_errno(
         "file-backed-bad-fd",
         do_mmap(0, page, prot_rw, crate::mm::mmap_flags::MAP_PRIVATE, 3, 0),
-        syscall::EBADF,
+        errno::EBADF,
     )
     .is_err()
     {
@@ -155,7 +156,7 @@ fn run_in_task_context() {
             usize::MAX,
             0,
         ),
-        syscall::EINVAL,
+        errno::EINVAL,
     )
     .is_err()
     {
@@ -173,7 +174,7 @@ fn run_in_task_context() {
             usize::MAX,
             0,
         ),
-        syscall::EINVAL,
+        errno::EINVAL,
     )
     .is_err()
     {
@@ -355,7 +356,7 @@ fn run_in_task_context() {
             usize::MAX,
             0,
         ),
-        syscall::EINVAL,
+        errno::EINVAL,
     )
     .is_err()
     {
@@ -408,7 +409,7 @@ fn run_in_task_context() {
             page * 3,
             crate::mm::prot_flags::PROT_READ,
         );
-        if !ret_is_err(prot_ret) || ret_errno(prot_ret) != syscall::ENOMEM {
+        if !ret_is_err(prot_ret) || ret_errno(prot_ret) != errno::ENOMEM {
             let _ = do_munmap(base as usize, page);
             let _ = do_munmap(second as usize, page);
             return fail("mmap", "mprotect spanning an unmapped gap must fail with ENOMEM");
@@ -792,7 +793,7 @@ fn run_in_task_context() {
     if expect_errno(
         "munmap-zero-len",
         do_munmap(map_addr as usize, 0),
-        syscall::EINVAL,
+        errno::EINVAL,
     )
     .is_err()
     {
@@ -803,7 +804,7 @@ fn run_in_task_context() {
     if expect_errno(
         "munmap-unaligned",
         do_munmap((map_addr as usize) + 1, page),
-        syscall::EINVAL,
+        errno::EINVAL,
     )
     .is_err()
     {

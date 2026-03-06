@@ -1,7 +1,7 @@
 use super::{task_step, usermode};
 use crate::fs;
 use crate::mm;
-use crate::syscall::{EAGAIN, EBADF, EPIPE};
+use crate::errno::{EAGAIN, EBADF, EFAULT, EPIPE};
 use crate::{error, kprintln, ok};
 
 unsafe extern "C" {
@@ -48,11 +48,11 @@ pub(super) fn run() {
         write_ret,
         write_errno
     );
-    if write_errno != crate::syscall::EFAULT {
+    if write_errno != crate::errno::EFAULT {
         error!(
             "task: regression FAIL (sys_write dispatch mismatch, got errno={}, expect={})",
             write_errno,
-            crate::syscall::EFAULT
+            crate::errno::EFAULT
         );
         return;
     }
@@ -359,11 +359,11 @@ pub(super) fn run() {
         pipe2_ret,
         pipe2_errno
     );
-    if pipe2_errno != crate::syscall::EFAULT {
+    if pipe2_errno != crate::errno::EFAULT {
         error!(
             "task: regression FAIL (sys_pipe2 dispatch mismatch, got errno={}, expect={})",
             pipe2_errno,
-            crate::syscall::EFAULT
+            crate::errno::EFAULT
         );
         return;
     }
@@ -371,31 +371,31 @@ pub(super) fn run() {
     task_step("regression: verify newly wired fs syscall dispatchers");
     let lseek_ret = crate::syscall::dispatch(8, usize::MAX, 0, 0, 0, 0, 0);
     let lseek_errno = (-(lseek_ret as isize)) as i32;
-    if lseek_errno != crate::syscall::EBADF {
+    if lseek_errno != crate::errno::EBADF {
         error!(
             "task: regression FAIL (sys_lseek dispatch mismatch, got errno={}, expect={})",
             lseek_errno,
-            crate::syscall::EBADF
+            crate::errno::EBADF
         );
         return;
     }
     let getcwd_ret = crate::syscall::dispatch(79, 0, 16, 0, 0, 0, 0);
     let getcwd_errno = (-(getcwd_ret as isize)) as i32;
-    if getcwd_errno != crate::syscall::EFAULT {
+    if getcwd_errno != crate::errno::EFAULT {
         error!(
             "task: regression FAIL (sys_getcwd dispatch mismatch, got errno={}, expect={})",
             getcwd_errno,
-            crate::syscall::EFAULT
+            crate::errno::EFAULT
         );
         return;
     }
     let getdents_ret = crate::syscall::dispatch(217, usize::MAX, 0, 16, 0, 0, 0);
     let getdents_errno = (-(getdents_ret as isize)) as i32;
-    if getdents_errno != crate::syscall::EBADF {
+    if getdents_errno != crate::errno::EBADF {
         error!(
             "task: regression FAIL (sys_getdents64 dispatch mismatch, got errno={}, expect={})",
             getdents_errno,
-            crate::syscall::EBADF
+            crate::errno::EBADF
         );
         return;
     }

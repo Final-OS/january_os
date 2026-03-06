@@ -2,11 +2,19 @@
 //!
 //! 通过 shell `test <name>` 命令触发。
 
+mod arch;
 mod block;
+mod drivers;
+mod interrupt;
 mod libs;
 mod mm;
+mod net;
+mod security;
 mod smp;
+mod sync;
+mod syscall;
 mod task;
+mod virt;
 mod vfs;
 
 use crate::kprintln;
@@ -22,6 +30,9 @@ pub fn run(name: &str) {
             let filter = parts.get(1).copied();
             task::run_with_filter(filter);
         }
+        Some("arch") => arch::run(),
+        Some("drivers") => drivers::run(),
+        Some("interrupt") => interrupt::run(),
         Some("libs") => {
             let filter = parts.get(1).copied();
             libs::run_with_filter(filter);
@@ -30,10 +41,15 @@ pub fn run(name: &str) {
             let filter = parts.get(1).copied();
             mm::run_with_filter(filter);
         }
+        Some("net") => net::run(),
+        Some("security") => security::run(),
         Some("smp") => {
             let filter = parts.get(1).copied();
             smp::run_with_filter(filter);
         }
+        Some("sync") => sync::run(),
+        Some("syscall") => syscall::run(),
+        Some("virt") => virt::run(),
         Some("block") => {
             let filter = parts.get(1).copied();
             block::run_with_filter(filter);
@@ -43,11 +59,19 @@ pub fn run(name: &str) {
             vfs::run_with_filter(filter);
         }
         Some("all") => {
+            arch::run();
+            drivers::run();
+            interrupt::run();
             task::run();
             libs::run();
             mm::run();
+            net::run();
+            security::run();
             smp::run();
+            sync::run();
+            syscall::run();
             block::run();
+            virt::run();
             vfs::run();
         }
         Some("help") | _ => {
@@ -58,6 +82,9 @@ pub fn run(name: &str) {
                 "                   Available: switch, wait, usermode, regression, safe, all"
             );
             kprintln!("                   Default (`test task`) runs all");
+            kprintln!("  arch           - Architecture skeleton tests");
+            kprintln!("  drivers        - Driver skeleton tests");
+            kprintln!("  interrupt      - Interrupt skeleton tests");
             kprintln!("  libs [name]    - Data structure tests");
             kprintln!("                   Available: rbtree, lru, rdtree, btree, mptree, rcu");
             kprintln!(
@@ -71,8 +98,13 @@ pub fn run(name: &str) {
             kprintln!(
                 "                   Available: topology, cpu_id, ipi, irq_route, sched_stats, all"
             );
+            kprintln!("  net            - Network skeleton tests");
+            kprintln!("  security       - Security skeleton tests");
+            kprintln!("  sync           - Synchronization skeleton tests");
+            kprintln!("  syscall        - Syscall skeleton tests");
             kprintln!("  block [name]   - Block device tests");
             kprintln!("                   Available: virtio, partition");
+            kprintln!("  virt           - Virtualization skeleton tests");
             kprintln!("  vfs [name]     - VFS core tests");
             kprintln!("                   Available: path, mount, fd_bridge");
             kprintln!("  all            - Run all tests");
