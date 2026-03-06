@@ -1,0 +1,3 @@
+pub fn audit_status_entry() -> usize {
+    crate::security::errno_not_supported()
+}

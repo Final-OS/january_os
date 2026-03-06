@@ -32,7 +32,7 @@ This skill enforces post-change information hygiene. It maps changed code/config
 - If no docs/skills update is needed, explain exactly why in final report.
 - Do not leave `docs/.vitepress/config.ts` stale when adding/renaming docs pages.
 - Keep skill metadata (`SKILL.md` frontmatter and `agents/openai.yaml`) consistent.
-- Architecture-specific code must live under architecture paths (`boot/<arch>/`, `kernel/src/**/arch/<arch>/`); do not keep arch logic in generic modules without explicit abstraction.
+- Architecture-specific code must live under architecture paths (`boot/<arch>/`, `kernel/src/**/arch/<arch>/`) unless a subsystem defines an explicit backend directory. `virt` is the current exception and must use `kernel/src/virt/platform/<isa>/`; do not keep arch logic in generic modules without explicit abstraction.
 
 ## Workflow
 

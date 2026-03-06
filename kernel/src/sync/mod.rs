@@ -17,6 +17,11 @@
 //! | `Barrier` | 屏障 | 多线程同步点 |
 //! | `CondVar` | 条件变量 | 条件等待与通知 |
 
+use alloc::format;
+use alloc::string::String;
+
+use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
+
 mod barrier;
 mod condvar;
 mod mutex;
@@ -45,3 +50,30 @@ pub use barrier::{Barrier, BarrierWaitResult, CountDownLatch, ResettableBarrier}
 
 // CondVar
 pub use condvar::CondVar;
+
+pub const COMPONENT: ComponentDescriptor = ComponentDescriptor {
+    id: "sync",
+    stage: ComponentStage::Core,
+    deps: &[],
+    summary: "spin, mutex, rwlock, condvar and semaphore primitives",
+};
+
+pub fn init_early() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_core() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_late() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn stats() -> ComponentStats {
+    ComponentStats::ready()
+}
+
+pub fn dump_state() -> String {
+    format!("component={} state={:?}", COMPONENT.id, stats().state)
+}

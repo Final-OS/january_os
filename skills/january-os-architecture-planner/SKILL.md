@@ -72,8 +72,9 @@ Return a concise architecture report with these sections:
 - Distinguish "already implemented" vs "planned".
 - Use the fixed architecture baseline: modular monolithic kernel + componentized OS.
 - Keep target architecture baseline explicit: x86_64 + aarch64 + riscv64.
-- Include virtualization split: guest support first, host capabilities staged.
+- Include virtualization split: Host/VMM control plane first, guest detection and observability retained.
 - Treat every minimum-scope implementation as mandatory technical debt and plan a later-version repayment to full functionality.
 - Keep architecture-specific placement rules:
   - `boot/<arch>/`
   - `kernel/src/**/arch/<arch>/`
+  - `kernel/src/virt/platform/<isa>/` (virt subsystem exception)

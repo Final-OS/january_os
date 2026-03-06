@@ -25,6 +25,14 @@
 //! ```
 
 pub mod arch;
+pub mod controller;
+pub mod core;
+pub mod trap;
+
+use alloc::format;
+use alloc::string::String;
+
+use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
 
 /// APIC Timer 触发频率（Hz）
 pub const TIMER_TICK_HZ: u64 = 100;
@@ -98,3 +106,37 @@ pub use crate::drivers::input::{
     buffer_len, has_char, is_alt_pressed, is_ctrl_pressed, is_shift_pressed, last_char,
     last_scancode, read_char,
 };
+
+pub const COMPONENT: ComponentDescriptor = ComponentDescriptor {
+    id: "interrupt",
+    stage: ComponentStage::Core,
+    deps: &["memory", "acpi"],
+    summary: "gdt, idt, apic, timer and syscall gate wiring",
+};
+
+pub fn init_early() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_core() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_late() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn stats() -> ComponentStats {
+    ComponentStats::ready()
+}
+
+pub fn dump_state() -> String {
+    format!(
+        "component={} state={:?} initialized={} apic={} timer_ticks={}",
+        COMPONENT.id,
+        stats().state,
+        initialized(),
+        apic_initialized(),
+        timer_ticks(),
+    )
+}

@@ -9,6 +9,13 @@ pub fn current_stack_top() -> u64 {
     0
 }
 
+pub unsafe fn switch_to_runtime_boot_stack(
+    entry: extern "C" fn(*const u8, usize) -> !,
+    init_cmd: &str,
+) -> ! {
+    entry(init_cmd.as_ptr(), init_cmd.len())
+}
+
 /// 挂起 CPU（占位）。
 pub fn halt() {
     loop {

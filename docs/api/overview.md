@@ -75,6 +75,12 @@
 |------|------|------|
 | [Syscall](./syscall/syscall.md) | 系统调用 | `kernel/src/syscall/` |
 
+### 安全 (security)
+
+| 模块 | 说明 | 文件 |
+|------|------|------|
+| [Security](./security/overview.md) | 凭据、策略、hook、审计与安全 syscall 骨架 | `kernel/src/security/` |
+
 ### 数据结构 (libs)
 
 | 数据结构 | 说明 | 文件 |
@@ -86,6 +92,12 @@
 | [Radix Tree](./libs/rdtree.md) | 基数树 | `kernel/src/libs/rdtree/` |
 | [B-Tree](./libs/btree.md) | B-Tree | `kernel/src/libs/btree/` |
 | [Maple Tree](./libs/mptree.md) | 区间树 | `kernel/src/libs/mptree/` |
+
+### 虚拟化 (virt)
+
+| 模块 | 说明 | 文件 |
+|------|------|------|
+| [virt](./virt/virt.md) | 虚拟化组件入口与 Host/VMM 骨架 | `kernel/src/virt/` |
 
 ### 架构相关 (arch)
 

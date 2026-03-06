@@ -37,7 +37,7 @@ Always inspect at least:
 - `Makefile`
 - `os_cfg.toml`
 - `docs/.vitepress/config.ts`
-- `kernel/src/arch/`, `kernel/src/*/arch/`
+- `kernel/src/arch/`, `kernel/src/*/arch/`, `kernel/src/virt/platform/`
 
 3. Build a scope-specific subsystem map.
 Use `references/source-map.md` and `references/intel-checklist.md` to connect changed paths to subsystem responsibilities.
@@ -56,7 +56,7 @@ If there are edits, hand off to `$january-os-docs-skills-sync`.
 - Keep the report structured and actionable; avoid narrative-only summaries.
 - Flag any API/behavior change that is not reflected in `docs/api/**`.
 - Flag any minimum-scope implementation that is not tracked in `docs/progress/tech-debt.md` with a later-version repayment target.
-- Flag any architecture-specific logic implemented outside `boot/<arch>/` or `kernel/src/**/arch/<arch>/`, and require either relocation or explicit temporary rationale.
+- Flag any architecture-specific logic implemented outside `boot/<arch>/` or `kernel/src/**/arch/<arch>/`, except the approved `virt` backend layout under `kernel/src/virt/platform/<isa>/`; require relocation or explicit temporary rationale for any other exception.
 
 ## Resources
 

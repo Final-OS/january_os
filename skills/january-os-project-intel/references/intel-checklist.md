@@ -46,7 +46,7 @@ cd docs && pnpm build
 - Include exact file paths in conclusions.
 - Explicitly list unknowns and next command/file needed to close each unknown.
 - Explicitly check whether API/behavior changes are synchronized to `docs/api/**`.
-- Explicitly check whether architecture-specific code is located under `boot/<arch>/` or `kernel/src/**/arch/<arch>/`.
+- Explicitly check whether architecture-specific code is located under `boot/<arch>/`, `kernel/src/**/arch/<arch>/`, or the approved `kernel/src/virt/platform/<isa>/` exception.
 - Explicitly check whether runtime kernel code contains test/demo-only logic, assets, or naming.
 - Explicitly check whether `kernel/src/tests/**` is organized by subsystem directories (avoid flat growth).
 - Explicitly check whether tests/demo scenarios are functionally complete (main path, key branches, fail/recovery paths) with explicit assertions.

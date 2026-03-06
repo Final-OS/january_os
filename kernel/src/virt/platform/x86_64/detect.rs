@@ -1,4 +1,4 @@
-use crate::virt::{HypervisorType, VirtInfo};
+use crate::virt::core::info::{HypervisorType, VirtInfo};
 
 #[inline]
 fn classify_vendor(vendor: &[u8; 12]) -> HypervisorType {
@@ -13,7 +13,7 @@ fn classify_vendor(vendor: &[u8; 12]) -> HypervisorType {
 }
 
 pub fn detect() -> VirtInfo {
-    use core::arch::x86_64::__cpuid;
+    use ::core::arch::x86_64::__cpuid;
 
     let leaf1 = unsafe { __cpuid(1) };
     let hypervisor_present = ((leaf1.ecx >> 31) & 1) == 1;
@@ -27,10 +27,5 @@ pub fn detect() -> VirtInfo {
     vendor[4..8].copy_from_slice(&hv_leaf.ecx.to_le_bytes());
     vendor[8..12].copy_from_slice(&hv_leaf.edx.to_le_bytes());
 
-    VirtInfo {
-        is_virtualized: true,
-        hypervisor: classify_vendor(&vendor),
-        vendor_id: vendor,
-        nested_supported: false,
-    }
+    VirtInfo::placeholder_host(classify_vendor(&vendor), vendor)
 }

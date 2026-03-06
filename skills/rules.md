@@ -82,7 +82,7 @@
 - 这两个组件可以协作，但不得彼此吞并职责。
 - `task/process/exec.rs` 属于**进程生命周期组件**，不得继续放回 `task/` 根层或调度器实现中。
 - `task/scheduler/` 不得承载 `fork/exec/wait/exit` 的主实现逻辑。
-- `syscall/handlers/process.rs` 应保持薄适配层：参数解析、errno 映射、调用 `task/process/*` façade；不得长期承载 `fork/wait/exit` 主逻辑。
+- `syscall` 顶层只保留 ABI 壳层；`kernel/src/task/syscall/` 只负责参数解码、errno 编码和用户态写回，`task/process/*` 承载 `fork/wait/exit` 主逻辑。
 - `wait4` 等等待型系统调用的阻塞轮询、事件消费、回收编排应沉到 `task/process/wait.rs` 或等价生命周期 façade，`syscall` 只保留 ABI 相关的 option/status/rusage 处理。
 - `kill/tkill/tgkill` 等信号类系统调用的进程状态迁移应沉到 `task/process/signal.rs` 或等价生命周期 façade，`syscall` 只保留信号号/目标解析与 errno/调度编排。
 

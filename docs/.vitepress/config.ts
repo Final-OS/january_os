@@ -35,7 +35,8 @@ export default defineConfig({
             "/api/": [
                 {
                     text: "API 概览",
-                    items: [{ text: "模块索引", link: "/api/overview" }],
+                    items: [{ text: "模块索引", link: "/api/overview" },
+                        { text: "virt", link: "/api/virt/virt" }],
                 },
                 {
                     text: "内存管理 API",
@@ -81,6 +82,10 @@ export default defineConfig({
                         { text: "Once", link: "/api/sync/once" },
                         { text: "Barrier", link: "/api/sync/barrier" },
                     ],
+                },
+                {
+                    text: "安全子系统",
+                    items: [{ text: "security", link: "/api/security/overview" }],
                 },
                 {
                     text: "架构相关",

@@ -8,7 +8,7 @@ If a file in the left column changes, evaluate and update every target in the ri
 
 - API or externally visible behavior changes require same-change updates to `docs/api/**`.
 - Architecture-specific code changes require same-change updates to `docs/api/arch/**` and relevant `docs/implementation/**`.
-- Architecture-specific code should be placed under `boot/<arch>/` or `kernel/src/**/arch/<arch>/`; if not, add refactor item and document temporary rationale.
+- Architecture-specific code should be placed under `boot/<arch>/` or `kernel/src/**/arch/<arch>/`; `virt` is the approved subsystem-specific exception and should use `kernel/src/virt/platform/<isa>/`. For any other exception, add a refactor item and document temporary rationale.
 - Runtime kernel code (`kernel/src/**` except `kernel/src/tests/**`) should not carry test/demo-only code, assets, or naming.
 - Kernel tests should reside under `kernel/src/tests/**` and be grouped by subsystem directories.
 - Tests/demo should be functionally complete and include main path, key branches, failure paths, and recovery paths.
@@ -27,7 +27,7 @@ If a file in the left column changes, evaluate and update every target in the ri
   - `docs/api/arch/x86_64.md` (if exported behavior changed)
   - Related skill references if workflow or build assumptions changed
 
-- `kernel/src/arch/**`, `kernel/src/*/arch/**`
+- `kernel/src/arch/**`, `kernel/src/*/arch/**`, `kernel/src/virt/platform/**`
   - `docs/api/arch/x86_64.md`
   - Related subsystem API page under `docs/api/**`
   - Related implementation page under `docs/implementation/**`

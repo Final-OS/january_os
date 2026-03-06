@@ -1,4 +1,12 @@
 pub mod arch;
+pub mod barrier;
+pub mod boot;
+pub mod topology;
+
+use alloc::format;
+use alloc::string::String;
+
+use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
 
 use crate::drivers::acpi::{Madt, MadtEntry};
 use crate::interrupt;
@@ -234,4 +242,37 @@ fn boot_aps(madt: &Madt, direct_map_base: u64, expected_cpus: usize) {
     } else {
         ok!("[SMP] All {} CPUs active.", target_online_cpus);
     }
+}
+
+pub const COMPONENT: ComponentDescriptor = ComponentDescriptor {
+    id: "smp",
+    stage: ComponentStage::Core,
+    deps: &["interrupt", "acpi", "memory"],
+    summary: "cpu topology, application processor boot and ipi routing",
+};
+
+pub fn init_early() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_core() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_late() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn stats() -> ComponentStats {
+    ComponentStats::ready()
+}
+
+pub fn dump_state() -> String {
+    format!(
+        "component={} state={:?} detected_cpus={} online_cpus={}",
+        COMPONENT.id,
+        stats().state,
+        detected_cpu_count(),
+        cpu_count(),
+    )
 }

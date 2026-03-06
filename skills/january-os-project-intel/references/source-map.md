@@ -12,7 +12,7 @@
 
 ## Placement Rule
 
-- Architecture-specific implementation code belongs in `boot/<arch>/` or `kernel/src/**/arch/<arch>/`.
+- Architecture-specific implementation code belongs in `boot/<arch>/` or `kernel/src/**/arch/<arch>/`, except `virt`, which uses `kernel/src/virt/platform/<isa>/` for subsystem-local virtualization backends.
 - Generic module paths should only contain architecture-agnostic interfaces/policies.
 
 ## Documentation Ownership
@@ -32,3 +32,5 @@
 
 - `Makefile`: canonical build/run/debug entrypoints.
 - `os_cfg.toml`: runtime/build configuration source.
+
+- `kernel/src/virt/platform/<isa>/`: virt subsystem platform virtualization backends (detect, VMX/SVM, EL2, H extension, irqchip/hypercall placeholders).
