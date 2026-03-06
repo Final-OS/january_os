@@ -1,14 +1,14 @@
 //! UEFI 引导阶段设备与配置表查询
 
+use uefi::Identify;
 use uefi::boot::{self, MemoryType};
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
 use uefi::proto::media::block::BlockIO;
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode};
 use uefi::proto::media::fs::SimpleFileSystem;
-use uefi::Identify;
 
 use crate::bootinfo::{
-    DiskInfo, DiskType, FramebufferInfo, PixelFormatType, KERNEL_PHYS_ADDR, MAX_DISKS,
+    DiskInfo, DiskType, FramebufferInfo, KERNEL_PHYS_ADDR, MAX_DISKS, PixelFormatType,
 };
 
 const KERNEL_PATH: &uefi::CStr16 = uefi::cstr16!("\\EFI\\january_os\\kernel.bin");

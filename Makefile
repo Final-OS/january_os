@@ -88,14 +88,24 @@ LINKER       = $(KERNEL_DIR)/arch/$(ARCH)/linker.ld
 BOOT_EFI     = $(BUILD_DIR)/$(BOOT_TARGET)/release/january_os-boot-$(ARCH).efi
 KERNEL_ELF   = $(BUILD_DIR)/$(KERNEL_TARGET)/release/january_os-kernel
 KERNEL_BIN   = $(BUILD_DIR)/kernel.bin
+GENERATED_DIR = $(KERNEL_DIR)/src/generated
+GENERATED_CONFIG = $(GENERATED_DIR)/config.rs
+GENERATED_MOD = $(GENERATED_DIR)/mod.rs
+TRAMPOLINE_ASM = $(KERNEL_DIR)/src/smp/arch/x86_64/trampoline.asm
+TRAMPOLINE_BIN = $(KERNEL_DIR)/src/smp/arch/x86_64/trampoline.bin
 INITRAMFS_CPIO = $(BUILD_DIR)/initramfs.cpio
 INITRAMFS_ROOT = $(ROOT_DIR)/initramfs
 INITRAMFS_STAGE = $(BUILD_DIR)/initramfs-root
 USERLAND_DIR = $(ROOT_DIR)/userland
 USERLAND_TARGET_DIR = $(BUILD_DIR)/userland
 USERLAND_BINS = sh ls cat pwd echo forktest
+USERLAND_STAMP = $(USERLAND_TARGET_DIR)/.$(KERNEL_TARGET)-release.stamp
 VIRTIO_BLK_IMG = $(BUILD_DIR)/virtio-blk.img
 VIRTIO_BLK_SIZE = 64M
+BOOT_SOURCES := $(shell find $(BOOT_DIR) -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'build.rs' \))
+KERNEL_SOURCES := $(shell find $(KERNEL_DIR)/src $(KERNEL_DIR)/arch/$(ARCH) -type f ! -path '$(GENERATED_DIR)/*' ! -name 'trampoline.bin')
+USERLAND_SOURCES := $(shell find $(USERLAND_DIR) -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name '*.ld' \))
+INITRAMFS_SOURCES := $(shell find $(INITRAMFS_ROOT) -type f)
 
 # ==============================================================================
 # OVMF / KVM 检测
@@ -144,9 +154,15 @@ build: build-boot build-kernel build-userland prepare-initramfs
 
 build-tools: $(CFG) $(VMCFG) $(MKINITRAMFS)
 
-build-userland:
+build-userland: $(USERLAND_STAMP)
+
+prepare-initramfs: $(INITRAMFS_CPIO)
+
+$(USERLAND_STAMP): $(USERLAND_SOURCES)
 	@if [ "$(ARCH)" != "x86_64" ]; then \
 		echo "==> Skipping userland build for ARCH=$(ARCH)"; \
+		mkdir -p $(dir $@); \
+		printf 'skipped\n' > $@; \
 		exit 0; \
 	fi
 	@echo "==> Building userland ($(KERNEL_TARGET))..."
@@ -154,8 +170,10 @@ build-userland:
 		RUSTFLAGS="-C link-arg=-T$(USERLAND_DIR)/linker.ld -C link-arg=--gc-sections -C relocation-model=static -C code-model=large -C link-arg=-no-pie -C debuginfo=1" \
 		cargo build --release --manifest-path $(USERLAND_DIR)/Cargo.toml --target $(KERNEL_TARGET) \
 		-Zbuild-std=core
+	@mkdir -p $(dir $@)
+	@touch $@
 
-prepare-initramfs: $(MKINITRAMFS) build-userland
+$(INITRAMFS_CPIO): $(MKINITRAMFS) $(USERLAND_STAMP) $(INITRAMFS_SOURCES)
 	@mkdir -p $(BUILD_DIR)
 	@rm -rf $(INITRAMFS_STAGE)
 	@mkdir -p $(INITRAMFS_STAGE)
@@ -168,24 +186,47 @@ prepare-initramfs: $(MKINITRAMFS) build-userland
 	fi
 	@$(MKINITRAMFS) $(INITRAMFS_CPIO) --root $(INITRAMFS_STAGE)
 
-build-boot: $(CFG)
+build-boot: $(BOOT_EFI)
+
+$(BOOT_EFI): $(CFG) $(ROOT_DIR)/Cargo.toml $(ROOT_DIR)/Cargo.lock $(OS_CFG_PATH) $(BOOT_SOURCES)
 	@echo "==> Building bootloader ($(BOOT_TARGET))..."
 	@CARGO_TARGET_DIR=$(BUILD_DIR) cargo build --release --target $(BOOT_TARGET) -p january_os-boot-$(ARCH)
 
-build-kernel: $(CFG)
+build-kernel: $(KERNEL_BIN)
+
+$(GENERATED_CONFIG): $(CFG) $(OS_CFG_PATH)
 	@echo "==> Generating config..."
-	@mkdir -p $(KERNEL_DIR)/src/generated
-	@OS_CFG_PATH=$(OS_CFG_PATH) $(CFG) generate $(KERNEL_DIR)/src/generated/config.rs
-	@echo "mod config; pub use config::*;" > $(KERNEL_DIR)/src/generated/mod.rs
-	@if [ "$(ARCH)" = "x86_64" ]; then \
-		echo "==> Compiling trampoline (x86_64)..."; \
-		nasm -f bin -o $(KERNEL_DIR)/src/smp/arch/x86_64/trampoline.bin $(KERNEL_DIR)/src/smp/arch/x86_64/trampoline.asm; \
-	fi
+	@mkdir -p $(GENERATED_DIR)
+	@tmp_file=$$(mktemp); \
+		OS_CFG_PATH=$(OS_CFG_PATH) $(CFG) generate $$tmp_file; \
+		if [ ! -f $@ ] || ! cmp -s $$tmp_file $@; then \
+			mv $$tmp_file $@; \
+		else \
+			rm -f $$tmp_file; \
+		fi
+
+$(GENERATED_MOD):
+	@mkdir -p $(GENERATED_DIR)
+	@tmp_file=$$(mktemp); \
+		printf '%s\n' 'mod config; pub use config::*;' > $$tmp_file; \
+		if [ ! -f $@ ] || ! cmp -s $$tmp_file $@; then \
+			mv $$tmp_file $@; \
+		else \
+			rm -f $$tmp_file; \
+		fi
+
+$(TRAMPOLINE_BIN): $(TRAMPOLINE_ASM)
+	@echo "==> Compiling trampoline (x86_64)..."
+	@nasm -f bin -o $@ $<
+
+$(KERNEL_ELF): $(CFG) $(KERNEL_DIR)/Cargo.toml $(LINKER) $(KERNEL_SOURCES) $(GENERATED_CONFIG) $(GENERATED_MOD) $(if $(filter x86_64,$(ARCH)),$(TRAMPOLINE_BIN),)
 	@echo "==> Building kernel ($(KERNEL_TARGET))..."
 	@cd $(KERNEL_DIR) && CARGO_TARGET_DIR=$(BUILD_DIR) RUSTFLAGS="$(RUSTFLAGS)" \
 		cargo build --release --target $(KERNEL_TARGET) \
 		-Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
-	@rust-objcopy -O binary $(KERNEL_ELF) $(KERNEL_BIN)
+
+$(KERNEL_BIN): $(KERNEL_ELF)
+	@rust-objcopy -O binary $< $@
 
 # ============================================================================== 
 # 运行目标 (纯串口模式)

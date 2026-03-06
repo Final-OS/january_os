@@ -3,7 +3,7 @@
 use uefi::boot::{self, MemoryType};
 
 use crate::bootinfo::{
-    BootInfo, DiskInfo, MemoryRegion, KERNEL_STACK_PAGES, MAX_DISKS, MAX_MEMORY_REGIONS,
+    BootInfo, DiskInfo, KERNEL_STACK_PAGES, MAX_DISKS, MAX_MEMORY_REGIONS, MemoryRegion,
     PAGE_TABLE_BUFFER_PAGES,
 };
 use crate::paging::PAGE_SIZE;

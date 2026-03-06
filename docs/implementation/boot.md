@@ -34,6 +34,7 @@
 │     - APIC 初始化                                              │
 │     - IOMMU 初始化                                             │
 │     - 启用中断                                                 │
+│     - 切换到架构层运行时启动栈                                  │
 │     - 进入 Shell                                               │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -164,7 +165,7 @@ unsafe {
 
 ## 内核入口详解
 
-### 文件: kernel/src/main.rs
+### 文件: kernel/src/main.rs / kernel/src/arch/x86_64/boot.rs
 
 ### 内核链接脚本布局
 
@@ -178,6 +179,38 @@ unsafe {
 - `__text_*` / `__rodata_*` / `__got_*` / `__data_*` / `__bss_*`：各段边界。
 
 其中 `.bss` 使用 `NOLOAD`，因此 `kernel.bin` 体积由 `__kernel_file_size` 决定，运行时仍需依赖内核早期 `zero_bss()` 清零。
+
+#### 运行时启动栈切换分层
+
+- `kernel/src/main.rs::_start` 仅负责内核通用引导顺序：清零 BSS、校验 `BootInfo`、调用 `init::init_kernel()`，然后把控制权交给 `arch::switch_to_runtime_boot_stack()`。
+- `kernel/src/arch/x86_64/boot.rs` 持有 `x86_64` 专属的栈分配和 `rsp/rbp/rdi/rsi` 切换逻辑，避免在通用入口中直接保留 `asm!`。
+- `runtime_entry()` 仍在 `kernel/src/main.rs`，因为它承接的是架构无关的运行时行为：根据 `initrd` 命令进入用户态 init，失败时回退 Shell。
+
+```rust
+pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
+    zero_bss();
+    let info = &*boot_info_ptr;
+
+    init::init_kernel(info);
+    arch::switch_to_runtime_boot_stack(runtime_entry, info.initrd_command());
+}
+```
+
+```rust
+pub unsafe fn switch_to_runtime_boot_stack(
+    entry: extern "C" fn(*const u8, usize) -> !,
+    init_cmd: &str,
+) -> ! {
+    core::arch::asm!(
+        "mov rsp, {stack}",
+        "xor rbp, rbp",
+        "mov rdi, {arg0}",
+        "mov rsi, {arg1}",
+        "jmp {entry}",
+        // ...
+    );
+}
+```
 
 #### 1. 清零 BSS
 

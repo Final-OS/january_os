@@ -139,7 +139,9 @@ unsafe fn map_1g_page(
 
     let pdpt_idx = level_index(virt, 3);
     let pdpt_entry = unsafe { table_entry_mut(table_phys, pdpt_idx) };
-    unsafe { *pdpt_entry = (phys & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | PTE_GLOBAL };
+    unsafe {
+        *pdpt_entry = (phys & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | PTE_GLOBAL
+    };
     true
 }
 
@@ -379,8 +381,7 @@ pub unsafe fn setup_page_tables(
         }
 
         if ENABLE_LA57_TRAMPOLINE && probe.fallback_4level {
-            let base4 =
-                unsafe { setup_page_tables_4l(&mut allocator, kernel_size, max_phys_addr) };
+            let base4 = unsafe { setup_page_tables_4l(&mut allocator, kernel_size, max_phys_addr) };
             if base4.root_phys_addr == 0 {
                 return base4;
             }

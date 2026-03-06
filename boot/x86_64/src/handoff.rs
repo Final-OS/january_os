@@ -9,12 +9,14 @@ use crate::bootinfo::{
     KERNEL_STACK_PAGES, KERNEL_VIRT_ADDR, KernelVaLayout, MemoryRegion,
 };
 use crate::buffers::BootBufferLayout;
-use crate::paging::{PAGE_SIZE, copy_memory_map, enter_kernel_with_la57_fallback, setup_page_tables};
-use crate::stages::StageState;
 use crate::cfg::{
     FIXMAP_END, FIXMAP_START, MODULES_END, MODULES_START, VMALLOC_END, VMALLOC_START, VMEMMAP_END,
     VMEMMAP_START,
 };
+use crate::paging::{
+    PAGE_SIZE, copy_memory_map, enter_kernel_with_la57_fallback, setup_page_tables,
+};
+use crate::stages::StageState;
 
 pub unsafe fn handoff_to_kernel(
     mmap: MemoryMapOwned,
