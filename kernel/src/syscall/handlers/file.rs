@@ -328,7 +328,7 @@ pub(crate) fn sys_open(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => return err(errno),
     };
 
-    match fs::open_for_pid(pid, path.as_str(), flags, mode) {
+    match fs::runtime::open_for_pid(pid, path.as_str(), flags, mode) {
         Ok(fd) => ok(fd as usize),
         Err(errno) => err(errno),
     }
@@ -349,7 +349,7 @@ pub(crate) fn sys_stat(args: &SyscallArgs) -> SyscallRet {
         Ok(pid) => pid,
         Err(errno) => return err(errno),
     };
-    let meta = match fs::stat_path_for_pid(pid, path.as_str()) {
+    let meta = match fs::runtime::stat_path_for_pid(pid, path.as_str()) {
         Ok(meta) => meta,
         Err(errno) => return err(errno),
     };
@@ -378,7 +378,7 @@ pub(crate) fn sys_fstat(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => return err(errno),
     };
 
-    let meta = match fs::stat_fd(pid, fd) {
+    let meta = match fs::runtime::stat_fd(pid, fd) {
         Ok(meta) => meta,
         Err(errno) => return err(errno),
     };
@@ -437,13 +437,13 @@ pub(crate) fn sys_read(args: &SyscallArgs) -> SyscallRet {
 
     let io_len = count.min(READ_IO_MAX);
     let mut tmp = vec![0u8; io_len];
-    let nonblocking = match fs::fd_is_nonblocking_for_pid(pid, fd) {
+    let nonblocking = match fs::runtime::fd_is_nonblocking_for_pid(pid, fd) {
         Ok(v) => v,
         Err(errno) => return err(errno),
     };
 
     let read_len = loop {
-        match fs::read_for_pid(pid, fd, &mut tmp) {
+        match fs::runtime::read_for_pid(pid, fd, &mut tmp) {
             Ok(n) => break n,
             Err(EAGAIN) if !nonblocking => {
                 if crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some() {
@@ -474,7 +474,7 @@ pub(crate) fn sys_close(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => return err(errno),
     };
 
-    match fs::close_for_pid(pid, fd) {
+    match fs::runtime::close_for_pid(pid, fd) {
         Ok(()) => ok(0),
         Err(errno) => err(errno),
     }
@@ -494,7 +494,7 @@ pub(crate) fn sys_lseek(args: &SyscallArgs) -> SyscallRet {
         Ok(pid) => pid,
         Err(errno) => return err(errno),
     };
-    match fs::lseek_for_pid(pid, fd, offset, whence) {
+    match fs::runtime::lseek_for_pid(pid, fd, offset, whence) {
         Ok(pos) => ok(pos),
         Err(errno) => err(errno),
     }
@@ -509,7 +509,7 @@ pub(crate) fn sys_dup(args: &SyscallArgs) -> SyscallRet {
         Ok(pid) => pid,
         Err(errno) => return err(errno),
     };
-    match fs::dup_for_pid(pid, oldfd, 0, false) {
+    match fs::runtime::dup_for_pid(pid, oldfd, 0, false) {
         Ok(fd) => ok(fd as usize),
         Err(errno) => err(errno),
     }
@@ -525,7 +525,7 @@ pub(crate) fn sys_dup2(args: &SyscallArgs) -> SyscallRet {
         Ok(pid) => pid,
         Err(errno) => return err(errno),
     };
-    match fs::dup2_for_pid(pid, oldfd, newfd, false) {
+    match fs::runtime::dup2_for_pid(pid, oldfd, newfd, false) {
         Ok(fd) => ok(fd as usize),
         Err(errno) => err(errno),
     }
@@ -549,7 +549,7 @@ pub(crate) fn sys_fcntl(args: &SyscallArgs) -> SyscallRet {
             if min_fd < 0 {
                 return err(EINVAL);
             }
-            match fs::dup_for_pid(pid, fd, min_fd, false) {
+            match fs::runtime::dup_for_pid(pid, fd, min_fd, false) {
                 Ok(new_fd) => ok(new_fd as usize),
                 Err(errno) => err(errno),
             }
@@ -559,23 +559,23 @@ pub(crate) fn sys_fcntl(args: &SyscallArgs) -> SyscallRet {
             if min_fd < 0 {
                 return err(EINVAL);
             }
-            match fs::dup_for_pid(pid, fd, min_fd, true) {
+            match fs::runtime::dup_for_pid(pid, fd, min_fd, true) {
                 Ok(new_fd) => ok(new_fd as usize),
                 Err(errno) => err(errno),
             }
         }
-        F_GETFD => match fs::fcntl_getfd_for_pid(pid, fd) {
+        F_GETFD => match fs::runtime::fcntl_getfd_for_pid(pid, fd) {
             Ok(v) => ok(v as usize),
             Err(errno) => err(errno),
         },
         F_SETFD => {
             let cloexec = (arg as u32 & FD_CLOEXEC) != 0;
-            match fs::fcntl_setfd_for_pid(pid, fd, cloexec) {
+            match fs::runtime::fcntl_setfd_for_pid(pid, fd, cloexec) {
                 Ok(()) => ok(0),
                 Err(errno) => err(errno),
             }
         }
-        F_GETFL => match fs::fcntl_getfl_for_pid(pid, fd) {
+        F_GETFL => match fs::runtime::fcntl_getfl_for_pid(pid, fd) {
             Ok(v) => ok(v as usize),
             Err(errno) => err(errno),
         },
@@ -585,7 +585,7 @@ pub(crate) fn sys_fcntl(args: &SyscallArgs) -> SyscallRet {
             if (mask & !allowed) != 0 {
                 return err(EINVAL);
             }
-            match fs::fcntl_setfl_for_pid(pid, fd, mask) {
+            match fs::runtime::fcntl_setfl_for_pid(pid, fd, mask) {
                 Ok(()) => ok(0),
                 Err(errno) => err(errno),
             }
@@ -604,7 +604,7 @@ pub(crate) fn sys_chdir(args: &SyscallArgs) -> SyscallRet {
         Ok(pid) => pid,
         Err(errno) => return err(errno),
     };
-    match fs::chdir_for_pid(pid, path.as_str()) {
+    match fs::runtime::chdir_for_pid(pid, path.as_str()) {
         Ok(()) => ok(0),
         Err(errno) => err(errno),
     }
@@ -627,7 +627,7 @@ pub(crate) fn sys_getcwd(args: &SyscallArgs) -> SyscallRet {
         Ok(pid) => pid,
         Err(errno) => return err(errno),
     };
-    let cwd = fs::getcwd_for_pid(pid);
+    let cwd = fs::runtime::getcwd_for_pid(pid);
     let need = cwd.len().saturating_add(1);
     if need > size {
         return err(ERANGE);
@@ -668,7 +668,7 @@ pub(crate) fn sys_getdents64(args: &SyscallArgs) -> SyscallRet {
 
     let mut written = 0usize;
     loop {
-        let entry = match fs::peek_dir_entry_for_pid(pid, fd) {
+        let entry = match fs::runtime::peek_dir_entry_for_pid(pid, fd) {
             Ok(v) => v,
             Err(errno) => return err(errno),
         };
@@ -710,7 +710,7 @@ pub(crate) fn sys_getdents64(args: &SyscallArgs) -> SyscallRet {
         }
 
         written = written.saturating_add(reclen);
-        if let Err(errno) = fs::advance_dir_cursor_for_pid(pid, fd, 1) {
+        if let Err(errno) = fs::runtime::advance_dir_cursor_for_pid(pid, fd, 1) {
             return err(errno);
         }
     }
@@ -754,7 +754,7 @@ pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => return err(errno),
     };
 
-    match fs::write_for_pid(pid, fd, &tmp) {
+    match fs::runtime::write_for_pid(pid, fd, &tmp) {
         Ok(n) => ok(n),
         Err(errno) => err(errno),
     }
@@ -789,14 +789,14 @@ fn sys_pipe_impl(pipefd_ptr: usize, flags: u32) -> SyscallRet {
         Ok(pid) => pid,
         Err(errno) => return err(errno),
     };
-    let (read_fd, write_fd) = match fs::pipe2_for_pid(pid, flags) {
+    let (read_fd, write_fd) = match fs::runtime::pipe2_for_pid(pid, flags) {
         Ok(fds) => fds,
         Err(errno) => return err(errno),
     };
 
     if let Err(errno) = write_pipe_fds_user(pipefd_ptr, read_fd, write_fd) {
-        let _ = fs::close_for_pid(pid, read_fd);
-        let _ = fs::close_for_pid(pid, write_fd);
+        let _ = fs::runtime::close_for_pid(pid, read_fd);
+        let _ = fs::runtime::close_for_pid(pid, write_fd);
         return err(errno);
     }
 
@@ -823,7 +823,7 @@ pub(crate) fn sys_ioctl(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => return err(errno),
     };
 
-    if fd > 2 && fs::stat_fd(pid, fd).is_err() {
+    if fd > 2 && fs::runtime::stat_fd(pid, fd).is_err() {
         return err(EBADF);
     }
 
@@ -874,7 +874,7 @@ fn poll_once_for_pid(pid: usize, entries: &mut [LinuxPollFd]) -> Result<usize, i
             continue;
         }
 
-        match fs::poll_revents_for_pid(pid, entry.fd, entry.events) {
+        match fs::runtime::poll_revents_for_pid(pid, entry.fd, entry.events) {
             Ok(revents) => {
                 entry.revents = revents;
                 if revents != 0 {
@@ -1050,7 +1050,7 @@ fn select_once_for_pid(
         let mut fd_ready = false;
 
         if !read_in.is_empty() && fdset_test(read_in, fd) {
-            match fs::poll_revents_for_pid(pid, fd as i32, POLLIN) {
+            match fs::runtime::poll_revents_for_pid(pid, fd as i32, POLLIN) {
                 Ok(revents) => {
                     if (revents & (POLLIN | POLLERR | POLLHUP)) != 0 {
                         fdset_set(read_out, fd);
@@ -1062,7 +1062,7 @@ fn select_once_for_pid(
         }
 
         if !write_in.is_empty() && fdset_test(write_in, fd) {
-            match fs::poll_revents_for_pid(pid, fd as i32, POLLOUT) {
+            match fs::runtime::poll_revents_for_pid(pid, fd as i32, POLLOUT) {
                 Ok(revents) => {
                     if (revents & (POLLOUT | POLLERR | POLLHUP)) != 0 {
                         fdset_set(write_out, fd);

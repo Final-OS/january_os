@@ -361,7 +361,7 @@ fn reap_orphan_zombie_process(pid: ProcessId) {
         let removed_tasks = manager.remove_tasks_by_process(pid);
         (removed_process, removed_tasks)
     };
-    fs::drop_process_fds(pid.0);
+    fs::runtime::drop_process_fds(pid.0);
     let mm_ptr = {
         let process = removed_process.lock();
         process.mm as *mut crate::mm::Mm
@@ -543,7 +543,7 @@ pub fn reap_observed_child(child_pid: ProcessId) -> Option<(ProcessId, i32)> {
         let _ = manager.remove_tasks_by_process(child_pid);
         removed_process
     };
-    fs::drop_process_fds(child_pid.0);
+    fs::runtime::drop_process_fds(child_pid.0);
     let mm_ptr = {
         let process = removed_process.lock();
         process.mm as *mut crate::mm::Mm

@@ -251,28 +251,28 @@ fn test_fd_bridge_case() -> Result<(), alloc::string::String> {
 
     let pid = 0xfaceusize;
     let file_path = format!("{}/{}", target, MOCK_BRIDGE_FILE);
-    let fd = fs::open_for_pid(pid, file_path.as_str(), 0, 0)
+    let fd = fs::runtime::open_for_pid(pid, file_path.as_str(), 0, 0)
         .map_err(|errno| format!("open errno={}", errno))?;
 
     let mut buf = [0u8; 32];
-    let n = fs::read_for_pid(pid, fd, &mut buf).map_err(|errno| format!("read errno={}", errno))?;
+    let n = fs::runtime::read_for_pid(pid, fd, &mut buf).map_err(|errno| format!("read errno={}", errno))?;
     if &buf[..n] != MOCK_BRIDGE_DATA {
-        let _ = fs::close_for_pid(pid, fd);
-        fs::drop_process_fds(pid);
+        let _ = fs::runtime::close_for_pid(pid, fd);
+        fs::runtime::drop_process_fds(pid);
         let _ = vfs::umount_fs(target.as_str());
         return Err(format!("content mismatch: got={:?}", &buf[..n]));
     }
-    let _ = fs::close_for_pid(pid, fd);
+    let _ = fs::runtime::close_for_pid(pid, fd);
 
-    fs::chdir_for_pid(pid, target.as_str()).map_err(|errno| format!("chdir errno={}", errno))?;
-    let rel_fd = fs::open_for_pid(pid, MOCK_BRIDGE_FILE, 0, 0)
+    fs::runtime::chdir_for_pid(pid, target.as_str()).map_err(|errno| format!("chdir errno={}", errno))?;
+    let rel_fd = fs::runtime::open_for_pid(pid, MOCK_BRIDGE_FILE, 0, 0)
         .map_err(|errno| format!("relative open errno={}", errno))?;
     let mut rel = [0u8; 32];
-    let rel_n = fs::read_for_pid(pid, rel_fd, &mut rel)
+    let rel_n = fs::runtime::read_for_pid(pid, rel_fd, &mut rel)
         .map_err(|errno| format!("relative read errno={}", errno))?;
     if &rel[..rel_n] != MOCK_BRIDGE_DATA {
-        let _ = fs::close_for_pid(pid, rel_fd);
-        fs::drop_process_fds(pid);
+        let _ = fs::runtime::close_for_pid(pid, rel_fd);
+        fs::runtime::drop_process_fds(pid);
         let _ = vfs::umount_fs(target.as_str());
         return Err(format!(
             "relative content mismatch: got={:?}",
@@ -280,8 +280,8 @@ fn test_fd_bridge_case() -> Result<(), alloc::string::String> {
         ));
     }
 
-    let _ = fs::close_for_pid(pid, rel_fd);
-    fs::drop_process_fds(pid);
+    let _ = fs::runtime::close_for_pid(pid, rel_fd);
+    fs::runtime::drop_process_fds(pid);
     vfs::umount_fs(target.as_str()).map_err(|e| format!("{:?}", e))?;
     Ok(())
 }

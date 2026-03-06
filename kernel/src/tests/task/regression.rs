@@ -179,7 +179,7 @@ pub(super) fn run() {
     const REGRESSION_FS_DATA: &[u8] = b"fs-regression-ok";
     const REGRESSION_FS_PID: usize = 0xfeed;
 
-    let fd = match fs::open_for_pid(REGRESSION_FS_PID, REGRESSION_FS_PATH, 0, 0) {
+    let fd = match fs::runtime::open_for_pid(REGRESSION_FS_PID, REGRESSION_FS_PATH, 0, 0) {
         Ok(fd) => fd,
         Err(errno) => {
             error!("task: regression FAIL (open_for_pid errno={})", errno);
@@ -188,14 +188,14 @@ pub(super) fn run() {
     };
 
     let mut buf = [0u8; 32];
-    let first = match fs::read_for_pid(REGRESSION_FS_PID, fd, &mut buf[..6]) {
+    let first = match fs::runtime::read_for_pid(REGRESSION_FS_PID, fd, &mut buf[..6]) {
         Ok(n) => n,
         Err(errno) => {
             error!("task: regression FAIL (read_for_pid first errno={})", errno);
             return;
         }
     };
-    let second = match fs::read_for_pid(REGRESSION_FS_PID, fd, &mut buf[6..]) {
+    let second = match fs::runtime::read_for_pid(REGRESSION_FS_PID, fd, &mut buf[6..]) {
         Ok(n) => n,
         Err(errno) => {
             error!(
@@ -220,12 +220,12 @@ pub(super) fn run() {
         return;
     }
 
-    if let Err(errno) = fs::close_for_pid(REGRESSION_FS_PID, fd) {
+    if let Err(errno) = fs::runtime::close_for_pid(REGRESSION_FS_PID, fd) {
         error!("task: regression FAIL (close_for_pid errno={})", errno);
         return;
     }
 
-    match fs::read_for_pid(REGRESSION_FS_PID, fd, &mut buf[..1]) {
+    match fs::runtime::read_for_pid(REGRESSION_FS_PID, fd, &mut buf[..1]) {
         Ok(_) => {
             error!("task: regression FAIL (read should fail after close)");
             return;
@@ -240,17 +240,17 @@ pub(super) fn run() {
         }
     }
 
-    fs::drop_process_fds(REGRESSION_FS_PID);
+    fs::runtime::drop_process_fds(REGRESSION_FS_PID);
 
     task_step("regression: verify fs lseek/dup/chdir/getcwd/readdir helpers");
-    let fd = match fs::open_for_pid(REGRESSION_FS_PID, REGRESSION_FS_PATH, 0, 0) {
+    let fd = match fs::runtime::open_for_pid(REGRESSION_FS_PID, REGRESSION_FS_PATH, 0, 0) {
         Ok(fd) => fd,
         Err(errno) => {
             error!("task: regression FAIL (open_for_pid #2 errno={})", errno);
             return;
         }
     };
-    let pos = match fs::lseek_for_pid(REGRESSION_FS_PID, fd, 3, 0) {
+    let pos = match fs::runtime::lseek_for_pid(REGRESSION_FS_PID, fd, 3, 0) {
         Ok(v) => v,
         Err(errno) => {
             error!("task: regression FAIL (lseek_for_pid errno={})", errno);
@@ -262,7 +262,7 @@ pub(super) fn run() {
         return;
     }
     let mut tail = [0u8; 32];
-    let tail_n = match fs::read_for_pid(REGRESSION_FS_PID, fd, &mut tail) {
+    let tail_n = match fs::runtime::read_for_pid(REGRESSION_FS_PID, fd, &mut tail) {
         Ok(v) => v,
         Err(errno) => {
             error!("task: regression FAIL (read after lseek errno={})", errno);
@@ -274,19 +274,19 @@ pub(super) fn run() {
         return;
     }
 
-    let dupfd = match fs::dup_for_pid(REGRESSION_FS_PID, fd, 0, false) {
+    let dupfd = match fs::runtime::dup_for_pid(REGRESSION_FS_PID, fd, 0, false) {
         Ok(v) => v,
         Err(errno) => {
             error!("task: regression FAIL (dup_for_pid errno={})", errno);
             return;
         }
     };
-    if let Err(errno) = fs::close_for_pid(REGRESSION_FS_PID, fd) {
+    if let Err(errno) = fs::runtime::close_for_pid(REGRESSION_FS_PID, fd) {
         error!("task: regression FAIL (close original fd errno={})", errno);
         return;
     }
     let mut dup_buf = [0u8; 4];
-    let dup_n = match fs::read_for_pid(REGRESSION_FS_PID, dupfd, &mut dup_buf) {
+    let dup_n = match fs::runtime::read_for_pid(REGRESSION_FS_PID, dupfd, &mut dup_buf) {
         Ok(v) => v,
         Err(errno) => {
             error!("task: regression FAIL (read dup fd errno={})", errno);
@@ -297,27 +297,27 @@ pub(super) fn run() {
         error!("task: regression FAIL (dup fd should share offset and hit EOF)");
         return;
     }
-    let _ = fs::close_for_pid(REGRESSION_FS_PID, dupfd);
+    let _ = fs::runtime::close_for_pid(REGRESSION_FS_PID, dupfd);
 
-    if let Err(errno) = fs::chdir_for_pid(REGRESSION_FS_PID, "/tests") {
+    if let Err(errno) = fs::runtime::chdir_for_pid(REGRESSION_FS_PID, "/tests") {
         error!("task: regression FAIL (chdir /tests errno={})", errno);
         return;
     }
-    let cwd = fs::getcwd_for_pid(REGRESSION_FS_PID);
+    let cwd = fs::runtime::getcwd_for_pid(REGRESSION_FS_PID);
     if cwd.as_str() != "/tests" {
         error!("task: regression FAIL (getcwd mismatch after chdir)");
         return;
     }
-    let fd_rel = match fs::open_for_pid(REGRESSION_FS_PID, "task/fs_regression.txt", 0, 0) {
+    let fd_rel = match fs::runtime::open_for_pid(REGRESSION_FS_PID, "task/fs_regression.txt", 0, 0) {
         Ok(fd) => fd,
         Err(errno) => {
             error!("task: regression FAIL (relative open errno={})", errno);
             return;
         }
     };
-    let _ = fs::close_for_pid(REGRESSION_FS_PID, fd_rel);
+    let _ = fs::runtime::close_for_pid(REGRESSION_FS_PID, fd_rel);
 
-    let dirfd = match fs::open_for_pid(REGRESSION_FS_PID, "/", 0, 0) {
+    let dirfd = match fs::runtime::open_for_pid(REGRESSION_FS_PID, "/", 0, 0) {
         Ok(fd) => fd,
         Err(errno) => {
             error!("task: regression FAIL (open root dir errno={})", errno);
@@ -326,7 +326,7 @@ pub(super) fn run() {
     };
     let mut saw_tests = false;
     for _ in 0..16 {
-        let entry = match fs::peek_dir_entry_for_pid(REGRESSION_FS_PID, dirfd) {
+        let entry = match fs::runtime::peek_dir_entry_for_pid(REGRESSION_FS_PID, dirfd) {
             Ok(v) => v,
             Err(errno) => {
                 error!("task: regression FAIL (peek_dir_entry errno={})", errno);
@@ -339,7 +339,7 @@ pub(super) fn run() {
         if entry.name.as_str() == "tests" {
             saw_tests = true;
         }
-        if let Err(errno) = fs::advance_dir_cursor_for_pid(REGRESSION_FS_PID, dirfd, 1) {
+        if let Err(errno) = fs::runtime::advance_dir_cursor_for_pid(REGRESSION_FS_PID, dirfd, 1) {
             error!("task: regression FAIL (advance_dir_cursor errno={})", errno);
             return;
         }
@@ -348,8 +348,8 @@ pub(super) fn run() {
         error!("task: regression FAIL (root readdir did not expose /tests)");
         return;
     }
-    let _ = fs::close_for_pid(REGRESSION_FS_PID, dirfd);
-    fs::drop_process_fds(REGRESSION_FS_PID);
+    let _ = fs::runtime::close_for_pid(REGRESSION_FS_PID, dirfd);
+    fs::runtime::drop_process_fds(REGRESSION_FS_PID);
 
     task_step("regression: verify syscall pipe2 dispatch wiring");
     let pipe2_ret = crate::syscall::dispatch(293, 0, 0, 0, 0, 0, 0);
@@ -402,7 +402,7 @@ pub(super) fn run() {
 
     task_step("regression: verify fs pipe read/write and EPIPE");
     const REGRESSION_PIPE_PID: usize = 0xbeef;
-    let (rfd, wfd) = match fs::pipe2_for_pid(REGRESSION_PIPE_PID, 0) {
+    let (rfd, wfd) = match fs::runtime::pipe2_for_pid(REGRESSION_PIPE_PID, 0) {
         Ok(v) => v,
         Err(errno) => {
             error!("task: regression FAIL (pipe2_for_pid errno={})", errno);
@@ -410,7 +410,7 @@ pub(super) fn run() {
         }
     };
     let payload = b"pipe-regression";
-    let wrote = match fs::write_for_pid(REGRESSION_PIPE_PID, wfd, payload) {
+    let wrote = match fs::runtime::write_for_pid(REGRESSION_PIPE_PID, wfd, payload) {
         Ok(n) => n,
         Err(errno) => {
             error!("task: regression FAIL (pipe write errno={})", errno);
@@ -427,7 +427,7 @@ pub(super) fn run() {
     }
 
     let mut pipe_buf = [0u8; 32];
-    let read_n = match fs::read_for_pid(REGRESSION_PIPE_PID, rfd, &mut pipe_buf) {
+    let read_n = match fs::runtime::read_for_pid(REGRESSION_PIPE_PID, rfd, &mut pipe_buf) {
         Ok(n) => n,
         Err(errno) => {
             error!("task: regression FAIL (pipe read errno={})", errno);
@@ -439,7 +439,7 @@ pub(super) fn run() {
         return;
     }
 
-    if let Err(errno) = fs::close_for_pid(REGRESSION_PIPE_PID, rfd) {
+    if let Err(errno) = fs::runtime::close_for_pid(REGRESSION_PIPE_PID, rfd) {
         error!(
             "task: regression FAIL (pipe close read end errno={})",
             errno
@@ -447,7 +447,7 @@ pub(super) fn run() {
         return;
     }
 
-    match fs::write_for_pid(REGRESSION_PIPE_PID, wfd, b"x") {
+    match fs::runtime::write_for_pid(REGRESSION_PIPE_PID, wfd, b"x") {
         Ok(_) => {
             error!("task: regression FAIL (pipe write should fail with EPIPE)");
             return;
@@ -461,13 +461,13 @@ pub(super) fn run() {
             return;
         }
     }
-    let _ = fs::close_for_pid(REGRESSION_PIPE_PID, wfd);
-    fs::drop_process_fds(REGRESSION_PIPE_PID);
+    let _ = fs::runtime::close_for_pid(REGRESSION_PIPE_PID, wfd);
+    fs::runtime::drop_process_fds(REGRESSION_PIPE_PID);
 
     task_step("regression: verify pipe2 nonblock flag and EAGAIN");
     const REGRESSION_PIPE_NB_PID: usize = 0xbeee;
     const O_NONBLOCK: u32 = 0o4000;
-    let (rfd_nb, wfd_nb) = match fs::pipe2_for_pid(REGRESSION_PIPE_NB_PID, O_NONBLOCK) {
+    let (rfd_nb, wfd_nb) = match fs::runtime::pipe2_for_pid(REGRESSION_PIPE_NB_PID, O_NONBLOCK) {
         Ok(v) => v,
         Err(errno) => {
             error!(
@@ -479,11 +479,11 @@ pub(super) fn run() {
     };
 
     let mut nb_buf = [0u8; 1];
-    match fs::read_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb, &mut nb_buf) {
+    match fs::runtime::read_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb, &mut nb_buf) {
         Ok(_) => {
             error!("task: regression FAIL (nonblock pipe read should fail with EAGAIN)");
-            let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb);
-            let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, wfd_nb);
+            let _ = fs::runtime::close_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb);
+            let _ = fs::runtime::close_for_pid(REGRESSION_PIPE_NB_PID, wfd_nb);
             return;
         }
         Err(errno) if errno == EAGAIN => {}
@@ -492,15 +492,15 @@ pub(super) fn run() {
                 "task: regression FAIL (nonblock pipe read errno mismatch, got={}, want={})",
                 errno, EAGAIN
             );
-            let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb);
-            let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, wfd_nb);
+            let _ = fs::runtime::close_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb);
+            let _ = fs::runtime::close_for_pid(REGRESSION_PIPE_NB_PID, wfd_nb);
             return;
         }
     }
 
-    let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb);
-    let _ = fs::close_for_pid(REGRESSION_PIPE_NB_PID, wfd_nb);
-    fs::drop_process_fds(REGRESSION_PIPE_NB_PID);
+    let _ = fs::runtime::close_for_pid(REGRESSION_PIPE_NB_PID, rfd_nb);
+    let _ = fs::runtime::close_for_pid(REGRESSION_PIPE_NB_PID, wfd_nb);
+    fs::runtime::drop_process_fds(REGRESSION_PIPE_NB_PID);
 
     task_step("regression: run usermode exec after reserve verification");
     if !usermode::run_with_label("usermode regression") {

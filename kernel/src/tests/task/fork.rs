@@ -25,7 +25,7 @@ pub(super) fn run() {
             fail_and_exit_current_task(127);
         };
 
-        let image = match fs::read_all_for_pid(pid, TEST_EXEC_PATH) {
+        let image = match fs::runtime::read_all_for_pid(pid, TEST_EXEC_PATH) {
             Ok(image) => image,
             Err(errno) => {
                 error!("task: fork FAIL (read_all_for_pid errno={})", errno);

@@ -189,7 +189,7 @@ fn run_in_task_context() {
             Some(pid) => pid.0,
             None => return fail("mmap", "file-backed mmap setup missing current pid"),
         };
-        let fd = match fs::open_for_pid(pid, MMAP_FILE_PATH, 0, 0) {
+        let fd = match fs::runtime::open_for_pid(pid, MMAP_FILE_PATH, 0, 0) {
             Ok(fd) => fd,
             Err(errno) => {
                 if crate::config::DEBUG_VERBOSE {
@@ -214,7 +214,7 @@ fn run_in_task_context() {
                     ret_errno(map_ret)
                 );
             }
-            let _ = fs::close_for_pid(pid, fd);
+            let _ = fs::runtime::close_for_pid(pid, fd);
             return fail("mmap", "file-backed mmap should succeed with valid fd");
         }
 
@@ -233,7 +233,7 @@ fn run_in_task_context() {
             }
             if b0 != MMAP_FILE_DATA[0] || b1 != MMAP_FILE_DATA[1] {
                 let _ = do_munmap(map_addr as usize, page);
-                let _ = fs::close_for_pid(pid, fd);
+                let _ = fs::runtime::close_for_pid(pid, fd);
                 return fail("mmap", "file-backed mmap readback mismatch");
             }
         }
@@ -246,10 +246,10 @@ fn run_in_task_context() {
                     ret_errno(unmap_ret)
                 );
             }
-            let _ = fs::close_for_pid(pid, fd);
+            let _ = fs::runtime::close_for_pid(pid, fd);
             return fail("mmap", "file-backed mmap munmap failed");
         }
-        let _ = fs::close_for_pid(pid, fd);
+        let _ = fs::runtime::close_for_pid(pid, fd);
     }
 
     mm_step("mmap: case=file_backed_private_nonzero_offset_read_map_and_access");
@@ -258,7 +258,7 @@ fn run_in_task_context() {
             Some(pid) => pid.0,
             None => return fail("mmap", "file-backed offset mmap setup missing current pid"),
         };
-        let fd = match fs::open_for_pid(pid, MMAP_OFFSET_FILE_PATH, 0, 0) {
+        let fd = match fs::runtime::open_for_pid(pid, MMAP_OFFSET_FILE_PATH, 0, 0) {
             Ok(fd) => fd,
             Err(_) => return fail("mmap", "file-backed offset mmap setup open_for_pid failed"),
         };
@@ -272,7 +272,7 @@ fn run_in_task_context() {
             page,
         );
         if ret_is_err(map_ret) {
-            let _ = fs::close_for_pid(pid, fd);
+            let _ = fs::runtime::close_for_pid(pid, fd);
             return fail("mmap", "file-backed mmap with non-zero page-aligned offset must succeed");
         }
 
@@ -281,13 +281,13 @@ fn run_in_task_context() {
             let bytes = core::slice::from_raw_parts(map_addr as *const u8, 16);
             if bytes.iter().any(|b| *b != b'B') {
                 let _ = do_munmap(map_addr as usize, page);
-                let _ = fs::close_for_pid(pid, fd);
+                let _ = fs::runtime::close_for_pid(pid, fd);
                 return fail("mmap", "file-backed mmap with offset returned wrong file page");
             }
         }
 
         let _ = do_munmap(map_addr as usize, page);
-        let _ = fs::close_for_pid(pid, fd);
+        let _ = fs::runtime::close_for_pid(pid, fd);
     }
 
     mm_step("mmap: case=file_backed_munmap_split_preserves_page_offset");
@@ -296,7 +296,7 @@ fn run_in_task_context() {
             Some(pid) => pid.0,
             None => return fail("mmap", "file-backed munmap split setup missing current pid"),
         };
-        let fd = match fs::open_for_pid(pid, MMAP_OFFSET_FILE_PATH, 0, 0) {
+        let fd = match fs::runtime::open_for_pid(pid, MMAP_OFFSET_FILE_PATH, 0, 0) {
             Ok(fd) => fd,
             Err(_) => return fail("mmap", "file-backed munmap split open_for_pid failed"),
         };
@@ -310,7 +310,7 @@ fn run_in_task_context() {
             0,
         );
         if ret_is_err(map_ret) {
-            let _ = fs::close_for_pid(pid, fd);
+            let _ = fs::runtime::close_for_pid(pid, fd);
             return fail("mmap", "two-page file-backed mmap must succeed");
         }
 
@@ -319,7 +319,7 @@ fn run_in_task_context() {
             let first = core::ptr::read(map_addr as *const u8);
             if first != b'A' {
                 let _ = do_munmap(map_addr as usize, page * 2);
-                let _ = fs::close_for_pid(pid, fd);
+                let _ = fs::runtime::close_for_pid(pid, fd);
                 return fail("mmap", "file-backed base page readback mismatch before split");
             }
         }
@@ -327,7 +327,7 @@ fn run_in_task_context() {
         let unmap_ret = do_munmap(map_addr as usize, page);
         if ret_is_err(unmap_ret) {
             let _ = do_munmap(map_addr as usize + page, page);
-            let _ = fs::close_for_pid(pid, fd);
+            let _ = fs::runtime::close_for_pid(pid, fd);
             return fail("mmap", "munmap of first file-backed page failed");
         }
 
@@ -335,13 +335,13 @@ fn run_in_task_context() {
             let bytes = core::slice::from_raw_parts((map_addr + mm::PAGE_SIZE) as *const u8, 16);
             if bytes.iter().any(|b| *b != b'B') {
                 let _ = do_munmap(map_addr as usize + page, page);
-                let _ = fs::close_for_pid(pid, fd);
+                let _ = fs::runtime::close_for_pid(pid, fd);
                 return fail("mmap", "munmap split lost right-side file offset after VMA rewrite");
             }
         }
 
         let _ = do_munmap(map_addr as usize + page, page);
-        let _ = fs::close_for_pid(pid, fd);
+        let _ = fs::runtime::close_for_pid(pid, fd);
     }
 
     mm_step("mmap: case=invalid_unaligned_fixed_addr");

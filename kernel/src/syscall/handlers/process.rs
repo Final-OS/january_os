@@ -395,7 +395,7 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         None => return err(ESRCH),
     };
 
-    let image = match fs::read_all_for_pid(pid, path.as_str()) {
+    let image = match fs::runtime::read_all_for_pid(pid, path.as_str()) {
         Ok(image) => image,
         Err(errno) => {
             if crate::config::DEBUG_VERBOSE {

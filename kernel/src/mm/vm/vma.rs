@@ -895,7 +895,7 @@ fn release_mm_vma_backings(mm: &Mm) {
     for (_start, _end, info) in mm.vma_tree.iter() {
         if !info.file.is_null() {
             let backing_id = info.file as usize as u64;
-            fs::mmap_release_backing(backing_id);
+            fs::backing::release_mmap_backing(backing_id);
         }
     }
 }
@@ -1017,7 +1017,7 @@ pub fn mm_clone(mm: *mut Mm) -> *mut Mm {
         }
         if !info.file.is_null() {
             let backing_id = info.file as usize as u64;
-            if fs::mmap_retain_backing(backing_id).is_err() {
+            if fs::backing::retain_mmap_backing(backing_id).is_err() {
                 let _ = dst.vma_tree.remove(user_start as usize);
                 release_mm_vma_backings(&dst);
                 unsafe {

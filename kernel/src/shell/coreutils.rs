@@ -34,7 +34,7 @@ fn print_cat_bytes(buf: &[u8]) {
 
 pub(super) fn execute_ls_command(args: &[&str]) {
     let path = args.first().copied().unwrap_or(".");
-    let stat = match fs::stat_path_for_pid(SHELL_FS_PID, path) {
+    let stat = match fs::runtime::stat_path_for_pid(SHELL_FS_PID, path) {
         Ok(stat) => stat,
         Err(errno) => {
             kprintln!("ls: {} (errno={})", path, errno);
@@ -47,7 +47,7 @@ pub(super) fn execute_ls_command(args: &[&str]) {
         return;
     }
 
-    let fd = match fs::open_for_pid(SHELL_FS_PID, path, O_RDONLY, 0) {
+    let fd = match fs::runtime::open_for_pid(SHELL_FS_PID, path, O_RDONLY, 0) {
         Ok(fd) => fd,
         Err(errno) => {
             kprintln!("ls: failed to open {} (errno={})", path, errno);
@@ -56,7 +56,7 @@ pub(super) fn execute_ls_command(args: &[&str]) {
     };
 
     loop {
-        let entry = match fs::peek_dir_entry_for_pid(SHELL_FS_PID, fd) {
+        let entry = match fs::runtime::peek_dir_entry_for_pid(SHELL_FS_PID, fd) {
             Ok(entry) => entry,
             Err(errno) => {
                 kprintln!("ls: failed to read {} (errno={})", path, errno);
@@ -68,13 +68,13 @@ pub(super) fn execute_ls_command(args: &[&str]) {
             break;
         };
         print_ls_entry(entry.name.as_str(), entry.file_type);
-        if let Err(errno) = fs::advance_dir_cursor_for_pid(SHELL_FS_PID, fd, 1) {
+        if let Err(errno) = fs::runtime::advance_dir_cursor_for_pid(SHELL_FS_PID, fd, 1) {
             kprintln!("ls: failed to advance {} (errno={})", path, errno);
             break;
         }
     }
 
-    let _ = fs::close_for_pid(SHELL_FS_PID, fd);
+    let _ = fs::runtime::close_for_pid(SHELL_FS_PID, fd);
 }
 
 pub(super) fn execute_cd_command(args: &[&str]) {
@@ -82,13 +82,13 @@ pub(super) fn execute_cd_command(args: &[&str]) {
         kprintln!("usage: cd <path>");
         return;
     };
-    if let Err(errno) = fs::chdir_for_pid(SHELL_FS_PID, path) {
+    if let Err(errno) = fs::runtime::chdir_for_pid(SHELL_FS_PID, path) {
         kprintln!("cd: {} (errno={})", path, errno);
     }
 }
 
 pub(super) fn execute_pwd_command() {
-    let cwd = fs::getcwd_for_pid(SHELL_FS_PID);
+    let cwd = fs::runtime::getcwd_for_pid(SHELL_FS_PID);
     kprintln!("{}", cwd);
 }
 
@@ -99,7 +99,7 @@ pub(super) fn execute_cat_command(args: &[&str]) {
     }
 
     for path in args.iter() {
-        let fd = match fs::open_for_pid(SHELL_FS_PID, path, O_RDONLY, 0) {
+        let fd = match fs::runtime::open_for_pid(SHELL_FS_PID, path, O_RDONLY, 0) {
             Ok(fd) => fd,
             Err(errno) => {
                 kprintln!("cat: {} (errno={})", path, errno);
@@ -109,7 +109,7 @@ pub(super) fn execute_cat_command(args: &[&str]) {
 
         let mut buf = [0u8; 256];
         loop {
-            let n = match fs::read_for_pid(SHELL_FS_PID, fd, &mut buf) {
+            let n = match fs::runtime::read_for_pid(SHELL_FS_PID, fd, &mut buf) {
                 Ok(n) => n,
                 Err(errno) => {
                     kprintln!("cat: {} read error (errno={})", path, errno);
@@ -122,7 +122,7 @@ pub(super) fn execute_cat_command(args: &[&str]) {
             print_cat_bytes(&buf[..n]);
         }
 
-        let _ = fs::close_for_pid(SHELL_FS_PID, fd);
+        let _ = fs::runtime::close_for_pid(SHELL_FS_PID, fd);
         kprintln!();
     }
 }

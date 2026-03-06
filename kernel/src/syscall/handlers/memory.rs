@@ -118,9 +118,9 @@ fn apply_backing_retains(adjustments: &[BackingAdjust]) -> Result<(), i32> {
 
     for adjust in adjustments {
         for _ in 0..adjust.retain_count {
-            if let Err(errno) = fs::mmap_retain_backing(adjust.backing_id) {
+            if let Err(errno) = fs::backing::retain_mmap_backing(adjust.backing_id) {
                 for backing_id in retained.into_iter().rev() {
-                    fs::mmap_release_backing(backing_id);
+                    fs::backing::release_mmap_backing(backing_id);
                 }
                 return Err(errno);
             }
@@ -134,7 +134,7 @@ fn apply_backing_retains(adjustments: &[BackingAdjust]) -> Result<(), i32> {
 fn rollback_backing_retains(adjustments: &[BackingAdjust]) {
     for adjust in adjustments.iter().rev() {
         for _ in 0..adjust.retain_count {
-            fs::mmap_release_backing(adjust.backing_id);
+            fs::backing::release_mmap_backing(adjust.backing_id);
         }
     }
 }
@@ -142,7 +142,7 @@ fn rollback_backing_retains(adjustments: &[BackingAdjust]) {
 fn apply_backing_releases(adjustments: &[BackingAdjust]) {
     for adjust in adjustments {
         for _ in 0..adjust.release_count {
-            fs::mmap_release_backing(adjust.backing_id);
+            fs::backing::release_mmap_backing(adjust.backing_id);
         }
     }
 }
@@ -623,7 +623,7 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
             Ok(pid) => pid,
             Err(errno) => return err(errno),
         };
-        let backing_id = match fs::mmap_create_backing_for_pid(pid, fd) {
+        let backing_id = match fs::backing::create_mmap_backing_for_pid(pid, fd) {
             Ok(id) => id,
             Err(errno) => return err(errno),
         };
@@ -635,13 +635,13 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
     let mm_state = unsafe { &mut *mm_ptr };
     if mm_state.find_vma_intersection(start, end).is_some() {
         if let Some(backing_id) = file_backing_id {
-            fs::mmap_release_backing(backing_id);
+            fs::backing::release_mmap_backing(backing_id);
         }
         return err(EBUSY);
     }
     if !mm_state.insert_vma(start, end, info) {
         if let Some(backing_id) = file_backing_id {
-            fs::mmap_release_backing(backing_id);
+            fs::backing::release_mmap_backing(backing_id);
         }
         return err(EBUSY);
     }

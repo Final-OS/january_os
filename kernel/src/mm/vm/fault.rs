@@ -349,7 +349,7 @@ fn handle_file_fault(ctx: &FaultContext) -> FaultResult {
         let copied = unsafe {
             let dst = (ctx.direct_map_offset + phys) as *mut u8;
             let dst_slice = core::slice::from_raw_parts_mut(dst, PAGE_SIZE as usize);
-            match fs::mmap_copy_page(backing_id, file_offset, dst_slice) {
+            match fs::backing::copy_mmap_page(backing_id, file_offset, dst_slice) {
                 Ok(n) => n,
                 Err(_) => {
                     free_page(page);
