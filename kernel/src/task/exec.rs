@@ -11,7 +11,7 @@ use core::cmp;
 use core::mem::size_of;
 
 use crate::mm;
-use crate::syscall::{E2BIG, EBUSY, EFAULT, EINVAL, ENOENT, ENOMEM};
+use crate::syscall::{E2BIG, EBUSY, EFAULT, EINVAL, ENOENT, ENOMEM, ESRCH};
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELF_CLASS_64: u8 = 2;
@@ -108,6 +108,30 @@ pub struct ExecMappedPage {
     pub phys: u64,
     pub flags: u64,
     pub kind: ExecMappedPageKind,
+}
+
+#[derive(Clone)]
+struct ExecVmaPlan {
+    start: u64,
+    end: u64,
+    info: mm::VmaInfo,
+}
+
+#[derive(Clone, Copy)]
+struct ExecMmLayoutSnapshot {
+    start_code: u64,
+    end_code: u64,
+    start_data: u64,
+    end_data: u64,
+    start_brk: u64,
+    brk: u64,
+    start_stack: u64,
+    arg_start: u64,
+    arg_end: u64,
+    env_start: u64,
+    env_end: u64,
+    mmap_base: u64,
+    mmap_legacy_base: u64,
 }
 
 #[inline]
@@ -291,6 +315,165 @@ fn current_mm_pgd() -> u64 {
 fn current_page_table_manager() -> mm::PageTableManager {
     let pml4_phys = current_mm_pgd();
     unsafe { mm::PageTableManager::new(pml4_phys, mm::direct_map_offset()) }
+}
+
+fn build_exec_vma_plan(plan: &ExecLoadPlan) -> Vec<ExecVmaPlan> {
+    let mut vmas: Vec<ExecVmaPlan> = Vec::with_capacity(plan.segments.len().saturating_add(1));
+
+    for segment in plan.segments.iter() {
+        let mut flags = mm::VmFlags::empty();
+        flags.set(mm::VmFlags::READ);
+        flags.set(mm::VmFlags::ANONYMOUS);
+        if segment.executable {
+            flags.set(mm::VmFlags::EXEC);
+            flags.set(mm::VmFlags::CODE);
+        }
+        if segment.writable {
+            flags.set(mm::VmFlags::WRITE);
+            flags.set(mm::VmFlags::MAYWRITE);
+            flags.set(mm::VmFlags::DATA);
+        }
+
+        vmas.push(ExecVmaPlan {
+            start: segment.page_start,
+            end: segment.page_end,
+            info: mm::VmaInfo::new(flags),
+        });
+    }
+
+    let stack_bytes = plan.stack_pages.saturating_mul(mm::PAGE_SIZE);
+    let stack_bottom = plan.stack_top.saturating_sub(stack_bytes);
+    let mut stack_flags = mm::VmFlags::empty();
+    stack_flags.set(mm::VmFlags::READ);
+    stack_flags.set(mm::VmFlags::WRITE);
+    stack_flags.set(mm::VmFlags::MAYWRITE);
+    stack_flags.set(mm::VmFlags::ANONYMOUS);
+    stack_flags.set(mm::VmFlags::GROWSDOWN);
+    vmas.push(ExecVmaPlan {
+        start: stack_bottom,
+        end: plan.stack_top,
+        info: mm::VmaInfo::new(stack_flags),
+    });
+
+    vmas
+}
+
+fn snapshot_mm_layout(mm_state: &mm::Mm) -> ExecMmLayoutSnapshot {
+    ExecMmLayoutSnapshot {
+        start_code: mm_state.start_code,
+        end_code: mm_state.end_code,
+        start_data: mm_state.start_data,
+        end_data: mm_state.end_data,
+        start_brk: mm_state.start_brk,
+        brk: mm_state.brk,
+        start_stack: mm_state.start_stack,
+        arg_start: mm_state.arg_start,
+        arg_end: mm_state.arg_end,
+        env_start: mm_state.env_start,
+        env_end: mm_state.env_end,
+        mmap_base: mm_state.mmap_base,
+        mmap_legacy_base: mm_state.mmap_legacy_base,
+    }
+}
+
+fn restore_mm_layout(mm_state: &mut mm::Mm, snapshot: ExecMmLayoutSnapshot) {
+    mm_state.start_code = snapshot.start_code;
+    mm_state.end_code = snapshot.end_code;
+    mm_state.start_data = snapshot.start_data;
+    mm_state.end_data = snapshot.end_data;
+    mm_state.start_brk = snapshot.start_brk;
+    mm_state.brk = snapshot.brk;
+    mm_state.start_stack = snapshot.start_stack;
+    mm_state.arg_start = snapshot.arg_start;
+    mm_state.arg_end = snapshot.arg_end;
+    mm_state.env_start = snapshot.env_start;
+    mm_state.env_end = snapshot.env_end;
+    mm_state.mmap_base = snapshot.mmap_base;
+    mm_state.mmap_legacy_base = snapshot.mmap_legacy_base;
+}
+
+pub fn install_current_exec_vmas(plan: &ExecLoadPlan) -> Result<(), i32> {
+    let mm_ptr = crate::task::current_mm_ptr();
+    if mm_ptr.is_null() {
+        return Err(ESRCH);
+    }
+
+    let new_vmas = build_exec_vma_plan(plan);
+    let mm_state = unsafe { &mut *mm_ptr };
+    let old_layout = snapshot_mm_layout(mm_state);
+    let old_user_vmas = {
+        let _guard = mm_state.lock.lock();
+        mm_state
+            .vma_tree
+            .iter()
+            .filter_map(|(start, end, info)| {
+                let start = start as u64;
+                let end = end as u64;
+                (end > mm::USER_SPACE_START && start < mm::USER_SPACE_END)
+                    .then_some(ExecVmaPlan {
+                        start,
+                        end,
+                        info: info.clone(),
+                    })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for vma in old_user_vmas.iter() {
+        let _ = mm_state.remove_vma(vma.start);
+    }
+
+    let mut inserted: Vec<ExecVmaPlan> = Vec::new();
+    for vma in new_vmas.iter() {
+        if !mm_state.insert_vma(vma.start, vma.end, vma.info.clone()) {
+            for inserted_vma in inserted.iter().rev() {
+                let _ = mm_state.remove_vma(inserted_vma.start);
+            }
+            for old_vma in old_user_vmas.iter() {
+                let _ = mm_state.insert_vma(old_vma.start, old_vma.end, old_vma.info.clone());
+            }
+            restore_mm_layout(mm_state, old_layout);
+            return Err(EBUSY);
+        }
+        inserted.push(vma.clone());
+    }
+
+    let mut start_code = 0u64;
+    let mut end_code = 0u64;
+    let mut start_data = 0u64;
+    let mut end_data = 0u64;
+    let mut brk_base = 0u64;
+    for segment in plan.segments.iter() {
+        if segment.executable {
+            if start_code == 0 || segment.page_start < start_code {
+                start_code = segment.page_start;
+            }
+            end_code = end_code.max(segment.page_end);
+        }
+        if segment.writable {
+            if start_data == 0 || segment.page_start < start_data {
+                start_data = segment.page_start;
+            }
+            end_data = end_data.max(segment.page_end);
+            brk_base = brk_base.max(segment.page_end);
+        }
+    }
+
+    mm_state.start_code = start_code;
+    mm_state.end_code = end_code;
+    mm_state.start_data = start_data;
+    mm_state.end_data = end_data;
+    mm_state.start_brk = brk_base;
+    mm_state.brk = brk_base;
+    mm_state.start_stack = plan.stack_top;
+    mm_state.arg_start = 0;
+    mm_state.arg_end = 0;
+    mm_state.env_start = 0;
+    mm_state.env_end = 0;
+    mm_state.mmap_base = mm::USER_MMAP_BASE;
+    mm_state.mmap_legacy_base = mm::USER_MMAP_BASE;
+
+    Ok(())
 }
 
 #[inline]

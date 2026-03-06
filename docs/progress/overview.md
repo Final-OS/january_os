@@ -84,6 +84,7 @@ january_os 当前开发状态与功能完成情况。
 
 **2026-02-13 - 任务管理阶段推进（Batch 2/4）**
 - ✅ 新增进程创建 syscall：`clone/fork/vfork`（最小语义）
+- ✅ `fork` 已补齐用户态返回点复制与私有页真实 COW；`vfork` 保持共享地址空间路径
 - ✅ 新增进程组 syscall：`getpgid/getpgrp/setpgid/setsid`（最小语义）
 - ✅ 新增信号 syscall：`kill/tkill/tgkill`（支持 `SIGCHLD/SIGTERM/SIGKILL/SIGSTOP/SIGCONT`）
 - ✅ `wait4` 与 `SIGSTOP/SIGCONT/SIGKILL` 事件链路联动

@@ -1,4 +1,5 @@
 use core::arch::{asm, global_asm};
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::interrupt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
@@ -15,15 +16,57 @@ const FMASK_CLEAR_FLAGS: u64 = (1 << 9) | (1 << 8);
 const SYSCALL_TRACE_VERBOSE: bool = false;
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct RawSyscallFrame {
-    nr: usize,
-    arg0: usize,
-    arg1: usize,
-    arg2: usize,
-    arg3: usize,
-    arg4: usize,
-    arg5: usize,
+#[derive(Debug, Clone, Copy, Default)]
+struct SavedSyscallFrame {
+    user_rsp: u64,
+    user_rflags: u64,
+    user_rip: u64,
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    rbp: u64,
+    rbx: u64,
+    r9: u64,
+    r8: u64,
+    r10: u64,
+    rdx: u64,
+    rsi: u64,
+    rdi: u64,
+    rax: u64,
+}
+
+struct CapturedSyscallFrame {
+    valid: AtomicBool,
+    frame: UnsafeCell<SavedSyscallFrame>,
+}
+
+unsafe impl Sync for CapturedSyscallFrame {}
+
+impl CapturedSyscallFrame {
+    const fn new() -> Self {
+        Self {
+            valid: AtomicBool::new(false),
+            frame: UnsafeCell::new(SavedSyscallFrame {
+                user_rsp: 0,
+                user_rflags: 0,
+                user_rip: 0,
+                r15: 0,
+                r14: 0,
+                r13: 0,
+                r12: 0,
+                rbp: 0,
+                rbx: 0,
+                r9: 0,
+                r8: 0,
+                r10: 0,
+                rdx: 0,
+                rsi: 0,
+                rdi: 0,
+                rax: 0,
+            }),
+        }
+    }
 }
 
 /// 每 CPU 的 syscall 上下文槽位数量（按 APIC ID 索引）。
@@ -56,6 +99,8 @@ static SYSCALL_CPU_CONTEXTS: [SyscallCpuContext; SYSCALL_RSP_SLOT_COUNT] =
 
 static SYSCALL_DIAG_SEQ: AtomicU64 = AtomicU64::new(0);
 static SYSCALL_INIT_LOGGED: AtomicBool = AtomicBool::new(false);
+static CAPTURED_SYSCALL_FRAMES: [CapturedSyscallFrame; SYSCALL_RSP_SLOT_COUNT] =
+    [const { CapturedSyscallFrame::new() }; SYSCALL_RSP_SLOT_COUNT];
 
 #[inline]
 unsafe fn rdmsr(msr: u32) -> u64 {
@@ -124,42 +169,91 @@ fn syscall_slot_index_current_cpu() -> usize {
     }
 }
 
+#[inline]
+fn current_saved_syscall_frame() -> Option<SavedSyscallFrame> {
+    let idx = syscall_slot_index_current_cpu();
+    let slot = &CAPTURED_SYSCALL_FRAMES[idx];
+    if !slot.valid.load(Ordering::Acquire) {
+        return None;
+    }
+
+    Some(unsafe { *slot.frame.get() })
+}
+
+#[inline]
+pub fn current_fork_return_frame() -> Option<crate::task::arch::ForkReturnFrame> {
+    let frame = current_saved_syscall_frame()?;
+    Some(crate::task::arch::ForkReturnFrame {
+        rip: frame.user_rip,
+        rsp: frame.user_rsp,
+        rflags: frame.user_rflags,
+        r15: frame.r15,
+        r14: frame.r14,
+        r13: frame.r13,
+        r12: frame.r12,
+        rbp: frame.rbp,
+        rbx: frame.rbx,
+        r9: frame.r9,
+        r8: frame.r8,
+        r10: frame.r10,
+        rdx: frame.rdx,
+        rsi: frame.rsi,
+        rdi: frame.rdi,
+        rax: 0,
+    })
+}
+
 #[unsafe(no_mangle)]
-extern "C" fn syscall_dispatch_from_asm(frame: *const RawSyscallFrame) -> usize {
+extern "C" fn syscall_dispatch_from_asm(frame: *const SavedSyscallFrame) -> usize {
     let Some(frame) = (unsafe { frame.as_ref() }) else {
         return (-(crate::syscall::EINVAL as isize)) as usize;
     };
 
+    let idx = syscall_slot_index_current_cpu();
+    let slot = &CAPTURED_SYSCALL_FRAMES[idx];
+    unsafe {
+        *slot.frame.get() = *frame;
+    }
+    slot.valid.store(true, Ordering::Release);
+
     let seq = SYSCALL_DIAG_SEQ.fetch_add(1, Ordering::Relaxed);
-    let should_log = seq < 32 || frame.nr == 59 || frame.nr == 60 || frame.nr == 231;
+    let should_log = seq < 32 || frame.rax == 59 || frame.rax == 60 || frame.rax == 231;
 
     if should_log {
         if crate::config::DEBUG_VERBOSE && SYSCALL_TRACE_VERBOSE {
             crate::kprintln!(
                 "\x1b[90m[diag]\x1b[0m[syscall] enter seq={} nr={} args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}] k_rsp={:#x}",
                 seq,
-                frame.nr,
-                frame.arg0,
-                frame.arg1,
-                frame.arg2,
-                frame.arg3,
-                frame.arg4,
-                frame.arg5,
+                frame.rax,
+                frame.rdi,
+                frame.rsi,
+                frame.rdx,
+                frame.r10,
+                frame.r8,
+                frame.r9,
                 read_syscall_kernel_rsp(),
             );
         }
     }
 
     let ret = crate::syscall::dispatch(
-        frame.nr, frame.arg0, frame.arg1, frame.arg2, frame.arg3, frame.arg4, frame.arg5,
+        frame.rax as usize,
+        frame.rdi as usize,
+        frame.rsi as usize,
+        frame.rdx as usize,
+        frame.r10 as usize,
+        frame.r8 as usize,
+        frame.r9 as usize,
     );
+
+    slot.valid.store(false, Ordering::Release);
 
     if should_log {
         if crate::config::DEBUG_VERBOSE && SYSCALL_TRACE_VERBOSE {
             crate::kprintln!(
                 "\x1b[90m[diag]\x1b[0m[syscall] leave seq={} nr={} ret={:#x}",
                 seq,
-                frame.nr,
+                frame.rax,
                 ret,
             );
         }
@@ -268,25 +362,8 @@ syscall_entry:
 
     // SysV 调用对齐：call 前 rsp 16-byte 对齐
     and rsp, -16
-    sub rsp, 64
 
-    // 组装 RawSyscallFrame
-    mov rax, [r13 + 120]
-    mov [rsp + 0], rax
-    mov rax, [r13 + 112]
-    mov [rsp + 8], rax
-    mov rax, [r13 + 104]
-    mov [rsp + 16], rax
-    mov rax, [r13 + 96]
-    mov [rsp + 24], rax
-    mov rax, [r13 + 88]
-    mov [rsp + 32], rax
-    mov rax, [r13 + 80]
-    mov [rsp + 40], rax
-    mov rax, [r13 + 72]
-    mov [rsp + 48], rax
-
-    lea rdi, [rsp]
+    mov rdi, r13
     call syscall_dispatch_from_asm
 
     // 恢复用户寄存器（rax 保留 syscall 返回值）

@@ -15,6 +15,12 @@ pub struct UserEnterFrame {
     pub sstatus: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct ForkReturnFrame {
+    pub pc: u64,
+}
+
 pub fn build_user_enter_frame(entry: u64, stack_top: u64) -> UserEnterFrame {
     UserEnterFrame {
         pc: entry,
@@ -24,6 +30,12 @@ pub fn build_user_enter_frame(entry: u64, stack_top: u64) -> UserEnterFrame {
 }
 
 pub unsafe fn enter_user_mode_iret(_frame: &UserEnterFrame) -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+pub unsafe fn enter_user_fork_return(_frame: &ForkReturnFrame) -> ! {
     loop {
         core::hint::spin_loop();
     }

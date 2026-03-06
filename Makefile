@@ -93,7 +93,7 @@ INITRAMFS_ROOT = $(ROOT_DIR)/initramfs
 INITRAMFS_STAGE = $(BUILD_DIR)/initramfs-root
 USERLAND_DIR = $(ROOT_DIR)/userland
 USERLAND_TARGET_DIR = $(BUILD_DIR)/userland
-USERLAND_BINS = sh ls cat pwd echo
+USERLAND_BINS = sh ls cat pwd echo forktest
 VIRTIO_BLK_IMG = $(BUILD_DIR)/virtio-blk.img
 VIRTIO_BLK_SIZE = 64M
 

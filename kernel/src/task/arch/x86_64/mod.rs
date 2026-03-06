@@ -13,4 +13,7 @@ pub const fn supported_elf_machine() -> u16 {
 pub use context::TaskContext;
 pub use switch::__switch;
 
-pub use user::{build_user_enter_frame, enter_user_mode_iret, UserEnterFrame};
+pub use user::{
+    build_user_enter_frame, enter_user_fork_return, enter_user_mode_iret, ForkReturnFrame,
+    UserEnterFrame,
+};

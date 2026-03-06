@@ -498,6 +498,10 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
     }
 
     let staged_count = staged_mappings.len();
+    if let Err(errno) = task::install_current_exec_vmas(&load_plan) {
+        task::rollback_exec_mappings(&staged_mappings);
+        return err(errno);
+    }
     let replaced_pages = match task::set_current_exec_mappings(staged_mappings) {
         Some(replaced) => replaced,
         None => {
@@ -587,7 +591,31 @@ pub(crate) fn sys_gettid(_args: &SyscallArgs) -> SyscallRet {
     }
 }
 
-extern "C" fn syscall_child_stub() {}
+#[inline(never)]
+fn fail_and_exit_current_task(code: i32) -> ! {
+    task::exit_current_task(code);
+    loop {
+        task::scheduler::schedule();
+    }
+}
+
+extern "C" fn syscall_child_return_stub() {
+    let Some(task_ref) = task::current_task() else {
+        fail_and_exit_current_task(127);
+    };
+
+    let frame = {
+        let mut task = task_ref.lock();
+        task.fork_return_frame.take()
+    };
+    let Some(frame) = frame else {
+        fail_and_exit_current_task(127);
+    };
+
+    unsafe {
+        task::arch::enter_user_fork_return(&frame);
+    }
+}
 
 fn parse_signal(raw_sig: usize) -> Result<i32, i32> {
     let sig = raw_sig as i32;
@@ -601,10 +629,15 @@ fn spawn_minimal_child(
     name: &str,
     is_clone_child: bool,
     mm_mode: task::SpawnMmMode,
+    fork_frame: task::arch::ForkReturnFrame,
 ) -> Result<task::ProcessId, i32> {
     let child_task =
-        task::spawn_kernel_thread_with_mm_mode_checked(name, syscall_child_stub, mm_mode)
+        task::spawn_kernel_thread_with_mm_mode_checked(name, syscall_child_return_stub, mm_mode)
             .ok_or(ENOMEM)?;
+    {
+        let mut child = child_task.lock();
+        child.fork_return_frame = Some(fork_frame);
+    }
     let child_pid = child_task.lock().pid;
 
     let Some(child_process) = task::find_process_by_pid(child_pid) else {
@@ -742,7 +775,9 @@ fn clone_impl(
         task::SpawnMmMode::InheritPrivate
     };
 
-    let child_pid = spawn_minimal_child(child_name, is_clone_child, mm_mode)?;
+    let fork_frame = crate::arch::syscall::current_fork_return_frame().ok_or(EINVAL)?;
+
+    let child_pid = spawn_minimal_child(child_name, is_clone_child, mm_mode, fork_frame)?;
 
     if (flags & CLONE_VFORK) != 0 {
         wait_for_vfork_release(child_pid);

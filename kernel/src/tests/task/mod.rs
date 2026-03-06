@@ -1,6 +1,7 @@
 //! 内核线程 / 上下文切换测试
 
 mod context_switch;
+mod fork;
 mod regression;
 mod usermode;
 mod wait_reap;
@@ -37,6 +38,8 @@ pub fn run_with_filter(filter: Option<&str>) {
             wait_reap::run();
             task_step("run case=usermode");
             usermode::run();
+            task_step("run case=fork");
+            fork::run();
         }
         Some("safe") => {
             task_step("run case=switch");
@@ -60,6 +63,10 @@ pub fn run_with_filter(filter: Option<&str>) {
             task_step("run case=usermode");
             usermode::run();
         }
+        Some("fork") => {
+            task_step("run case=fork");
+            fork::run();
+        }
         Some("help") | _ => {
             task_step("show help");
             kprintln!("Usage: test task [name]");
@@ -67,9 +74,10 @@ pub fn run_with_filter(filter: Option<&str>) {
             kprintln!("  switch       - context switch test");
             kprintln!("  wait         - wait/reap test");
             kprintln!("  usermode     - explicit usermode exec test");
+            kprintln!("  fork         - usermode fork + COW test");
             kprintln!("  regression   - kernel reserve + usermode regression");
             kprintln!("  safe         - run stable task tests (switch + wait)");
-            kprintln!("  all          - run all task tests (includes usermode)");
+            kprintln!("  all          - run all task tests (includes usermode + fork)");
             kprintln!("Note: `test task` defaults to `all`.");
             kprintln!();
             return;

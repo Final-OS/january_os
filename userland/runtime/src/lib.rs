@@ -6,6 +6,9 @@ pub const SYS_READ: usize = 0;
 pub const SYS_WRITE: usize = 1;
 pub const SYS_OPEN: usize = 2;
 pub const SYS_CLOSE: usize = 3;
+pub const SYS_MMAP: usize = 9;
+pub const SYS_WAIT4: usize = 61;
+pub const SYS_FORK: usize = 57;
 pub const SYS_GETCWD: usize = 79;
 pub const SYS_CHDIR: usize = 80;
 pub const SYS_GETDENTS64: usize = 217;
@@ -13,6 +16,10 @@ pub const SYS_EXECVE: usize = 59;
 pub const SYS_EXIT: usize = 60;
 
 pub const O_RDONLY: u32 = 0;
+pub const PROT_READ: u32 = 0x1;
+pub const PROT_WRITE: u32 = 0x2;
+pub const MAP_PRIVATE: u32 = 0x02;
+pub const MAP_ANONYMOUS: u32 = 0x20;
 
 #[inline(always)]
 unsafe fn raw_syscall6(
@@ -46,6 +53,24 @@ unsafe fn raw_syscall6(
 #[inline(always)]
 pub fn syscall3(nr: usize, arg0: usize, arg1: usize, arg2: usize) -> isize {
     unsafe { raw_syscall6(nr, arg0, arg1, arg2, 0, 0, 0) }
+}
+
+#[inline(always)]
+pub fn syscall4(nr: usize, arg0: usize, arg1: usize, arg2: usize, arg3: usize) -> isize {
+    unsafe { raw_syscall6(nr, arg0, arg1, arg2, arg3, 0, 0) }
+}
+
+#[inline(always)]
+pub fn syscall6(
+    nr: usize,
+    arg0: usize,
+    arg1: usize,
+    arg2: usize,
+    arg3: usize,
+    arg4: usize,
+    arg5: usize,
+) -> isize {
+    unsafe { raw_syscall6(nr, arg0, arg1, arg2, arg3, arg4, arg5) }
 }
 
 #[inline(always)]
@@ -84,6 +109,26 @@ pub fn close(fd: i32) -> isize {
 }
 
 #[inline]
+pub fn mmap(
+    addr: usize,
+    len: usize,
+    prot: u32,
+    flags: u32,
+    fd: usize,
+    offset: usize,
+) -> isize {
+    syscall6(
+        SYS_MMAP,
+        addr,
+        len,
+        prot as usize,
+        flags as usize,
+        fd,
+        offset,
+    )
+}
+
+#[inline]
 pub fn chdir(path: *const u8) -> isize {
     syscall1(SYS_CHDIR, path as usize)
 }
@@ -101,6 +146,22 @@ pub fn getdents64(fd: i32, dirp: *mut u8, count: usize) -> isize {
 #[inline]
 pub fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> isize {
     syscall3(SYS_EXECVE, path as usize, argv as usize, envp as usize)
+}
+
+#[inline]
+pub fn fork() -> isize {
+    syscall0(SYS_FORK)
+}
+
+#[inline]
+pub fn wait4(pid: i32, status: *mut i32, options: usize, rusage: *mut u8) -> isize {
+    syscall4(
+        SYS_WAIT4,
+        pid as usize,
+        status as usize,
+        options,
+        rusage as usize,
+    )
 }
 
 #[inline]

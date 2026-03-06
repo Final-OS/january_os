@@ -10,8 +10,9 @@ pub mod scheduler;
 pub mod task;
 
 pub use exec::{
-    build_elf_load_plan, preview_pt_load_mapping, rollback_exec_mappings, setup_initial_user_stack,
-    stage_pt_load_mappings, ExecLoadPlan, ExecMapPreview, ExecMappedPage, ExecMappedPageKind,
+    build_elf_load_plan, install_current_exec_vmas, preview_pt_load_mapping,
+    rollback_exec_mappings, setup_initial_user_stack, stage_pt_load_mappings, ExecLoadPlan,
+    ExecMapPreview, ExecMappedPage, ExecMappedPageKind,
 };
 pub use id::{ProcessId, TaskId};
 pub use manager::current_mm_ptr;

@@ -2,6 +2,7 @@
 
 mod buddy;
 mod dma_coherent_guard;
+mod fork_cow;
 mod heap;
 mod mmap;
 mod page_counter_guard;
@@ -43,6 +44,7 @@ pub fn run_with_filter(filter: Option<&str>) {
         None | Some("all") => {
             run_case("run case=swiotlb", swiotlb::run);
             run_case("run case=dma_coherent_guard", dma_coherent_guard::run);
+            run_case("run case=fork_cow", fork_cow::run);
             run_case("run case=slub", slub::run);
             run_case("run case=buddy", buddy::run);
             run_case("run case=page_counter_guard", page_counter_guard::run);
@@ -65,6 +67,10 @@ pub fn run_with_filter(filter: Option<&str>) {
         Some("dma_coherent_guard") => {
             mm_step("run case=dma_coherent_guard");
             dma_coherent_guard::run();
+        }
+        Some("fork_cow") => {
+            mm_step("run case=fork_cow");
+            fork_cow::run();
         }
         Some("buddy") => {
             mm_step("run case=buddy");
@@ -105,7 +111,7 @@ pub fn run_with_filter(filter: Option<&str>) {
         Some(name) => {
             error!("Unknown MM test: {}", name);
             kprintln!(
-                "Available MM tests: swiotlb, dma_coherent_guard, slub, buddy, page_counter_guard, status_readonly, pcp, heap, mmap, pt_ownership, pt_reclaim, vmalloc_heal"
+                "Available MM tests: swiotlb, dma_coherent_guard, fork_cow, slub, buddy, page_counter_guard, status_readonly, pcp, heap, mmap, pt_ownership, pt_reclaim, vmalloc_heal"
             );
         }
     }

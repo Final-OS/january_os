@@ -841,6 +841,10 @@ unsafe fn clone_user_present_pages(src: &Mm, dst: &mut Mm) -> bool {
             continue;
         };
         let pte_flags = info.flags.to_user_pte_flags();
+        let mut cow_pte_flags = pte_flags;
+        if !info.flags.is_shared() && info.flags.contains(VmFlags::MAYWRITE) {
+            cow_pte_flags &= !crate::mm::PTE_WRITABLE;
+        }
 
         while va < end_va {
             let Some(old_phys_raw) = src_pt.translate_addr(va) else {
@@ -861,28 +865,23 @@ unsafe fn clone_user_present_pages(src: &Mm, dst: &mut Mm) -> bool {
                     page.inc_mapcount();
                 }
             } else {
-                let new_page = match alloc_page(GFP_USER) {
-                    Some(p) => p,
-                    None => return false,
-                };
-                new_page.set_flag(PageFlags::UPTODATE);
-                if info.flags.is_anonymous() {
-                    new_page.set_flag(PageFlags::ANON);
-                }
-
-                let new_phys = page_to_pfn(new_page) * PAGE_SIZE;
-                ptr::copy_nonoverlapping(
-                    crate::mm::phys_to_virt(old_phys) as *const u8,
-                    crate::mm::phys_to_virt(new_phys) as *mut u8,
-                    PAGE_SIZE as usize,
-                );
-
-                if !dst_pt.map_page(va, new_phys, pte_flags) {
-                    free_page(new_page);
+                if !dst_pt.map_page(va, old_phys, cow_pte_flags) {
                     return false;
                 }
 
-                new_page.inc_mapcount();
+                if cow_pte_flags != pte_flags && !src_pt.map_page(va, old_phys, cow_pte_flags) {
+                    unsafe {
+                        let _ = dst_pt.unmap_page(va);
+                    }
+                    return false;
+                }
+
+                let pfn = old_phys / PAGE_SIZE;
+                if pfn < max_pfn() {
+                    let page = &*pfn_to_page(pfn);
+                    page.get();
+                    page.inc_mapcount();
+                }
             }
 
             va = va.saturating_add(PAGE_SIZE);

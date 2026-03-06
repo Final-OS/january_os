@@ -19,6 +19,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "forktest"
+version = "0.1.0"
+dependencies = [
+ "january_user_runtime",
+]
+
+[[package]]
 name = "january_user_coreutils"
 version = "0.1.0"
 dependencies = [

@@ -174,11 +174,11 @@ pub(crate) fn sys_clone(args: &SyscallArgs) -> SyscallRet
 - 支持 `CSIGNAL` 与 `CLONE_VFORK|CLONE_VM` 的最小子集。
 - 暂不支持 `CLONE_THREAD/CLONE_SETTLS/CLONE_*TID` 等线程共享语义；命中后返回 `-EINVAL`。
 - 暂不支持 `child_stack/ptid/ctid/tls` 非零参数；命中后返回 `-EINVAL`。
-- 目前子进程以最小内核线程形态创建，用于打通创建/退出/回收链路。
+- 子进程已可从当前 syscall 用户现场继续执行；普通 `fork` 走私有地址空间，`vfork` 继续共享父地址空间。
 
 #### sys_fork (57)
 
-`fork` 的最小可用语义，当前内部基于 `clone(SIGCHLD)` 路径。
+`fork` 当前内部基于 `clone(SIGCHLD)` 路径，子进程会从当前用户态 syscall 返回点继续执行，并对私有页建立真实 COW。
 
 ```rust
 pub(crate) fn sys_fork(_args: &SyscallArgs) -> SyscallRet
@@ -186,7 +186,7 @@ pub(crate) fn sys_fork(_args: &SyscallArgs) -> SyscallRet
 
 #### sys_vfork (58)
 
-`vfork` 的最小可用语义，当前内部基于 `clone(CLONE_VFORK|CLONE_VM|SIGCHLD)`，父进程会等待子进程释放执行权。
+`vfork` 当前内部基于 `clone(CLONE_VFORK|CLONE_VM|SIGCHLD)`，父进程会等待子进程释放执行权；地址空间仍与父进程共享。
 
 ```rust
 pub(crate) fn sys_vfork(_args: &SyscallArgs) -> SyscallRet
