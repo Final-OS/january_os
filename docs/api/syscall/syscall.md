@@ -1,78 +1,53 @@
-# Syscall (System Call) API
+# Syscall API
 
-系统调用子系统提供用户态程序与内核交互的接口，实现 Linux ABI 兼容。
+`syscall` 子系统现在只保留 ABI 壳层，不再承载文件系统、内存管理、进程管理的真实业务实现。
 
----
+## 当前组织
 
-## 系统调用机制
+- `kernel/src/syscall/`：统一参数结构、返回值编码、号表和跨架构分发接口
+- `kernel/src/syscall/arch/x86_64/`：x86_64 Linux ABI 编号表与号到组件入口的分发
+- `kernel/src/arch/x86_64/syscall/`：`syscall` 指令陷入入口、寄存器保存与返回路径
+- `kernel/src/fs/syscall/`：FS/FD/TTY/pipe/poll/select 相关 syscall-facing 入口
+- `kernel/src/mm/syscall/`：`mmap/munmap/mprotect/brk` 专属 ABI 入口
+- `kernel/src/task/syscall/`：`execve/fork/clone/wait4/kill/rt_sig*` 等进程与信号入口
 
-### syscall 指令入口
+## ABI 约定
 
-x86_64 Long Mode 使用 `syscall` 指令进入内核态，当前实现通过 `iretq` 返回用户态。
+x86_64 Long Mode 继续使用 Linux `syscall` 寄存器约定：
 
-**寄存器约定**:
-- `rax`: 系统调用号（输入）/ 返回值（输出）
-- `rdi`: 参数 0
-- `rsi`: 参数 1
-- `rdx`: 参数 2
-- `r10`: 参数 3
-- `r8`: 参数 4
-- `r9`: 参数 5
+- `rax`：系统调用号 / 返回值
+- `rdi`：参数 0
+- `rsi`：参数 1
+- `rdx`：参数 2
+- `r10`：参数 3
+- `r8`：参数 4
+- `r9`：参数 5
 
-**当前实现要点**:
-- BSP/AP 初始化阶段会写入 `STAR/LSTAR/SFMASK/EFER.SCE`。
-- `syscall_entry` 汇编入口会把寄存器参数组装后转发到统一 syscall 分发。
-- 返回路径当前使用 `iretq`（后续可继续收敛到 `sysretq`）。
+返回值仍使用 Linux errno 编码：成功返回非负值，失败返回 `-errno`。
 
----
-
-## 核心结构
-
-### SyscallArgs
-
-系统调用参数结构。
+## 核心接口
 
 ```rust
 pub struct SyscallArgs {
-    pub nr: usize,      // 系统调用号
-    pub arg0: usize,    // 参数 0
-    pub arg1: usize,    // 参数 1
-    pub arg2: usize,    // 参数 2
-    pub arg3: usize,    // 参数 3
-    pub arg4: usize,    // 参数 4
-    pub arg5: usize,    // 参数 5
+    pub nr: usize,
+    pub arg0: usize,
+    pub arg1: usize,
+    pub arg2: usize,
+    pub arg3: usize,
+    pub arg4: usize,
+    pub arg5: usize,
 }
-```
 
-### SyscallDef
-
-系统调用定义。
-
-```rust
 pub struct SyscallDef {
-    pub nr: usize,           // 系统调用号
-    pub name: &'static str,  // 系统调用名称
+    pub nr: usize,
+    pub name: &'static str,
 }
-```
 
-### SyscallHandler
+pub trait SyscallArch {
+    fn dispatch(&self, args: &SyscallArgs) -> SyscallRet;
+    fn syscall_table(&self) -> &'static [SyscallDef];
+}
 
-系统调用处理函数类型。
-
-```rust
-pub type SyscallHandler = fn(&SyscallArgs) -> SyscallRet;
-pub type SyscallRet = usize;
-```
-
----
-
-## 系统调用分发
-
-### dispatch
-
-分发系统调用到对应的处理函数。
-
-```rust
 pub fn dispatch(
     nr: usize,
     arg0: usize,
@@ -81,602 +56,44 @@ pub fn dispatch(
     arg3: usize,
     arg4: usize,
     arg5: usize,
-) -> SyscallRet
+) -> SyscallRet;
+
+pub fn syscall_table() -> &'static [SyscallDef];
 ```
 
-**参数**:
-- `nr`: 系统调用号
-- `arg0-arg5`: 系统调用参数
+## 组件分工
 
-**返回**: `SyscallRet` - 返回值或错误码
+### `fs::syscall`
 
----
+负责：`open/stat/lstat/fstat/read/write/close/lseek/dup/dup2/fcntl/chdir/getcwd/getdents64/pipe/pipe2/ioctl/poll/select`。
 
-## 错误码
+当前进一步拆为：
+- `kernel/src/fs/syscall/file.rs`：路径、FD、目录项与普通读写
+- `kernel/src/fs/syscall/pipe.rs`：pipe、pipe2、ioctl
+- `kernel/src/fs/syscall/poll.rs`：poll、select
 
-### 标准错误码
+### `mm::syscall`
 
-```rust
-pub const EBADF: i32 = 9;      // Bad file descriptor
-pub const ECHILD: i32 = 10;    // No child processes
-pub const ENOMEM: i32 = 12;    // Out of memory
-pub const EFAULT: i32 = 14;    // Bad address
-pub const EBUSY: i32 = 16;     // Resource busy
-pub const EINVAL: i32 = 22;    // Invalid argument
-pub const ENOSYS: i32 = 38;    // Function not implemented
-```
+负责：`mmap/munmap/mprotect/brk`。共享用户缓冲区/用户结构体/用户 C 字符串读写校验统一由 `kernel/src/uaccess.rs` 提供。
 
-### 错误处理
+### `task::syscall`
 
-```rust
-// 返回成功
-pub(crate) fn ok(ret: usize) -> usize {
-    ret
-}
+负责：`execve/getpid/getppid/gettid/clone/fork/vfork/getpgid/getpgrp/setpgid/setsid/kill/tkill/tgkill/wait4/exit/exit_group/rt_sig*`。
 
-// 返回错误
-pub(crate) fn err(errno: i32) -> usize {
-    (-(errno as isize)) as usize
-}
-```
+当前进一步拆为：
+- `kernel/src/task/syscall/exec.rs`：`execve` ABI 入口
+- `kernel/src/task/syscall/process.rs`：PID、进程组、clone/fork、kill、exit
+- `kernel/src/task/syscall/wait.rs`：`wait4` ABI 解码与结果写回
+- `kernel/src/task/syscall/signal.rs`：`rt_sig*` ABI 入口
 
----
+## 当前边界原则
 
-## 已实现的系统调用
+- `syscall` 只做 ABI 解码和组件分发
+- 真实内核语义落在 `fs/mm/task` 各自组件内
+- 架构相关实现只放在 `arch/<arch>` 路径下
 
-### 进程管理
+## 相关文档
 
-#### sys_getpid (39)
-
-获取当前进程 ID。
-
-```rust
-pub(crate) fn sys_getpid(_args: &SyscallArgs) -> SyscallRet
-```
-
-**返回**: 进程 ID 或错误码
-
-**示例**:
-```c
-// 用户态 C 代码
-pid_t pid = getpid();
-```
-
-#### sys_getppid (110)
-
-获取父进程 ID。
-
-```rust
-pub(crate) fn sys_getppid(_args: &SyscallArgs) -> SyscallRet
-```
-
-**返回**: 父进程 ID 或 0
-
-#### sys_gettid (186)
-
-获取线程 ID。
-
-```rust
-pub(crate) fn sys_gettid(_args: &SyscallArgs) -> SyscallRet
-```
-
-**返回**: 线程 ID 或错误码
-
-#### sys_clone (56)
-
-创建子进程（最小 Linux ABI 语义）。
-
-```rust
-pub(crate) fn sys_clone(args: &SyscallArgs) -> SyscallRet
-```
-
-**当前实现约束**:
-- 支持 `CSIGNAL` 与 `CLONE_VFORK|CLONE_VM` 的最小子集。
-- 暂不支持 `CLONE_THREAD/CLONE_SETTLS/CLONE_*TID` 等线程共享语义；命中后返回 `-EINVAL`。
-- 暂不支持 `child_stack/ptid/ctid/tls` 非零参数；命中后返回 `-EINVAL`。
-- 子进程已可从当前 syscall 用户现场继续执行；普通 `fork` 走私有地址空间，`vfork` 继续共享父地址空间。
-
-#### sys_fork (57)
-
-`fork` 当前内部基于 `clone(SIGCHLD)` 路径，子进程会从当前用户态 syscall 返回点继续执行，并对私有页建立真实 COW。
-
-```rust
-pub(crate) fn sys_fork(_args: &SyscallArgs) -> SyscallRet
-```
-
-#### sys_vfork (58)
-
-`vfork` 当前内部基于 `clone(CLONE_VFORK|CLONE_VM|SIGCHLD)`，父进程会等待子进程释放执行权；地址空间仍与父进程共享。
-
-```rust
-pub(crate) fn sys_vfork(_args: &SyscallArgs) -> SyscallRet
-```
-
-#### sys_execve (59)
-
-执行新程序映像（Batch 3 第三阶段）。
-
-```rust
-pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet
-```
-
-**当前行为**:
-- 已接入 `pathname/argv/envp` 的用户指针范围与字符串边界校验。
-- 支持 `EFAULT/E2BIG/ENAMETOOLONG/ENOENT` 等基础错误路径。
-- 已接入最小 ELF64 解析、`PT_LOAD` 规划与权限检查（含段重叠校验）。
-- 已接入 `PT_LOAD + user stack` 真实映射（按段 PTE 权限），并在失败路径执行回滚。
-- 映射目标页若已存在映射，返回 `-EBUSY`（避免覆盖现有地址空间）。
-- 已接入用户态 `iretq` 入口帧构建骨架（`rip/rsp/cs/ss/rflags`）。
-- 当前未接入可执行镜像加载后端：`sys_execve` 在加载入口返回 `-ENOENT`。
-- ELF 解析、映射规划与用户态切换代码已保留，待文件系统镜像加载后端接入后启用。
-
-#### sys_getpgid (121) / sys_getpgrp (111)
-
-获取进程组 ID。
-
-```rust
-pub(crate) fn sys_getpgid(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_getpgrp(_args: &SyscallArgs) -> SyscallRet
-```
-
-#### sys_setpgid (109) / sys_setsid (112)
-
-设置进程组和会话（最小语义）。
-
-```rust
-pub(crate) fn sys_setpgid(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_setsid(_args: &SyscallArgs) -> SyscallRet
-```
-
-#### sys_kill (62) / sys_tkill (200) / sys_tgkill (234)
-
-发送信号（当前支持 `0/SIGCHLD/SIGTERM/SIGKILL/SIGSTOP/SIGCONT`）。
-
-```rust
-pub(crate) fn sys_kill(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_tkill(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_tgkill(args: &SyscallArgs) -> SyscallRet
-```
-
-**注意**:
-- `SIGSTOP/SIGCONT` 会驱动进程停止/继续事件，并可由 `wait4 + WUNTRACED/WCONTINUED` 观测。
-- `SIGTERM/SIGKILL` 走进程退出路径并进入 `Zombie`，随后可由 `wait4` 回收。
-
-#### sys_exit (60)
-
-退出当前任务。
-
-```rust
-pub(crate) fn sys_exit(args: &SyscallArgs) -> SyscallRet
-```
-
-**参数**:
-- `arg0`: 退出码
-
-**示例**:
-```c
-// 用户态 C 代码
-exit(0);
-```
-
-#### sys_exit_group (231)
-
-退出当前进程组。
-
-```rust
-pub(crate) fn sys_exit_group(args: &SyscallArgs) -> SyscallRet
-```
-
-**参数**:
-- `arg0`: 退出码
-
-#### sys_wait4 (61)
-
-等待子进程退出（增强最小实现）。
-
-```rust
-pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet
-```
-
-**参数**:
-- `arg0`: 进程过滤
-  - `> 0`: 等待指定 PID
-  - `-1`: 等待任意子进程
-  - `0`: 等待“同进程组”子进程
-  - `< -1`: 等待指定进程组（`abs(arg0)`）
-- `arg1`: 状态指针
-- `arg2`: 选项
-- `arg3`: rusage 指针
-
-**返回**: 子进程 PID 或错误码
-
-**注意**:
-- 若 `arg1 != 0`，内核会写入 wait status：
-  - 正常退出：`(exit_code & 0xff) << 8`
-  - 停止事件（`WUNTRACED`）：`((signal & 0xff) << 8) | 0x7f`
-  - 继续事件（`WCONTINUED`）：`0xffff`
-- 若 `arg3 != 0`，内核会写入 `rusage`（当前基于任务运行时 tick + 上下文切换计数聚合）。
-- 支持 `WNOHANG`（`arg2 & 0x1`）；若有匹配子进程但尚无可报告事件，返回 `0`。
-- 支持 `WUNTRACED/WCONTINUED`：可分别报告子进程停止/继续事件。
-- 支持 `__WCLONE/__WALL`：按 Linux 语义切换 clone/non-clone 子进程匹配范围。
-- 支持 `__WNOTHREAD`：仅等待“当前线程创建的子进程”；未设置时可等待同进程内其他线程创建的子进程。
-- 若不存在匹配子进程，返回 `-ECHILD`。
-- 若未设置 `WNOHANG` 且子进程尚未退出，当前实现采用调度循环等待（协作式阻塞）。
-- 非上述已知选项位返回 `-EINVAL`。
-
-### I/O 操作
-
-#### sys_open (2) / sys_close (3)
-
-打开或关闭文件描述符。
-
-```rust
-pub(crate) fn sys_open(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_close(args: &SyscallArgs) -> SyscallRet
-```
-
-**当前实现约束**:
-- `open` 当前只接受只读模式（`O_RDONLY`）；其他访问模式返回 `-EINVAL`。
-- 路径会进行用户指针和长度校验（`PATH_MAX=4096`）。
-
-#### sys_read (0) / sys_write (1)
-
-对文件描述符进行读写。
-
-```rust
-pub(crate) fn sys_read(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet
-```
-
-**当前行为**:
-- `read/write` 会校验用户缓冲区地址范围。
-- `read` 对阻塞 FD 采用协作式调度等待；非阻塞 FD 命中 `EAGAIN` 直接返回。
-- `write` 对 `fd=1/2` 走控制台输出；其他 FD 走 VFS 后端。
-
-#### sys_stat (4) / sys_fstat (5) / sys_lstat (6)
-
-查询路径或文件描述符元数据。
-
-```rust
-pub(crate) fn sys_stat(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_fstat(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_lstat(args: &SyscallArgs) -> SyscallRet
-```
-
-**说明**:
-- 当前返回 Linux 风格 `stat` 结构子集，时间戳字段为默认值。
-- `lstat` 当前复用 `stat` 路径语义（未区分符号链接）。
-
-#### sys_poll (7) / sys_select (23)
-
-多路复用等待。
-
-```rust
-pub(crate) fn sys_poll(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_select(args: &SyscallArgs) -> SyscallRet
-```
-
-**当前实现约束**:
-- `poll` 支持基础事件集合（`POLLIN/POLLOUT/POLLERR/POLLHUP/POLLNVAL`），并支持超时轮询。
-- `select` 支持读/写集合，`exceptfds` 当前固定清零返回。
-
-#### sys_pipe (22) / sys_pipe2 (293)
-
-创建管道并返回读写 FD。
-
-```rust
-pub(crate) fn sys_pipe(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_pipe2(args: &SyscallArgs) -> SyscallRet
-```
-
-#### sys_ioctl (16)
-
-设备控制操作（当前为最小子集）。
-
-```rust
-pub(crate) fn sys_ioctl(args: &SyscallArgs) -> SyscallRet
-```
-
-**当前支持**:
-- `TIOCGWINSZ`
-- `TCGETS`
-- `FIONBIO`
-
-未支持请求返回 `-ENOTTY`。
-
-### 内存映射操作
-
-#### sys_mmap (9) / sys_munmap (11) / sys_mprotect (10) / sys_brk (12)
-
-用户地址空间映射和保护控制。
-
-```rust
-pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_munmap(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_mprotect(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_brk(args: &SyscallArgs) -> SyscallRet
-```
-
-**当前行为**:
-- `mmap` 支持匿名映射和基于 FD 的文件映射（最小语义），并接受页对齐的非零 `offset`。
-- `mmap` 当前显式拒绝 `MAP_LOCKED` / `MAP_HUGETLB`，直到对应内核能力落地。
-- `munmap` 支持按页对齐区域解除映射并回收页。
-- `mprotect` 支持已映射区域权限更新并同步页表标志；范围内遇到空洞时会回滚已计划的 VMA 拆分。
-- `brk` 支持进程堆边界查询与增长。
-
-内存映射细节见 [mmap API](../mm/mmap.md)。
-
-### 信号接口
-
-#### sys_rt_sigaction (13) / sys_rt_sigprocmask (14) / sys_rt_sigreturn (15)
-
-```rust
-pub(crate) fn sys_rt_sigaction(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_rt_sigprocmask(args: &SyscallArgs) -> SyscallRet
-pub(crate) fn sys_rt_sigreturn(args: &SyscallArgs) -> SyscallRet
-```
-
-**当前行为**:
-- `rt_sigaction`/`rt_sigprocmask` 已接入最小用户态掩码与处理函数表维护。
-- `rt_sigreturn` 当前返回 `-ENOSYS`（尚未实现完整信号返回帧恢复）。
-
----
-
-## 系统调用表
-
-### Linux ABI 系统调用
-
-完整的 Linux x86_64 系统调用表（300+ 系统调用）。
-
-**部分系统调用列表**:
-
-| 号码 | 名称 | 状态 |
-|------|------|------|
-| 0 | read | ⚠️ 已实现（基础读路径） |
-| 1 | write | ⚠️ 已实现（控制台 + VFS 后端） |
-| 2 | open | ⚠️ 已实现（当前仅 O_RDONLY） |
-| 3 | close | ✅ 已实现 |
-| 4 | stat | ⚠️ 已实现（基础元数据） |
-| 5 | fstat | ⚠️ 已实现（基础元数据） |
-| 6 | lstat | ⚠️ 已实现（当前同 stat 语义） |
-| 7 | poll | ⚠️ 已实现（基础事件子集） |
-| 9 | mmap | ⚠️ 已实现（最小语义） |
-| 10 | mprotect | ⚠️ 已实现（页级权限更新） |
-| 11 | munmap | ⚠️ 已实现（页级解除映射） |
-| 12 | brk | ⚠️ 已实现（基础堆边界管理） |
-| 13 | rt_sigaction | ⚠️ 已实现（最小子集） |
-| 14 | rt_sigprocmask | ⚠️ 已实现（最小子集） |
-| 15 | rt_sigreturn | ❌ 未实现（返回 -ENOSYS） |
-| 16 | ioctl | ⚠️ 已实现（请求子集） |
-| 22 | pipe | ⚠️ 已实现 |
-| 23 | select | ⚠️ 已实现（read/write 集） |
-| 39 | getpid | ✅ 已实现 |
-| 56 | clone | ⚠️ 最小实现（受限 flags） |
-| 57 | fork | ⚠️ 最小实现 |
-| 58 | vfork | ⚠️ 最小实现 |
-| 59 | execve | ⚠️ 参数校验+真实映射回滚（当前返回 -ENOENT） |
-| 60 | exit | ✅ 已实现 |
-| 61 | wait4 | ✅ 增强实现 |
-| 62 | kill | ⚠️ 子集实现 |
-| 109 | setpgid | ⚠️ 最小实现 |
-| 110 | getppid | ✅ 已实现 |
-| 111 | getpgrp | ✅ 已实现 |
-| 112 | setsid | ⚠️ 最小实现 |
-| 121 | getpgid | ✅ 已实现 |
-| 186 | gettid | ✅ 已实现 |
-| 200 | tkill | ⚠️ 子集实现 |
-| 231 | exit_group | ✅ 已实现 |
-| 234 | tgkill | ⚠️ 子集实现 |
-| 293 | pipe2 | ⚠️ 已实现 |
-
-### 获取系统调用表
-
-```rust
-pub fn syscall_table() -> &'static [SyscallDef]
-```
-
-**返回**: 系统调用定义数组
-
----
-
-## 使用示例
-
-### 内核态调用系统调用
-
-```rust
-use crate::syscall;
-
-// 调用 getpid
-let pid = syscall::dispatch(39, 0, 0, 0, 0, 0, 0);
-println!("PID: {}", pid);
-
-// 调用 exit
-syscall::dispatch(60, 0, 0, 0, 0, 0, 0);
-```
-
-### 用户态调用系统调用（未来）
-
-```c
-// C 代码示例
-#include <unistd.h>
-#include <sys/types.h>
-
-int main() {
-    pid_t pid = getpid();
-    printf("My PID: %d\n", pid);
-
-    pid_t ppid = getppid();
-    printf("Parent PID: %d\n", ppid);
-
-    exit(0);
-}
-```
-
-### 汇编调用系统调用
-
-```asm
-; x86_64 汇编
-mov rax, 39        ; sys_getpid
-syscall            ; 执行系统调用
-; rax 现在包含 PID
-```
-
----
-
-## 实现新的系统调用
-
-### 步骤
-
-1. **定义处理函数**
-
-```rust
-// kernel/src/syscall/handlers/process.rs
-pub(crate) fn sys_my_syscall(args: &SyscallArgs) -> SyscallRet {
-    let arg0 = args.arg0;
-    let arg1 = args.arg1;
-
-    // 实现系统调用逻辑
-    // ...
-
-    ok(result)
-}
-```
-
-2. **添加到系统调用表**
-
-```rust
-// kernel/src/syscall/arch/x86_64/table.rs
-pub const SYSCALL_TABLE: &[SyscallDef] = &[
-    // ...
-    SyscallDef { nr: 999, name: "my_syscall" },
-];
-```
-
-3. **添加到分发器**
-
-```rust
-// kernel/src/syscall/arch/x86_64/mod.rs
-impl SyscallArch for X86_64Syscall {
-    fn dispatch(&self, args: &SyscallArgs) -> SyscallRet {
-        match args.nr {
-            // ...
-            999 => handlers::process::sys_my_syscall(args),
-            _ => err(ENOSYS),
-        }
-    }
-}
-```
-
----
-
-## 参数验证
-
-### 用户指针验证
-
-```rust
-// 验证用户态指针是否有效
-fn validate_user_ptr<T>(ptr: *const T) -> Result<(), i32> {
-    if ptr.is_null() {
-        return Err(EFAULT);
-    }
-
-    // 检查地址是否在用户空间
-    let addr = ptr as usize;
-    if addr >= KERNEL_BASE {
-        return Err(EFAULT);
-    }
-
-    Ok(())
-}
-```
-
-### 字符串验证
-
-```rust
-// 从用户态读取字符串
-fn read_user_string(ptr: *const u8, max_len: usize) -> Result<String, i32> {
-    validate_user_ptr(ptr)?;
-
-    // 读取字符串
-    // ...
-
-    Ok(string)
-}
-```
-
----
-
-## 性能考虑
-
-### 系统调用开销
-
-- **syscall/sysret**: ~100 cycles
-- **参数传递**: 寄存器传递，无额外开销
-- **上下文切换**: 保存/恢复寄存器
-
-### 优化建议
-
-1. **批量操作**: 使用批量系统调用减少调用次数
-2. **缓存**: 缓存频繁访问的数据
-3. **vDSO**: 将简单系统调用映射到用户空间
-
----
-
-## 安全性
-
-### 权限检查
-
-```rust
-// 检查当前进程是否有权限
-fn check_permission(required: Permission) -> Result<(), i32> {
-    let current = current_task().ok_or(EINVAL)?;
-    let task = current.lock();
-
-    if !task.has_permission(required) {
-        return Err(EPERM);
-    }
-
-    Ok(())
-}
-```
-
-### 参数验证
-
-- 验证所有用户态指针
-- 检查参数范围
-- 防止整数溢出
-- 防止路径遍历
-
----
-
-## 限制和注意事项
-
-1. **当前限制**
-   - 只支持内核态调用
-   - 大部分系统调用未实现
-   - 缺少参数验证
-   - 缺少权限检查
-
-2. **未来改进**
-   - 实现用户态支持
-   - 完善系统调用实现
-   - 添加参数验证
-   - 实现权限系统
-
-3. **调试建议**
-   - 使用 `strace` 跟踪系统调用（未来）
-   - 记录系统调用日志
-   - 检查返回值
-
----
-
-## 相关 API
-
-- [Task API](../task/task.md) - 任务管理
-- [Process API](../task/process.md) - 进程管理
-- [File API](../fs/file.md) - 文件操作（未来）
-- [Memory API](../mm/mmap.md) - 内存映射（未来）
-
----
-
-**最后更新**: 2026-02-08
+- [FS File API](../fs/file.md)
+- [MM mmap API](../mm/mmap.md)
+- [Task Process API](../task/process.md)

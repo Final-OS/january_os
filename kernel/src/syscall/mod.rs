@@ -1,30 +1,23 @@
 //! 系统调用抽象层
 
+pub mod abi;
+pub mod dispatch;
 pub mod arch;
-pub(crate) mod handlers;
+pub mod table;
+pub mod uaccess;
+
+use alloc::format;
+use alloc::string::String;
+
+use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
 
 pub type SyscallRet = usize;
 pub type SyscallHandler = fn(&SyscallArgs) -> SyscallRet;
 
-pub const EPERM: i32 = 1;
-pub const ENOENT: i32 = 2;
-pub const ESRCH: i32 = 3;
-pub const E2BIG: i32 = 7;
-pub const EBADF: i32 = 9;
-pub const EAGAIN: i32 = 11;
-pub const ECHILD: i32 = 10;
-pub const ENOMEM: i32 = 12;
-pub const EFAULT: i32 = 14;
-pub const EBUSY: i32 = 16;
-pub const ENOTDIR: i32 = 20;
-pub const EISDIR: i32 = 21;
-pub const EINVAL: i32 = 22;
-pub const ENOTTY: i32 = 25;
-pub const ESPIPE: i32 = 29;
-pub const EPIPE: i32 = 32;
-pub const ERANGE: i32 = 34;
-pub const ENAMETOOLONG: i32 = 36;
-pub const ENOSYS: i32 = 38;
+pub use crate::errno::{
+    E2BIG, EAGAIN, EBADF, EBUSY, ECHILD, EFAULT, EINVAL, EISDIR, ENAMETOOLONG, ENOENT, ENOMEM,
+    ENOSYS, ENOTDIR, ENOTTY, EPIPE, EPERM, ERANGE, ESRCH, ESPIPE,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SyscallArgs {
@@ -70,6 +63,13 @@ pub trait SyscallArch {
     fn syscall_table(&self) -> &'static [SyscallDef];
 }
 
+pub const COMPONENT: ComponentDescriptor = ComponentDescriptor {
+    id: "syscall",
+    stage: ComponentStage::Core,
+    deps: &["interrupt", "task", "fs"],
+    summary: "system call abi, table and subsystem dispatch",
+};
+
 #[inline]
 pub(crate) fn ok(ret: usize) -> usize {
     ret
@@ -90,13 +90,38 @@ pub fn dispatch(
     arg5: usize,
 ) -> SyscallRet {
     let args = SyscallArgs::new(nr, arg0, arg1, arg2, arg3, arg4, arg5);
-    arch::interface().dispatch(&args)
+    dispatch::dispatch(&args)
 }
 
 pub fn syscall_table() -> &'static [SyscallDef] {
     arch::interface().syscall_table()
 }
 
-pub fn wake_stdin_waiters_if_ready() -> usize {
-    handlers::wake_stdin_waiters_if_ready()
+pub(crate) fn sys_ni(_args: &SyscallArgs) -> SyscallRet {
+    err(ENOSYS)
+}
+
+pub fn init_early() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_core() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_late() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn stats() -> ComponentStats {
+    ComponentStats::ready()
+}
+
+pub fn dump_state() -> String {
+    format!(
+        "component={} state={:?} table_entries={}",
+        COMPONENT.id,
+        stats().state,
+        syscall_table().len(),
+    )
 }

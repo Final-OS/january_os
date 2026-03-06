@@ -1,4 +1,5 @@
-use crate::syscall::{SyscallArch, SyscallArgs, SyscallDef, SyscallRet, ENOSYS};
+use crate::errno::ENOSYS;
+use crate::syscall::{SyscallArch, SyscallArgs, SyscallDef, SyscallRet};
 
 pub struct Riscv64SyscallArch;
 

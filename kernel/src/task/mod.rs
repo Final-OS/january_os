@@ -6,7 +6,13 @@ pub mod manager;
 pub mod process;
 pub mod processor;
 pub mod scheduler;
+pub mod syscall;
 pub mod task;
+
+use alloc::format;
+use alloc::string::String;
+
+use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
 
 pub use process::exec::{
     build_elf_load_plan, install_current_exec_vmas, preview_pt_load_mapping,
@@ -45,6 +51,13 @@ pub struct TaskInitReport {
     pub process_runtime_ready: bool,
 }
 
+pub const COMPONENT: ComponentDescriptor = ComponentDescriptor {
+    id: "task",
+    stage: ComponentStage::Late,
+    deps: &["fs", "timer", "memory"],
+    summary: "task, process, scheduler, wait and signal runtime",
+};
+
 pub fn init_runtime() -> TaskInitReport {
     crate::info!("[TASK] Initializing Task subsystem...");
     manager::init();
@@ -59,6 +72,33 @@ pub fn init_runtime() -> TaskInitReport {
 /// 初始化任务子系统
 pub fn init() {
     let _ = init_runtime();
+}
+
+pub fn init_early() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_core() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_late() -> crate::error::KernelResult<()> {
+    let _ = init_runtime();
+    Ok(())
+}
+
+pub fn stats() -> ComponentStats {
+    ComponentStats::ready()
+}
+
+pub fn dump_state() -> String {
+    format!(
+        "component={} state={:?} current_pid={:?} current_tid={:?}",
+        COMPONENT.id,
+        stats().state,
+        current_pid(),
+        current_tid(),
+    )
 }
 
 /// 获取当前任务的进程 ID

@@ -13,18 +13,18 @@ fn exec_current_user_program(path: &str) -> Result<(), i32> {
     crate::info!("[initrd] launching {}", path);
     let pid = task::current_pid()
         .map(|pid| pid.0)
-        .ok_or(crate::syscall::ESRCH)?;
+        .ok_or(crate::errno::ESRCH)?;
     let image = fs::read_all_for_pid(pid, path)?;
     let load_plan = task::build_elf_load_plan(image.as_slice())?;
 
     let staged_mappings = task::stage_pt_load_mappings(image.as_slice(), &load_plan)?;
     if task::record_current_exec_request(path, 1, 0).is_none() {
         task::rollback_exec_mappings(&staged_mappings);
-        return Err(crate::syscall::ESRCH);
+        return Err(crate::errno::ESRCH);
     }
 
     if task::set_current_exec_mappings(staged_mappings).is_none() {
-        return Err(crate::syscall::ESRCH);
+        return Err(crate::errno::ESRCH);
     }
 
     let stack_rsp =
@@ -84,7 +84,7 @@ pub(super) fn try_run_user_init(path: &str) -> bool {
 pub(super) fn run_scheduler_loop() -> ! {
     loop {
         drivers::input::poll();
-        let _ = crate::syscall::wake_stdin_waiters_if_ready();
+        let _ = crate::fs::wake_stdin_waiters_if_ready();
         task::scheduler::schedule();
         interrupt::halt_with_interrupts();
     }

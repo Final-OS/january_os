@@ -206,7 +206,7 @@ pub fn current_fork_return_frame() -> Option<crate::task::arch::ForkReturnFrame>
 #[unsafe(no_mangle)]
 extern "C" fn syscall_dispatch_from_asm(frame: *const SavedSyscallFrame) -> usize {
     let Some(frame) = (unsafe { frame.as_ref() }) else {
-        return (-(crate::syscall::EINVAL as isize)) as usize;
+        return (-(crate::errno::EINVAL as isize)) as usize;
     };
 
     let idx = syscall_slot_index_current_cpu();

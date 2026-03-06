@@ -4,7 +4,10 @@
 
 pub mod backing;
 pub mod runtime;
+pub mod syscall;
 pub mod vfs;
+
+use alloc::format;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
@@ -13,7 +16,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::sync::Mutex;
-use crate::syscall::{E2BIG, EAGAIN, EBADF, EINVAL, EISDIR, ENOENT, ENOTDIR, EPIPE, ESPIPE};
+use crate::errno::{E2BIG, EAGAIN, EBADF, EINVAL, EISDIR, ENOENT, ENOTDIR, EPIPE, ESPIPE};
+use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
 
 const FIRST_USER_FD: i32 = 3;
 const O_CLOEXEC: u32 = 0o2000000;
@@ -35,6 +39,13 @@ const POLLNVAL: i16 = 0x0020;
 const DT_UNKNOWN: u8 = 0;
 const DT_DIR: u8 = 4;
 const DT_REG: u8 = 8;
+
+pub const COMPONENT: ComponentDescriptor = ComponentDescriptor {
+    id: "fs",
+    stage: ComponentStage::Late,
+    deps: &["memory", "timer"],
+    summary: "vfs, fd tables, mounts, pipes and initramfs runtime",
+};
 
 #[derive(Clone)]
 struct DirOpenFile {
@@ -1206,4 +1217,34 @@ pub fn mmap_release_backing(backing_id: u64) {
 
 pub fn mmap_copy_page(backing_id: u64, file_offset: usize, out: &mut [u8]) -> Result<usize, i32> {
     FS_STATE.lock().copy_mmap_page(backing_id, file_offset, out)
+}
+
+pub fn wake_stdin_waiters_if_ready() -> usize {
+    syscall::wake_stdin_waiters_if_ready()
+}
+
+pub fn init_early() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_core() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_late(initramfs: Option<(u64, u64)>) -> crate::error::KernelResult<FsInitReport> {
+    Ok(init_runtime(initramfs))
+}
+
+pub fn stats() -> ComponentStats {
+    ComponentStats::ready()
+}
+
+pub fn dump_state() -> String {
+    let cwd_entries = FS_STATE.lock().cwd.len();
+    format!(
+        "component={} state={:?} cwd_entries={} stdin_waiters_wakeup_ready=true",
+        COMPONENT.id,
+        stats().state,
+        cwd_entries,
+    )
 }

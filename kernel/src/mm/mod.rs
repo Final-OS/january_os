@@ -5,6 +5,11 @@
 //! # 组件概览
 //! ... (omitted docs)
 
+use alloc::format;
+use alloc::string::String;
+
+use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
+
 // ============================================================================
 // 模块声明
 // ============================================================================
@@ -20,6 +25,7 @@ pub mod vm;
 // 分配器 (直接放在 mm 根目录下)
 pub mod heap;
 pub mod slub;
+pub mod syscall;
 pub mod vmalloc;
 
 // IOMMU
@@ -111,3 +117,41 @@ pub use setup::{
     finish_mm_init, init_buddy_system, init_memblock, init_slub, init_stage, MemoryRegionInfo,
     MmInitStage,
 };
+
+pub const COMPONENT: ComponentDescriptor = ComponentDescriptor {
+    id: "mm",
+    stage: ComponentStage::Core,
+    deps: &["mm_layout"],
+    summary: "memblock, buddy, slub, vm, vmalloc and iommu runtime",
+};
+
+pub fn init_early() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_core() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn init_late() -> crate::error::KernelResult<()> {
+    Ok(())
+}
+
+pub fn stats() -> ComponentStats {
+    ComponentStats::ready()
+}
+
+pub fn dump_state() -> String {
+    let report = component_report();
+    format!(
+        "component={} state={:?} levels={} va_bits={} direct_map=[{:#x},{:#x}) vmalloc=[{:#x},{:#x})",
+        COMPONENT.id,
+        stats().state,
+        report.page_levels,
+        report.va_bits,
+        report.direct_map_start,
+        report.direct_map_end,
+        report.vmalloc_start,
+        report.vmalloc_end,
+    )
+}

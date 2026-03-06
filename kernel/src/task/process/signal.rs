@@ -1,6 +1,6 @@
 use alloc::{vec, vec::Vec};
 
-use crate::syscall::{EINVAL, ESRCH};
+use crate::errno::{EINVAL, ESRCH};
 use crate::task;
 
 const SIGCHLD: i32 = 17;

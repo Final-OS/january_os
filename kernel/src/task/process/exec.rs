@@ -11,7 +11,7 @@ use core::cmp;
 use core::mem::size_of;
 
 use crate::mm;
-use crate::syscall::{E2BIG, EBUSY, EFAULT, EINVAL, ENOENT, ENOMEM, ESRCH};
+use crate::errno::{E2BIG, EBUSY, EFAULT, EINVAL, ENOENT, ENOMEM, ESRCH};
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELF_CLASS_64: u8 = 2;

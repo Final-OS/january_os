@@ -60,15 +60,15 @@ pub enum FsError {
 impl FsError {
     pub const fn errno(self) -> i32 {
         match self {
-            FsError::NotFound => crate::syscall::ENOENT,
-            FsError::NotDirectory => crate::syscall::ENOTDIR,
-            FsError::IsDirectory => crate::syscall::EISDIR,
-            FsError::InvalidInput => crate::syscall::EINVAL,
-            FsError::PermissionDenied => crate::syscall::EPERM,
-            FsError::AlreadyExists => crate::syscall::EBUSY,
-            FsError::Busy => crate::syscall::EBUSY,
-            FsError::NotSupported => crate::syscall::ENOSYS,
-            FsError::Io => crate::syscall::EINVAL,
+            FsError::NotFound => crate::errno::ENOENT,
+            FsError::NotDirectory => crate::errno::ENOTDIR,
+            FsError::IsDirectory => crate::errno::EISDIR,
+            FsError::InvalidInput => crate::errno::EINVAL,
+            FsError::PermissionDenied => crate::errno::EPERM,
+            FsError::AlreadyExists => crate::errno::EBUSY,
+            FsError::Busy => crate::errno::EBUSY,
+            FsError::NotSupported => crate::errno::ENOSYS,
+            FsError::Io => crate::errno::EINVAL,
         }
     }
 }

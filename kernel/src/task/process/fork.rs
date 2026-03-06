@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::sync::Mutex;
-use crate::syscall::{EINVAL, ENOMEM, ESRCH};
+use crate::errno::{EINVAL, ENOMEM, ESRCH};
 use crate::task;
 use crate::task::task::Task;
 

@@ -1,40 +1,36 @@
 # mmap API
 
-本文档描述用户态内存映射相关接口的当前实现与约束。
+用户态内存映射相关 syscall-facing 入口现在归 `MM` 组件所有，实现在 `kernel/src/mm/syscall/`。
 
-## 目标能力
-
-- `mmap`：建立用户虚拟地址到物理页/文件页的映射
-- `munmap`：解除映射并回收资源
-- `mprotect`：调整已有映射区域访问权限
-- `brk`：管理进程堆区边界
-
-## 关键接口（当前）
+## 当前入口
 
 ```rust
-pub fn sys_mmap(args: &SyscallArgs) -> SyscallRet;
-pub fn sys_munmap(args: &SyscallArgs) -> SyscallRet;
-pub fn sys_mprotect(args: &SyscallArgs) -> SyscallRet;
-pub fn sys_brk(args: &SyscallArgs) -> SyscallRet;
-pub fn do_mmap(mm: &mut MmStruct, req: &MmapRequest) -> Result<u64, MmError>;
-pub fn do_munmap(mm: &mut MmStruct, addr: u64, len: u64) -> Result<(), MmError>;
+pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet;
+pub(crate) fn sys_munmap(args: &SyscallArgs) -> SyscallRet;
+pub(crate) fn sys_mprotect(args: &SyscallArgs) -> SyscallRet;
+pub(crate) fn sys_brk(args: &SyscallArgs) -> SyscallRet;
 ```
 
-## 当前实现约束
+## 组件职责
 
-- `mmap`:
-  - 仅接受 `MAP_SHARED/MAP_PRIVATE` 二选一；非法组合返回 `-EINVAL`。
-  - 支持匿名映射与 FD 映射的最小路径；`offset` 可为任意页对齐值。
-  - `MAP_LOCKED` / `MAP_HUGETLB` 当前显式返回 `-EINVAL`，避免误报“成功但未生效”。
-  - `MAP_FIXED` 命中已有映射时会先执行重叠区域拆分与回收。
-- `munmap`:
-  - 要求起始地址页对齐；长度会向上页对齐后处理。
-  - 仅处理用户空间区间，越界返回错误。
-- `mprotect`:
-  - 对指定区间执行 VMA 切分、权限更新与页表标志同步。
-  - 失败时回滚已计划的 VMA 切分，避免留下半更新的地址空间元数据。
-- `brk`:
-  - 支持查询当前 break（`arg0=0`）和按策略扩展/收缩堆边界。
+- `kernel/src/uaccess.rs`：跨组件共享的用户态地址范围校验、结构体/整数/C 字符串读写基础设施
+- `kernel/src/mm/syscall/txn.rs`：VMA/PTE 事务、回滚与 backing 调整
+- `kernel/src/mm/syscall/addr.rs`：mmap 地址选择、FD 解析和 unmap 区间收集
+- `kernel/src/mm/syscall/mmap.rs`：`mmap` / `munmap` ABI 入口
+- `kernel/src/mm/syscall/protect.rs`：`brk` / `mprotect` ABI 入口
+
+- `sys_mmap`：解析 Linux ABI 参数，建立匿名映射或文件后备映射
+- `sys_munmap`：执行区间拆分、取消映射与页回收
+- `sys_mprotect`：执行 VMA 切分、权限更新与页表标志同步
+- `sys_brk`：管理当前进程堆区边界
+- `kernel/src/mm/syscall/`：仅承载 `mmap/munmap/mprotect/brk` ABI 入口，不再向其他组件暴露共享 `uaccess`
+
+## 当前约束
+
+- `mmap` 仅接受 `MAP_SHARED/MAP_PRIVATE` 二选一
+- `MAP_LOCKED` / `MAP_HUGETLB` 当前返回 `-EINVAL`
+- `mprotect` 仍是最小可用实现，语义覆盖未完全补齐
+- `brk` 支持查询与基础扩缩容策略
 
 ## 相关文档
 
