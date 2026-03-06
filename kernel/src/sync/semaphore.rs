@@ -296,7 +296,7 @@ impl core::fmt::Debug for BoundedSemaphore {
 #[inline]
 fn wait_for_permit() {
     if crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some() {
-        crate::task::scheduler::schedule();
+        crate::task::sched::schedule();
     } else {
         core::hint::spin_loop();
     }

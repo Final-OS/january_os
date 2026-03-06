@@ -120,7 +120,7 @@ pub(crate) fn sys_setpgid(args: &SyscallArgs) -> SyscallRet {
 
     if new_pgid != target_pid {
         let group_exists = task::find_process_by_pid(new_pgid).is_some()
-            || !task::manager::process_ids_by_pgid(new_pgid).is_empty();
+            || !task::runtime::manager::process_ids_by_pgid(new_pgid).is_empty();
         if !group_exists {
             return err(EPERM);
         }
@@ -154,7 +154,7 @@ pub(crate) fn sys_setsid(_args: &SyscallArgs) -> SyscallRet {
         return err(EPERM);
     }
 
-    let conflicting_group = task::manager::process_ids_by_pgid(caller_pid)
+    let conflicting_group = task::runtime::manager::process_ids_by_pgid(caller_pid)
         .into_iter()
         .any(|pid| pid != caller_pid);
     if conflicting_group {
@@ -205,7 +205,7 @@ pub(crate) fn sys_kill(args: &SyscallArgs) -> SyscallRet {
     }
 
     if need_schedule {
-        task::scheduler::schedule();
+        task::sched::schedule();
     }
 
     ok(0)
@@ -222,7 +222,7 @@ pub(crate) fn sys_tkill(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => return err(errno),
     };
 
-    let Some(target_task) = task::manager::find_task_by_tid(task::TaskId(raw_tid as usize)) else {
+    let Some(target_task) = task::find_task_by_tid(task::TaskId(raw_tid as usize)) else {
         return err(ESRCH);
     };
     let target_pid = target_task.lock().pid;
@@ -230,7 +230,7 @@ pub(crate) fn sys_tkill(args: &SyscallArgs) -> SyscallRet {
     match task::send_process_signal(target_pid, sig) {
         Ok(need_schedule) => {
             if need_schedule {
-                task::scheduler::schedule();
+                task::sched::schedule();
             }
             ok(0)
         }
@@ -251,7 +251,7 @@ pub(crate) fn sys_tgkill(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => return err(errno),
     };
 
-    let Some(target_task) = task::manager::find_task_by_tid(task::TaskId(raw_tid as usize)) else {
+    let Some(target_task) = task::find_task_by_tid(task::TaskId(raw_tid as usize)) else {
         return err(ESRCH);
     };
 
@@ -263,7 +263,7 @@ pub(crate) fn sys_tgkill(args: &SyscallArgs) -> SyscallRet {
     match task::send_process_signal(target_pid, sig) {
         Ok(need_schedule) => {
             if need_schedule {
-                task::scheduler::schedule();
+                task::sched::schedule();
             }
             ok(0)
         }
@@ -274,13 +274,13 @@ pub(crate) fn sys_tgkill(args: &SyscallArgs) -> SyscallRet {
 pub(crate) fn sys_exit(args: &SyscallArgs) -> SyscallRet {
     let exit_code = args.arg0 as i32;
     task::exit_current_task(exit_code);
-    task::scheduler::schedule();
+    task::sched::schedule();
     ok(0)
 }
 
 pub(crate) fn sys_exit_group(args: &SyscallArgs) -> SyscallRet {
     let exit_code = args.arg0 as i32;
     task::exit_current_process(exit_code);
-    task::scheduler::schedule();
+    task::sched::schedule();
     ok(0)
 }

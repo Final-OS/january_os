@@ -1,8 +1,8 @@
 # Task Management API
 
-任务管理子系统提供进程和线程管理功能。
+任务管理子系统提供进程和线程管理功能，并已按组件化宏内核规范重组为 `façade + 分层子目录骨架`。
 
----
+
 
 ## 核心结构
 
@@ -298,7 +298,7 @@ extern "C" fn worker_thread() {
         println!("Worker thread running");
 
         // 主动让出 CPU
-        crate::task::scheduler::schedule();
+        crate::task::sched::schedule();
     }
 }
 

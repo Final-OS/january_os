@@ -2,11 +2,11 @@
 //!
 //! 负责任务的创建、销毁和查找。
 
-use super::process::exec::{rollback_exec_mappings, ExecMappedPage};
-use super::id::{ProcessId, TaskId};
-use super::process::{Process, ProcessStatus};
-use super::scheduler::SCHEDULER;
-use super::task::{Task, TaskStatus};
+use crate::task::api::{ProcessId, TaskId};
+use crate::task::proc::exec::{rollback_exec_mappings, ExecMappedPage};
+use crate::task::proc::{Process, ProcessStatus};
+use crate::task::sched::SCHEDULER;
+use crate::task::thread::{Task, TaskStatus};
 use crate::fs;
 use crate::libs::rdtree::RadixTree;
 use crate::sync::Mutex;
@@ -208,7 +208,7 @@ fn resolve_child_mm(parent_pid: Option<ProcessId>, mm_mode: SpawnMmMode) -> Opti
 ///
 /// 当前阶段仍可能回退到 `init_mm`，后续可平滑切换到真正的 per-process mm。
 pub fn current_mm_ptr() -> *mut crate::mm::Mm {
-    let Some(task_ref) = super::processor::current_task() else {
+    let Some(task_ref) = crate::task::thread::current_task() else {
         return crate::mm::init_mm_ptr();
     };
 
@@ -244,7 +244,7 @@ pub fn find_process_by_pid(pid: ProcessId) -> Option<Arc<Mutex<Process>>> {
 }
 
 pub fn record_current_exec_request(path: &str, argc: usize, envc: usize) -> Option<ProcessId> {
-    let current_task = super::processor::current_task()?;
+    let current_task = crate::task::thread::current_task()?;
 
     let pid = {
         let mut task = current_task.lock();
@@ -276,7 +276,7 @@ pub fn record_current_exec_request(path: &str, argc: usize, envc: usize) -> Opti
 }
 
 pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize> {
-    let Some(current_task) = super::processor::current_task() else {
+    let Some(current_task) = crate::task::thread::current_task() else {
         rollback_exec_mappings(&mappings);
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
@@ -325,7 +325,7 @@ pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize>
 }
 
 pub fn lookup_current_exec_mapping(virt: u64) -> Option<ExecMappedPage> {
-    let current_task = super::processor::current_task()?;
+    let current_task = crate::task::thread::current_task()?;
     let pid = {
         let task = current_task.lock();
         task.pid
@@ -435,7 +435,7 @@ fn child_matches_thread_scope(
 }
 
 fn parent_owns_child(child_pid: ProcessId) -> Option<(ProcessId, Arc<Mutex<Process>>)> {
-    let parent_pid = super::processor::current_task().map(|task| task.lock().pid)?;
+    let parent_pid = crate::task::thread::current_task().map(|task| task.lock().pid)?;
     let parent_process = find_process_by_pid(parent_pid)?;
 
     let owns_child = {
@@ -454,7 +454,7 @@ pub fn wait_child_observe_by_target_with_options(
     target: WaitTarget,
     options: WaitChildOptions,
 ) -> WaitChildObserveResult {
-    let (parent_pid, current_tid) = match super::processor::current_task() {
+    let (parent_pid, current_tid) = match crate::task::thread::current_task() {
         Some(task) => {
             let task = task.lock();
             (task.pid, task.id)
@@ -636,7 +636,7 @@ pub fn spawn_kernel_thread_with_mm_mode_checked(
     entry: extern "C" fn(),
     mm_mode: SpawnMmMode,
 ) -> Option<Arc<Mutex<Task>>> {
-    let (parent_pid, parent_tid) = match super::processor::current_task() {
+    let (parent_pid, parent_tid) = match crate::task::thread::current_task() {
         Some(task) => {
             let task = task.lock();
             (Some(task.pid), Some(task.id))
@@ -703,7 +703,7 @@ pub fn spawn_kernel_thread_with_mm_mode(
 
 /// 退出当前任务
 pub fn exit_current_task(exit_code: i32) {
-    let Some(task_ref) = super::processor::current_task() else {
+    let Some(task_ref) = crate::task::thread::current_task() else {
         return;
     };
 
@@ -761,7 +761,7 @@ pub fn exit_current_task(exit_code: i32) {
 
 /// 退出当前进程（退出其所有任务）
 pub fn exit_current_process(exit_code: i32) {
-    let Some(task_ref) = super::processor::current_task() else {
+    let Some(task_ref) = crate::task::thread::current_task() else {
         return;
     };
 

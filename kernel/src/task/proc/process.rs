@@ -2,21 +2,15 @@
 //!
 //! 当前阶段先提供最小进程描述，后续逐步接入地址空间、文件表、信号等。
 
-pub mod exec;
-pub mod exit;
-pub mod fork;
-pub mod signal;
-pub mod wait;
-
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::sync::Mutex;
 
-use self::exec::ExecMappedPage;
-use super::id::{ProcessId, TaskId};
-use super::task::Task;
+use crate::task::api::{ProcessId, TaskId};
+use crate::task::proc::exec::ExecMappedPage;
+use crate::task::thread::Task;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessStatus {

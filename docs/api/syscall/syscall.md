@@ -9,7 +9,8 @@
 - `kernel/src/arch/x86_64/syscall/`：`syscall` 指令陷入入口、寄存器保存与返回路径
 - `kernel/src/fs/syscall/`：FS/FD/TTY/pipe/poll/select 相关 syscall-facing 入口
 - `kernel/src/mm/syscall/`：`mmap/munmap/mprotect/brk` 专属 ABI 入口
-- `kernel/src/task/syscall/`：`execve/fork/clone/wait4/kill/rt_sig*` 等进程与信号入口
+- `kernel/src/task/syscall/`：`execve/fork/clone/wait4/kill/rt_sig*` 等 task 域 ABI 入口
+- `kernel/src/task/proc/` + `kernel/src/task/runtime/`：进程语义、全局表、wait/spawn 运行时
 
 ## ABI 约定
 
@@ -83,6 +84,7 @@ pub fn syscall_table() -> &'static [SyscallDef];
 当前进一步拆为：
 - `kernel/src/task/syscall/exec.rs`：`execve` ABI 入口
 - `kernel/src/task/syscall/process.rs`：PID、进程组、clone/fork、kill、exit
+- `kernel/src/task/proc/`：真实进程语义与地址空间/调度协作
 - `kernel/src/task/syscall/wait.rs`：`wait4` ABI 解码与结果写回
 - `kernel/src/task/syscall/signal.rs`：`rt_sig*` ABI 入口
 

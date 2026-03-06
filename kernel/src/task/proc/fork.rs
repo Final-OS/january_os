@@ -1,9 +1,9 @@
 use alloc::sync::Arc;
 
-use crate::sync::Mutex;
 use crate::errno::{EINVAL, ENOMEM, ESRCH};
+use crate::sync::Mutex;
 use crate::task;
-use crate::task::task::Task;
+use crate::task::thread::Task;
 
 const SIGCHLD: i32 = 17;
 const MAX_SIGNAL: i32 = 64;
@@ -21,9 +21,9 @@ const CLONE_SUPPORTED_FLAGS: usize = CSIGNAL | CLONE_VM | CLONE_VFORK;
 
 #[inline(never)]
 fn fail_and_exit_current_task(code: i32) -> ! {
-    task::process::exit::exit_current_task(code);
+    super::exit::exit_current_task(code);
     loop {
-        task::scheduler::schedule();
+        task::sched::schedule();
     }
 }
 
@@ -86,8 +86,7 @@ fn wait_for_vfork_release(child_pid: task::ProcessId) {
 
     let mut logged_wait = false;
     loop {
-        match task::process::wait::observe_by_target_with_options(task::WaitTarget::Pid(child_pid), options)
-        {
+        match task::wait_child_observe_by_target_with_options(task::WaitTarget::Pid(child_pid), options) {
             task::WaitChildObserveResult::Reapable(_, _)
             | task::WaitChildObserveResult::NoMatchedChild => {
                 break;
@@ -104,7 +103,7 @@ fn wait_for_vfork_release(child_pid: task::ProcessId) {
                     }
                     logged_wait = true;
                 }
-                task::scheduler::schedule();
+                task::sched::schedule();
             }
         }
     }

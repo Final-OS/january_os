@@ -100,7 +100,7 @@ pub(crate) fn sys_poll(args: &SyscallArgs) -> SyscallRet {
             break;
         }
         if crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some() {
-            crate::task::scheduler::schedule();
+            crate::task::sched::schedule();
         } else {
             break;
         }
@@ -302,7 +302,7 @@ pub(crate) fn sys_select(args: &SyscallArgs) -> SyscallRet {
             break;
         }
         if crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some() {
-            crate::task::scheduler::schedule();
+            crate::task::sched::schedule();
         } else {
             break;
         }

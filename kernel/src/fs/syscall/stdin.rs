@@ -61,7 +61,7 @@ pub(crate) fn wake_stdin_waiters_if_ready() -> usize {
     };
 
     let tid = task::TaskId(token);
-    let Some(task_ref) = task::manager::find_task_by_tid(tid) else {
+    let Some(task_ref) = task::find_task_by_tid(tid) else {
         return 0;
     };
 
@@ -75,7 +75,7 @@ pub(crate) fn wake_stdin_waiters_if_ready() -> usize {
     }
 
     if should_enqueue {
-        task::scheduler::SCHEDULER.add_task(task_ref);
+        task::sched::SCHEDULER.add_task(task_ref);
         1
     } else {
         0

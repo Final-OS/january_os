@@ -59,9 +59,9 @@
 
 | 模块 | 说明 | 文件 |
 |------|------|------|
-| [Task](./task/task.md) | 任务管理 | `kernel/src/task/task.rs` |
-| [Scheduler](./task/scheduler.md) | 调度器 | `kernel/src/task/scheduler/` |
-| [Processor](./task/processor.md) | Per-CPU 处理器 | `kernel/src/task/processor.rs` |
+| [Task](./task/task.md) | 任务管理 | `kernel/src/task/thread/task.rs` |
+| [Scheduler](./task/scheduler.md) | 调度器 | `kernel/src/task/sched/mod.rs` |
+| [Processor](./task/processor.md) | Per-CPU 处理器 | `kernel/src/task/thread/processor.rs` |
 
 ### SMP 支持 (smp)
 

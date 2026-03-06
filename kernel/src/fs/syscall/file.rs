@@ -113,7 +113,7 @@ pub(crate) fn sys_read(args: &SyscallArgs) -> SyscallRet {
                 if !enqueue_current_stdin_waiter() {
                     return err(EAGAIN);
                 }
-                crate::task::scheduler::schedule();
+                crate::task::sched::schedule();
                 continue;
             }
 
@@ -138,7 +138,7 @@ pub(crate) fn sys_read(args: &SyscallArgs) -> SyscallRet {
             Ok(n) => break n,
             Err(EAGAIN) if !nonblocking => {
                 if crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some() {
-                    crate::task::scheduler::schedule();
+                    crate::task::sched::schedule();
                     continue;
                 }
                 return err(EAGAIN);

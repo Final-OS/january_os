@@ -1,10 +1,8 @@
 //! 内核线程 / 上下文切换测试
 
-mod context_switch;
-mod fork;
+mod proc;
 mod regression;
-mod usermode;
-mod wait_reap;
+mod sched;
 
 use crate::kprintln;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -33,39 +31,39 @@ pub fn run_with_filter(filter: Option<&str>) {
     match filter {
         None | Some("all") => {
             task_step("run case=switch");
-            context_switch::run();
+            sched::run_context_switch();
             task_step("run case=wait");
-            wait_reap::run();
+            proc::run_wait_reap();
             task_step("run case=usermode");
-            usermode::run();
+            proc::run_usermode();
             task_step("run case=fork");
-            fork::run();
+            proc::run_fork();
         }
         Some("safe") => {
             task_step("run case=switch");
-            context_switch::run();
+            sched::run_context_switch();
             task_step("run case=wait");
-            wait_reap::run();
+            proc::run_wait_reap();
         }
         Some("regression") => {
             task_step("run case=regression");
-            regression::run();
+            regression::run_runtime();
         }
         Some("switch") => {
             task_step("run case=switch");
-            context_switch::run();
+            sched::run_context_switch();
         }
         Some("wait") => {
             task_step("run case=wait");
-            wait_reap::run();
+            proc::run_wait_reap();
         }
         Some("usermode") => {
             task_step("run case=usermode");
-            usermode::run();
+            proc::run_usermode();
         }
         Some("fork") => {
             task_step("run case=fork");
-            fork::run();
+            proc::run_fork();
         }
         Some("help") | _ => {
             task_step("show help");

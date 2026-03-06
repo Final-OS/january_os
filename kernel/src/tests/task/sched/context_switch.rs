@@ -23,7 +23,7 @@ pub(super) fn run() {
     let iterations = 12; // 足够两个线程各跑 5 轮
     task_step("context_switch: drive scheduler");
     for _ in 0..iterations {
-        task::scheduler::schedule();
+        task::sched::schedule();
     }
 
     let a = COUNTER_A.load(Ordering::SeqCst);
@@ -46,7 +46,7 @@ extern "C" fn thread_a() {
     for i in 0..5 {
         kprintln!("  [thread_a] iteration {}", i);
         COUNTER_A.fetch_add(1, Ordering::SeqCst);
-        task::scheduler::schedule();
+        task::sched::schedule();
     }
 }
 
@@ -54,6 +54,6 @@ extern "C" fn thread_b() {
     for i in 0..5 {
         kprintln!("  [thread_b] iteration {}", i);
         COUNTER_B.fetch_add(1, Ordering::SeqCst);
-        task::scheduler::schedule();
+        task::sched::schedule();
     }
 }

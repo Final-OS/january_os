@@ -335,7 +335,7 @@ fn run_scheduler_stats_case() -> bool {
 
     smp_step("sched_stats: trigger scheduler probe cycles");
     for _ in 0..8 {
-        crate::task::scheduler::schedule();
+        crate::task::sched::schedule();
     }
 
     smp_step("sched_stats: read scheduler stats after probe");

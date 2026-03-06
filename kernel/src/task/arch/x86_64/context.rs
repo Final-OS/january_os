@@ -22,7 +22,7 @@ pub struct TaskContext {
 extern "C" fn task_exit_trampoline() -> ! {
     // 线程入口函数返回，标记当前任务为 Exited 并让出 CPU
     crate::task::exit_current_task(0);
-    crate::task::scheduler::schedule();
+    crate::task::sched::schedule();
     loop {
         core::hint::spin_loop();
     }

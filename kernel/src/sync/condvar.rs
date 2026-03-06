@@ -64,7 +64,7 @@ impl Default for CondVar {
 #[inline]
 fn wait_for_notification() {
     if crate::interrupt::interrupts_enabled() && crate::task::current_task().is_some() {
-        crate::task::scheduler::schedule();
+        crate::task::sched::schedule();
     } else {
         core::hint::spin_loop();
     }

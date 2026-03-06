@@ -23,7 +23,7 @@ pub fn collect_kill_targets(raw_pid: isize) -> Result<Vec<task::ProcessId>, i32>
             let Some(current_pgid) = task::current_pgid() else {
                 return Err(ESRCH);
             };
-            let targets = task::manager::process_ids_by_pgid(current_pgid);
+            let targets = task::runtime::manager::process_ids_by_pgid(current_pgid);
             if targets.is_empty() {
                 Err(ESRCH)
             } else {
@@ -31,7 +31,7 @@ pub fn collect_kill_targets(raw_pid: isize) -> Result<Vec<task::ProcessId>, i32>
             }
         }
         -1 => {
-            let mut targets: Vec<task::ProcessId> = task::manager::all_process_ids()
+            let mut targets: Vec<task::ProcessId> = task::runtime::manager::all_process_ids()
                 .into_iter()
                 .filter(|pid| pid.0 != 0)
                 .collect();
@@ -48,7 +48,7 @@ pub fn collect_kill_targets(raw_pid: isize) -> Result<Vec<task::ProcessId>, i32>
                 return Err(EINVAL);
             }
             let group = task::ProcessId(group_raw as usize);
-            let targets = task::manager::process_ids_by_pgid(group);
+            let targets = task::runtime::manager::process_ids_by_pgid(group);
             if targets.is_empty() {
                 Err(ESRCH)
             } else {
@@ -90,7 +90,7 @@ pub fn send_signal(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
                 process.mark_zombie();
             }
 
-            let removed_ready = task::scheduler::SCHEDULER.remove_tasks_by_pid(pid);
+            let removed_ready = task::sched::SCHEDULER.remove_tasks_by_pid(pid);
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
                     "\x1b[90m[diag]\x1b[0m[signal] terminate pid={} sig={} removed_ready={}",
@@ -118,7 +118,7 @@ pub fn send_signal(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
                 }
             }
 
-            let removed_ready = task::scheduler::SCHEDULER.remove_tasks_by_pid(pid);
+            let removed_ready = task::sched::SCHEDULER.remove_tasks_by_pid(pid);
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
                     "\x1b[90m[diag]\x1b[0m[signal] stop pid={} blocked_tasks={} removed_ready={}",
@@ -149,7 +149,7 @@ pub fn send_signal(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
                 }
 
                 if should_queue {
-                    task::scheduler::SCHEDULER.add_task(task_ref);
+                    task::sched::SCHEDULER.add_task(task_ref);
                     resumed_tasks = resumed_tasks.saturating_add(1);
                 }
             }

@@ -1,5 +1,5 @@
-use super::arch::TaskContext;
-use super::id::{ProcessId, TaskId};
+use crate::task::api::{ProcessId, TaskId};
+use crate::task::arch::TaskContext;
 use alloc::alloc::{alloc, dealloc, Layout};
 use alloc::string::String;
 use core::ptr::NonNull;
@@ -49,7 +49,7 @@ pub struct Task {
     pub ppid: ProcessId,
     pub name: String,
     pub context_sp: usize,
-    pub fork_return_frame: Option<super::arch::ForkReturnFrame>,
+    pub fork_return_frame: Option<crate::task::arch::ForkReturnFrame>,
     pub kstack: KernelStack,
     pub status: TaskStatus,
     pub exit_code: Option<i32>,

@@ -15,13 +15,13 @@ pub(super) fn run() {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub(super) fn run_with_label(result_label: &str) -> bool {
+pub(crate) fn run_with_label(result_label: &str) -> bool {
     #[inline(never)]
     fn fail_and_exit_current_task(code: i32) -> ! {
         task::exit_current_task(code);
         // 不返回到线程包装层，避免把失败覆盖为成功退出码。
         loop {
-            task::scheduler::schedule();
+            task::sched::schedule();
         }
     }
 
@@ -126,7 +126,7 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
                 USERMODE_REAPED_CODE.store(exit_code as usize, Ordering::SeqCst);
                 return;
             }
-            task::scheduler::schedule();
+            task::sched::schedule();
         }
 
         if crate::config::DEBUG_VERBOSE {
@@ -179,7 +179,7 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
                 return false;
             }
         }
-        task::scheduler::schedule();
+        task::sched::schedule();
     }
 
     error!("task: {} FAIL (parent monitor timeout)", result_label);
@@ -192,7 +192,7 @@ pub(super) fn run() {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub(super) fn run_with_label(_result_label: &str) -> bool {
+pub(crate) fn run_with_label(_result_label: &str) -> bool {
     warn!("task: usermode test not supported on this architecture, skip");
     true
 }

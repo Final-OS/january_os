@@ -336,7 +336,7 @@ pub extern "C" fn ap_entry(direct_map_base: u64) -> ! {
 
     crate::info!("[SMP] AP Started (CPU {})", cpu_id);
 
-    crate::task::scheduler::run_idle()
+    crate::task::sched::run_idle()
 }
 
 /// Prepare trampoline code (Legacy)

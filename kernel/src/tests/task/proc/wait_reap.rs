@@ -16,7 +16,7 @@ pub(super) fn run() {
 
     task_step("wait_reap: polling scheduler for reaped result");
     for _ in 0..48 {
-        task::scheduler::schedule();
+        task::sched::schedule();
         if REAPED_CHILD_PID.load(Ordering::SeqCst) != 0 {
             break;
         }
@@ -54,7 +54,7 @@ extern "C" fn wait_parent_thread() {
             REAPED_CHILD_CODE.store(code as usize, Ordering::SeqCst);
             return;
         }
-        task::scheduler::schedule();
+        task::sched::schedule();
     }
 }
 

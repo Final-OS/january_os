@@ -15,7 +15,7 @@ pub(super) fn run() {
     fn fail_and_exit_current_task(code: i32) -> ! {
         task::exit_current_task(code);
         loop {
-            task::scheduler::schedule();
+            task::sched::schedule();
         }
     }
 
@@ -82,7 +82,7 @@ pub(super) fn run() {
                 FORK_REAPED_CODE.store(exit_code as usize, Ordering::SeqCst);
                 return;
             }
-            task::scheduler::schedule();
+            task::sched::schedule();
         }
 
         FORK_REAPED_PID.store(user_pid.0, Ordering::SeqCst);
@@ -115,7 +115,7 @@ pub(super) fn run() {
                 return;
             }
         }
-        task::scheduler::schedule();
+        task::sched::schedule();
     }
 
     error!("task: usermode fork/cow FAIL (parent monitor timeout)");

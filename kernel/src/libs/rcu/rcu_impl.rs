@@ -244,7 +244,7 @@ impl<T> Rcu<T> {
         while self.active_readers.load(Ordering::Acquire) != 0 {
             // 在可调度上下文让出 CPU，避免单核/虚拟化场景下写侧纯自旋饿死读侧。
             if can_schedule && (spins & 0x3ff) == 0 {
-                crate::task::scheduler::schedule();
+                crate::task::sched::schedule();
             } else {
                 core::hint::spin_loop();
             }

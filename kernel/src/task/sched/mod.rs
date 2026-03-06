@@ -7,9 +7,9 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use crate::interrupt;
 use crate::sync::Mutex;
 
-use super::id::ProcessId;
-use super::processor::{do_switch, replace_current_task, take_current_task};
-use super::task::{Task, TaskStatus};
+use crate::task::api::ProcessId;
+use crate::task::thread::processor::{do_switch, replace_current_task, take_current_task};
+use crate::task::thread::{Task, TaskStatus};
 
 /// 每 CPU 运行队列槽位数（按逻辑 CPU ID 索引）。
 const RUNQUEUE_SLOT_COUNT: usize = if crate::config::MAX_CPUS > 0 {
@@ -121,7 +121,7 @@ fn task_mm_pgd(task: &Arc<Mutex<Task>>) -> u64 {
         guard.pid
     };
 
-    let mm_ptr = super::manager::find_process_by_pid(pid)
+    let mm_ptr = crate::task::runtime::manager::find_process_by_pid(pid)
         .map(|process| process.lock().mm as *mut crate::mm::Mm)
         .unwrap_or(crate::mm::init_mm_ptr());
 

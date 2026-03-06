@@ -87,7 +87,7 @@ pub(super) fn run() {
     crate::task::spawn_kernel_thread("mm_mmap_runner", mmap_run_in_task_thread);
 
     for _ in 0..512 {
-        crate::task::scheduler::schedule();
+        crate::task::sched::schedule();
         if MMAP_ASYNC_DONE.load(Ordering::Acquire) {
             return;
         }

@@ -2,7 +2,7 @@
 //!
 //! 管理每个 CPU 核心的任务状态。
 
-use super::arch::__switch;
+use crate::task::arch::__switch;
 use super::task::Task;
 use crate::sync::Mutex;
 use alloc::sync::Arc;

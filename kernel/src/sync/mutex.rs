@@ -339,7 +339,7 @@ fn enable_interrupts() {
 #[inline]
 fn wait_for_lock_event() {
     if interrupts_enabled() && crate::task::current_task().is_some() {
-        crate::task::scheduler::schedule();
+        crate::task::sched::schedule();
     } else {
         core::hint::spin_loop();
     }

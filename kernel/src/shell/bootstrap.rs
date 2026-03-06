@@ -48,7 +48,7 @@ extern "C" fn user_init_entry() {
         warn!("[initrd] exec {} failed errno={}", path, errno);
         task::exit_current_task(127);
         loop {
-            task::scheduler::schedule();
+            task::sched::schedule();
         }
     }
 }
@@ -69,7 +69,7 @@ pub(super) fn try_run_user_init(path: &str) -> bool {
     }
 
     for _ in 0..2048 {
-        task::scheduler::schedule();
+        task::sched::schedule();
         match INIT_BOOT_STATE.load(Ordering::Acquire) {
             INIT_STATE_RUNNING => return true,
             INIT_STATE_FAILED => return false,
@@ -85,7 +85,7 @@ pub(super) fn run_scheduler_loop() -> ! {
     loop {
         drivers::input::poll();
         let _ = crate::fs::wake_stdin_waiters_if_ready();
-        task::scheduler::schedule();
+        task::sched::schedule();
         interrupt::halt_with_interrupts();
     }
 }
