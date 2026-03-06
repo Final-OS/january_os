@@ -92,15 +92,19 @@ january_os 当前开发状态与功能完成情况。
 
 **2026-03-06 - 组件化宏内核收敛（初始化编排 + façade）**
 - ✅ 启动路径新增轻量组件注册/运行器，显式标注 `early/core/late` 阶段与依赖
+- ✅ 新增统一组件契约骨架：一级组件开始统一暴露 `init_early/init_core/init_late`、`stats()`、`dump_state()`，组件元数据、注册表与运行器收敛到单一 `component.rs`
+- ✅ `arch/drivers/interrupt/smp/syscall/net/security/virt` 已补齐可编译的完整占位子域；其中 `net` 已收敛为 `mod.rs` façade + `api/types/runtime/device/stack/socket/syscall/diag`，`security` 已重组为 `mod.rs` façade + `api/cred/policy/hook/audit/runtime/syscall/diag`，`virt` 已重组为 `mod.rs` façade + `core/vm/vcpu/memory/irq/hypercall/device/service/platform`
+- ✅ `syscall` 新增 `abi/dispatch/table/uaccess` 骨架，`net/security/virt` 具备明确的调用入口和未支持错误语义
 - ✅ `drivers` 增加 `init_all()` façade，避免启动器逐个耦合内部驱动模块
 - ✅ `fs` 增加 `init_runtime()` 报告接口，显式暴露 rootfs/initramfs 初始化结果
 - ✅ `fs` 新增 `runtime` / `backing` façade，开始把进程文件运行时与 mmap backing 适配边界显式化
 - ✅ `mm/mod.rs` 从通配 re-export 收紧为显式导出 + 兼容命名空间模块
 - ✅ `task/exec.rs` 已迁入 `task/process/exec.rs`，明确归属进程生命周期组件
 - ✅ `fork/wait/exit` 已开始通过 `task/process/*` façade 暴露，`syscall/process` 向薄适配层收敛
-- ✅ `wait4` 阻塞/观测/回收编排已下沉到 `task/process/wait.rs`，`syscall/handlers/process.rs` 仅保留 ABI 解码与用户态写回
+- ✅ `wait4` 阻塞/观测/回收编排已下沉到 `task/process/wait.rs`，`task/syscall/mod.rs` 仅保留 ABI 解码与用户态写回
 - ✅ `kill/tkill/tgkill` 的进程状态变更已下沉到 `task/process/signal.rs`，`syscall/process` 仅保留信号参数解析与返回编排
-- ⚠️ 组件化目前主要落在启动编排与接口 façade，跨子系统深层直接依赖仍需继续收敛
+- ✅ 共享 `uaccess` 已提升到根级公共模块，`fs/task` 不再反向依赖 `mm::syscall`；后续继续收敛其他深层直接依赖
+- ✅ `kernel/src/tests/**` 同步补齐 `arch/drivers/interrupt/net/security/sync/syscall/virt` 测试骨架；其中 `security` 已按 `smoke/negative/recovery` 分组，`virt` 已按 `detect/vm/vcpu/memory/irq/hypercall/recovery` 分组
 
 **2026-02-08 - 任务管理与系统调用实现**
 - ✅ 任务管理基础（PCB/TCB、内核栈、任务状态）

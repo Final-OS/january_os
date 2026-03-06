@@ -4,7 +4,7 @@
 
 1. 内核形态路线（模块化宏内核）
 2. 三架构目标（x86_64 / aarch64 / riscv64）
-3. 虚拟化能力目标（guest 优先，host 能力预留）
+3. 虚拟化能力目标（Host/VMM 主轴，guest 探测保留）
 4. 子系统职责、接口与实现顺序
 5. 内核全貌图与阶段里程碑
 
@@ -16,7 +16,7 @@
 - **采用模块化宏内核（Modular Monolithic Kernel）**
 - **采用组件化操作系统组织方式（Componentized OS）**
 - **目标架构：x86_64、aarch64、riscv64（三线同构）**
-- **虚拟化：先完善 guest 兼容，再分阶段补齐 host 能力**
+- **虚拟化：以 Host/VMM 控制面为主轴，guest 环境探测与可观测性保留并持续增强**
 
 约束边界：
 - 核心组件（调度、内存、中断、syscall、设备框架）统一编译进 `kernel.bin`
@@ -24,12 +24,13 @@
 
 多架构约束：
 - 通用逻辑放在 `kernel/src/<subsystem>/`，禁止掺杂架构细节
-- 架构差异必须下沉到 `kernel/src/**/arch/{x86_64,aarch64,riscv64}/`
+- 架构差异必须下沉到 `kernel/src/**/arch/{x86_64,aarch64,riscv64}/`；`virt` 子系统例外，使用 `kernel/src/virt/platform/<isa>/` 表达平台虚拟化后端
 - 同一子系统对三架构保持一致接口形状，避免分叉 API
 
 虚拟化约束：
-- `virt/` 作为统一虚拟化能力入口（探测、能力描述、后续扩展）
-- 先做“运行在虚拟机内”的稳定性与可观测性，再做“管理虚拟机”
+- `virt/` 作为统一虚拟化能力入口（探测、Host/VMM 控制面、设备模型、后续扩展）
+- `virt` 内部按 `core/vm/vcpu/memory/irq/hypercall/device/service/platform` 分层
+- 架构相关代码使用 `virt/platform/<isa>`，而不是 `virt/arch`
 
 ---
 
@@ -56,7 +57,7 @@ User Space
 │  interrupt+timer+smp | driver framework | iommu | power                  │
 │                                                                          │
 │  [虚拟化组件]                                                            │
-│  virt::detect | hypervisor caps | pv hooks (planned)                     │
+│  virt::detect | VMM control | memory/irq/device model                  │
 │                                                                          │
 │  [公共支撑组件]                                                          │
 │  sync | libs | log | config | diagnostics                                │
@@ -99,7 +100,7 @@ Runtime Image
   │  - init 顺序启动组件                                      │
   │  - 组件间走内核内部稳定接口                               │
   │  - arch backend 按目标架构选择                            │
-  │  - virt 组件统一处理虚拟化能力探测                        │
+  │  - virt 组件统一处理 VMM 控制面与平台后端选择              │
   └──────────────────────────┬─────────────────────────────────┘
                              │
                              ▼
@@ -141,7 +142,9 @@ Runtime Image
 6. 组件初始化约束
 - 核心组件应声明 `early/core/late` 阶段
 - 组件初始化依赖必须显式化，禁止仅靠启动顺序隐式生效
-- 当前代码基线已在 `kernel/src/init/component.rs` 引入轻量组件注册/运行器，作为启动期组件编排的统一入口
+- 当前代码基线已将组件元数据、注册表与运行器统一收敛到 `kernel/src/component.rs`，作为启动期组件编排的唯一入口
+- 一级组件应统一暴露：`init_early()`、`init_core()`、`init_late()`、`stats()`、`dump_state()`
+- 新增骨架子域遵循“顶层 `mod.rs` façade + `api/types/runtime/device/stack/socket/syscall/diag` 子目录”组织；横切共享 helper 归位到 `common/`，单一功能域不再长期停留为顶层零散文件
 
 7. façade 优先
 - 顶层组件应优先通过显式 façade 暴露能力，例如：
@@ -150,6 +153,9 @@ Runtime Image
   - `fs::runtime::*`
   - `fs::backing::*`
   - `mm::component_report()`
+  - `net::init()` / `net::syscall::*`
+  - `security::init()` / `security::syscall::*` / `security::policy::*`
+  - `virt::detect()` / `virt::vm::*`
 - 顶层 `mod.rs` 可以保留兼容导出，但应避免继续扩大扁平导出面
 
 ---
@@ -201,7 +207,8 @@ pub fn handle_page_fault(ctx: &FaultCtx) -> FaultResult;
 - `task/process/` 负责进程生命周期
 - `task/process/exec.rs` 承载 ELF 加载、用户栈构建、exec 地址空间替换
 - `task/process/fork.rs` / `wait.rs` / `exit.rs` / `signal.rs` 承载进程生命周期 façade，`syscall` 仅保留 ABI 适配层
-- `wait4` 的阻塞/观测/回收编排下沉到 `task/process/wait.rs`，`syscall/handlers/process.rs` 仅处理 PID/option 解码与用户态状态写回
+- `wait4` 的阻塞/观测/回收编排下沉到 `task/process/wait.rs`，`task/syscall/mod.rs` 仅处理 PID/option 解码与用户态状态写回
+- 共享用户态读写校验统一提升到 `kernel/src/uaccess.rs`，禁止 `fs/task` 直接依赖 `mm::syscall` 边界
 
 核心接口：
 ```rust
@@ -222,6 +229,7 @@ pub fn wait_child(target: WaitTarget, opts: WaitOpts) -> WaitResult;
 职责：
 - Linux ABI 编号兼容、参数校验、权限校验、错误码映射、调用分发
 - 处理器保持薄适配：`fork/clone/vfork/wait4/exit/kill*` 等流程统一委托给 `task` façade
+- 共享 ABI 基础设施（如 `uaccess`）必须位于独立公共层，不能挂靠某个组件的 `syscall` 子目录
 
 核心接口：
 ```rust
@@ -292,7 +300,7 @@ pub fn pipe_create(flags: u32) -> Result<(Fd, Fd), IpcError>;
 
 ---
 
-## 4.8 网络（`net/`，规划中）
+## 4.8 网络（`net/`，组件化骨架已落地）
 
 职责：
 - netdev 抽象、协议栈（IPv4/TCP/UDP）、socket 层
@@ -304,12 +312,13 @@ pub fn socket(domain: i32, ty: i32, proto: i32) -> Result<Fd, NetError>;
 ```
 
 实现顺序：
+- 当前基线已收敛为 `mod.rs` façade + `api/types/runtime/device/stack/socket/syscall/diag` 子目录；具体网卡驱动位于顶层 `drivers/net/` 并通过 `net::device::registry` 注册，`stack/proto` 保留协议扩展稳定落点
 - 先环回 + 最小 UDP
 - 再以太网驱动与 TCP
 
 ---
 
-## 4.9 安全（`security/`，规划中）
+## 4.9 安全（`security/`，骨架已落地）
 
 职责：
 - 权限模型、能力位（capabilities）、审计钩子
@@ -321,8 +330,29 @@ pub fn check_inode_perm(task: &Task, inode: &Inode, mask: u32) -> Result<(), Sec
 ```
 
 实现顺序：
+- 当前基线已重组为 `mod.rs` façade + `api/cred/policy/hook/audit/runtime/syscall/diag` 目录骨架，并接入启动期组件编排
 - 先 UID/GID + 基本 DAC
-- 再 capability + LSM 风格 hook
+- 再 capability + LSM 风格 hook + audit runtime
+
+---
+
+## 4.10 虚拟化（`virt/`，Host/VMM 骨架已重组，探测可用）
+
+职责：
+- Host/VMM 控制面、VM/VCPU 生命周期、guest memory/MMIO、IRQ route/注入、hypercall 分发、平台后端桥接
+
+核心接口：
+```rust
+pub fn detect() -> VirtInfo;
+pub fn create_vm() -> Result<VmId, VirtError>;
+pub fn run_vcpu(vcpu: VcpuId) -> Result<(), VirtError>;
+```
+
+实现顺序：
+- 当前基线已落地 `core/vm/vcpu/memory/irq/hypercall/device/service/platform` 完整占位骨架
+- `x86_64` 探测已迁入 `platform/x86_64/detect.rs`，其余 ISA 保留占位后端
+- 先补 Host/VMM 控制面的 VM/VCPU/memory/irq 最小可用闭环
+- 再继续增强 guest 探测、virtio 设备模型与平台特性
 
 ---
 

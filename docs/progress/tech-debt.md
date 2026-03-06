@@ -68,7 +68,8 @@
 | ACPI 表完整传递 | 🟡 | 仅 RSDP，缺完整表 | v0.4 |
 | 引导参数解析 | 🟡 | 缺少内核命令行 | v0.4 |
 | LA57 切换约束 | 🟡 | 已支持启动期 4->5 trampoline + 自动回退；aux 页表池优先放在 4GiB 以下并已补齐 root/CR3 失配可观测性，但底层切换仍依赖 5-level root 位于 4GiB 内 | v0.4 |
-| 组件边界治理 | 🟡 | 启动期已引入组件注册/依赖编排与部分 façade，但 `mm/fs/task/drivers` 仍存在深层直接互调与扁平导出 | v0.5 |
+| 组件边界治理 | 🟡 | 启动期已引入组件注册/依赖编排，且 `arch/drivers/interrupt/smp/syscall/net/security/virt` 已补齐完整占位骨架；`virt` 已进一步收口为 façade + 分层子目录并采用 `platform/<isa>` 平台后端；但 `mm/fs/task/drivers` 仍存在深层直接互调与扁平导出，旧入口仍需继续收口 | v0.5 |
+| 完整占位向实装偿债 | 🟡 | `net/security/virt` 已具备完整可编译骨架、syscall/VFS 钩子与测试壳，但运行能力默认返回 `NotSupported/ENOSYS`；需逐批替换为真实实现 | v0.5/v0.6 |
 
 ---
 
@@ -249,7 +250,7 @@
 
 ## 8. 系统调用 (Syscall)
 
-**文件**: `kernel/src/syscall/`
+**文件**: `kernel/src/syscall/`, `kernel/src/fs/syscall/`, `kernel/src/mm/syscall/`, `kernel/src/task/syscall/`
 
 ### 已实现且完备 🟢 (12 个)
 
@@ -268,33 +269,33 @@
 | 23 | select | 完整 |
 | 293 | pipe2 | 完整 |
 
-### 已实现但不完备 🟡 (10 个)
+### 已实现但不完备 🟡 (17 个)
 
 | 编号 | 名称 | 缺失部分 | 归属版本 |
 |------|------|----------|----------|
 | 2 | open | 仅 O_RDONLY | v0.3 |
+| 8 | lseek | 最小语义，缺完整边界行为 | v0.3.1 |
 | 9 | mmap | 缺 MAP_SHARED 写回 | v0.4 |
 | 10 | mprotect | 最小可用实现，缺完整语义覆盖 | v0.4 |
 | 13 | rt_sigaction | 最小实现 | v0.4 |
 | 14 | rt_sigprocmask | 最小实现 | v0.4 |
 | 15 | rt_sigreturn | 最小实现 | v0.4 |
 | 16 | ioctl | 仅部分命令 | v0.4 |
+| 32 | dup | 最小语义，缺 dup3 配套 | v0.3.1 |
+| 33 | dup2 | 最小语义，缺 dup3/flags 收口 | v0.3.1 |
 | 56 | clone | 最小子集 | v0.4 |
 | 57 | fork | 已支持真实 COW，仍属最小单线程实现 | v0.4 |
 | 62 | kill | 仅部分信号 | v0.4 |
+| 72 | fcntl | 仅最小命令集 | v0.3.1 |
+| 79 | getcwd | 最小语义 | v0.3.1 |
+| 80 | chdir | 最小语义 | v0.3.1 |
+| 217 | getdents64 | 最小目录遍历语义 | v0.3.1 |
 
-### 未实现且阻塞 🔴 (12 个)
+### 未实现且阻塞 🔴 (5 个)
 
 | 编号 | 名称 | 说明 | 归属版本 |
 |------|------|------|----------|
-| 8 | lseek | 文件偏移 | v0.3 |
-| 32 | dup | fd 复制 | v0.3 |
-| 33 | dup2 | fd 复制 | v0.3 |
-| 72 | fcntl | fd 控制 | v0.3 |
-| 79 | getcwd | 当前目录 | v0.3 |
-| 80 | chdir | 切换目录 | v0.3 |
 | 81 | fchdir | 切换目录 | v0.3 |
-| 217 | getdents64 | 目录遍历 | v0.3 |
 | 138 | statfs | 文件系统信息 | v0.3 |
 | 139 | fstatfs | fd 文件系统信息 | v0.3 |
 | 257 | openat | 相对路径打开 | v0.4 |
@@ -419,6 +420,7 @@
 | 组件 | 状态 | 说明 | 归属版本 |
 |------|------|------|----------|
 | 用户/内核隔离 | 🟡 | 基础页表隔离 | v0.5 |
+| 安全骨架实装 | 🟡 | `security` 已重组为 `mod.rs` façade + `api/cred/policy/hook/audit/runtime/syscall/diag` 目录骨架；当前差距是 UID/GID、DAC、capability、hook 链与 audit sink 仍为占位，完整目标是安全组件初始化成功、默认策略可装载、关键检查链可观测，关闭信号为 `make run` 下完成 security 初始化并通过 `tests/security` 主/负/恢复场景 | v0.5 |
 | 权限检查 | 🔴 | capability | v0.5 |
 | ASLR | 🔴 | 地址空间随机化 | v0.9 |
 | Stack Canary | 🔴 | 栈保护 | v0.9 |
@@ -434,6 +436,7 @@
 
 | 组件 | 状态 | 说明 | 归属版本 |
 |------|------|------|----------|
+| 网络骨架实装 | 🟡 | `net` 已重组为 `mod.rs` façade + `api/types/runtime/device/stack/socket/syscall/diag` 子目录；当前差距是协议状态机、真实设备注册、socket 表与 syscall 语义仍为占位，完整目标是 `drivers/net` 中的 loopback + virtio-net/e1000 与 `net/` 中的 IPv4/UDP/TCP + socket 生命周期闭环，关闭信号为 `make run` 下完成网络初始化并通过 `tests/net` 主/负/恢复场景 | v0.5 |
 | TCP/IP 协议栈 | 🔴 | IPv4/IPv6 | v0.5 |
 | Socket API | 🔴 | socket/bind/listen/accept | v0.5 |
 | 网络驱动 | 🔴 | virtio-net/e1000 | v0.5 |
@@ -449,6 +452,7 @@
 
 | 组件 | 状态 | 说明 | 归属版本 |
 |------|------|------|----------|
+| 虚拟化 host 骨架实装 | 🟡 | `virt` 已重组为 `mod.rs` façade + `core/vm/vcpu/memory/irq/hypercall/device/service/platform`，并将架构后端迁到 `platform/<isa>`；当前仅 x86_64 探测可用，host 调用默认返回未支持，完整目标是 VM/VCPU/memslot/irq/device model 最小可运行闭环 | v0.6 |
 | KVM 兼容 | 🔴 | 运行虚拟机 | v1.0 |
 | Intel VT-x | 🔴 | 硬件虚拟化 | v1.0 |
 | AMD-V | 🔴 | 硬件虚拟化 | v1.0 |

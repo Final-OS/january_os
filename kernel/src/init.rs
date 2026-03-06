@@ -2,8 +2,6 @@
 //!
 //! 负责按顺序初始化各个子系统。
 
-mod component;
-
 use crate::arch;
 use crate::boot::{BootInfo, BOOTINFO_MAGIC, MAX_MEMORY_REGIONS};
 use crate::config;
@@ -21,11 +19,14 @@ use crate::mm::vm::paging as mm_paging;
 use crate::mm::vm::vma as mm_vma;
 use crate::mm::{self, component_report};
 use crate::mm::setup as mm_setup;
+use crate::net;
+use crate::security;
 use crate::smp;
 use crate::virt;
 use crate::{error, info, kprint, kprintln, ok, warn};
-use component::{
-    run_kernel_component, KernelComponentDescriptor, KernelComponentRegistry, KernelComponentStage,
+use crate::component::{
+    run_component, ComponentDescriptor as KernelComponentDescriptor,
+    ComponentRegistry as KernelComponentRegistry, ComponentStage as KernelComponentStage,
 };
 use core::fmt::Write;
 
@@ -65,53 +66,17 @@ const COMPONENT_PCP: KernelComponentDescriptor = KernelComponentDescriptor {
     deps: &["memory", "acpi"],
     summary: "per-cpu page cache activation",
 };
-const COMPONENT_INTERRUPT: KernelComponentDescriptor = KernelComponentDescriptor {
-    id: "interrupt",
-    stage: KernelComponentStage::Core,
-    deps: &["memory", "acpi"],
-    summary: "idt apic ioapic and syscall entry",
-};
-const COMPONENT_SMP: KernelComponentDescriptor = KernelComponentDescriptor {
-    id: "smp",
-    stage: KernelComponentStage::Core,
-    deps: &["interrupt", "acpi", "memory"],
-    summary: "application processor bring-up",
-};
 const COMPONENT_IOMMU: KernelComponentDescriptor = KernelComponentDescriptor {
     id: "iommu",
     stage: KernelComponentStage::Late,
     deps: &["memory", "acpi"],
     summary: "dma translation and iommu mode selection",
 };
-const COMPONENT_VIRT: KernelComponentDescriptor = KernelComponentDescriptor {
-    id: "virt",
-    stage: KernelComponentStage::Late,
-    deps: &["acpi"],
-    summary: "virtualization environment detection",
-};
-const COMPONENT_DRIVERS: KernelComponentDescriptor = KernelComponentDescriptor {
-    id: "drivers",
-    stage: KernelComponentStage::Late,
-    deps: &["interrupt", "iommu"],
-    summary: "block pci usb and input driver init",
-};
 const COMPONENT_TIMER: KernelComponentDescriptor = KernelComponentDescriptor {
     id: "timer",
     stage: KernelComponentStage::Late,
     deps: &["interrupt", "smp"],
     summary: "tsc and local apic timer enablement",
-};
-const COMPONENT_FS: KernelComponentDescriptor = KernelComponentDescriptor {
-    id: "fs",
-    stage: KernelComponentStage::Late,
-    deps: &["memory", "timer"],
-    summary: "runtime file service and initramfs root mount",
-};
-const COMPONENT_TASK: KernelComponentDescriptor = KernelComponentDescriptor {
-    id: "task",
-    stage: KernelComponentStage::Late,
-    deps: &["fs", "timer", "memory"],
-    summary: "task, process and scheduler-facing runtime state",
 };
 
 unsafe extern "C" {
@@ -148,7 +113,7 @@ pub fn init_kernel(info: &BootInfo) {
     let mut components = KernelComponentRegistry::new();
 
     // 1. 串口初始化 (最早进行，以便输出调试信息)
-    run_kernel_component(&mut components, &COMPONENT_SERIAL, tty::init_early_serial);
+    run_component(&mut components, &COMPONENT_SERIAL, tty::init_early_serial);
 
     // 2. 验证 BootInfo
     if info.magic != BOOTINFO_MAGIC {
@@ -158,7 +123,7 @@ pub fn init_kernel(info: &BootInfo) {
         panic!("BootInfo version {} is too old, need >= 3", info.version);
     }
 
-    run_kernel_component(&mut components, &COMPONENT_MM_LAYOUT, || {
+    run_component(&mut components, &COMPONENT_MM_LAYOUT, || {
         if !mm_runtime::init_from_boot_info(info) {
             panic!("Invalid kernel layout in BootInfo");
         }
@@ -207,7 +172,7 @@ pub fn init_kernel(info: &BootInfo) {
     info!("[BOOT] Booting kernel...");
 
     // 早期 ACPI 初始化 (为了获取 SRAT 表进行 NUMA 初始化)
-    run_kernel_component(&mut components, &COMPONENT_ACPI_PROBE, || {
+    run_component(&mut components, &COMPONENT_ACPI_PROBE, || {
         if info.acpi_rsdp_addr != 0 {
             let _ = drivers::acpi::init(info.acpi_rsdp_addr);
         }
@@ -217,7 +182,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step4: init_memory begin");
     }
-    run_kernel_component(&mut components, &COMPONENT_MEMORY, || init_memory(info, direct_map));
+    run_component(&mut components, &COMPONENT_MEMORY, || init_memory(info, direct_map));
     let mm_report = component_report();
     if config::DEBUG_VERBOSE {
         kprintln!(
@@ -246,7 +211,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step5: init_acpi begin");
     }
-    let acpi_config = run_kernel_component(&mut components, &COMPONENT_ACPI, || init_acpi(info));
+    let acpi_config = run_component(&mut components, &COMPONENT_ACPI, || init_acpi(info));
     let cpu_count = acpi_config.cpu_count;
     if config::DEBUG_VERBOSE {
         kprintln!(
@@ -264,13 +229,13 @@ pub fn init_kernel(info: &BootInfo) {
             cpu_count
         );
     }
-    run_kernel_component(&mut components, &COMPONENT_PCP, || mm::pcp::init_pcp(cpu_count as u32));
+    run_component(&mut components, &COMPONENT_PCP, || mm::pcp::init_pcp(cpu_count as u32));
 
     // 7. 中断控制器初始化
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step7: init_interrupts begin");
     }
-    run_kernel_component(&mut components, &COMPONENT_INTERRUPT, || {
+    run_component(&mut components, &interrupt::COMPONENT, || {
         init_interrupts(&acpi_config, kernel_stack_top, direct_map)
     });
     if config::DEBUG_VERBOSE {
@@ -284,7 +249,7 @@ pub fn init_kernel(info: &BootInfo) {
             cpu_count
         );
     }
-    run_kernel_component(&mut components, &COMPONENT_SMP, || {
+    run_component(&mut components, &smp::COMPONENT, || {
         smp::init(direct_map, cpu_count as usize)
     });
     if config::DEBUG_VERBOSE {
@@ -314,7 +279,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9: init_iommu begin");
     }
-    run_kernel_component(&mut components, &COMPONENT_IOMMU, init_iommu);
+    run_component(&mut components, &COMPONENT_IOMMU, init_iommu);
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9: init_iommu done");
     }
@@ -323,7 +288,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9a: detect_virtualization begin");
     }
-    run_kernel_component(&mut components, &COMPONENT_VIRT, detect_virtualization);
+    run_component(&mut components, &virt::COMPONENT, detect_virtualization);
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9a: detect_virtualization done");
     }
@@ -332,7 +297,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step10: init_drivers begin");
     }
-    run_kernel_component(&mut components, &COMPONENT_DRIVERS, init_drivers);
+    run_component(&mut components, &drivers::COMPONENT, init_drivers);
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step10: init_drivers done");
     }
@@ -341,7 +306,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11: init_timer_and_enable_interrupts begin");
     }
-    run_kernel_component(&mut components, &COMPONENT_TIMER, init_timer_and_enable_interrupts);
+    run_component(&mut components, &COMPONENT_TIMER, init_timer_and_enable_interrupts);
     let if_after_step11 = interrupt::interrupts_enabled();
     if config::DEBUG_VERBOSE {
         kprintln!(
@@ -360,7 +325,7 @@ pub fn init_kernel(info: &BootInfo) {
         } else {
             None
         };
-    run_kernel_component(&mut components, &COMPONENT_FS, || {
+    run_component(&mut components, &fs::COMPONENT, || {
         let report = fs::init_runtime(initramfs);
         if config::DEBUG_VERBOSE {
             kprintln!(
@@ -378,7 +343,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step12: task::init begin");
     }
-    run_kernel_component(&mut components, &COMPONENT_TASK, || {
+    run_component(&mut components, &crate::task::COMPONENT, || {
         let report = crate::task::init_runtime();
         if config::DEBUG_VERBOSE {
             kprintln!(
@@ -391,6 +356,48 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step12: task::init done");
     }
+
+    if config::DEBUG_VERBOSE {
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step13: net::init begin");
+    }
+    run_component(&mut components, &net::COMPONENT, || match net::init() {
+        Ok(report) => {
+            if config::DEBUG_VERBOSE {
+                kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[net] component report device_ready={} socket_ready={} stack_ready={}",
+                    report.device_ready,
+                    report.socket_ready,
+                    report.stack_ready,
+                );
+            }
+        }
+        Err(err) => {
+            warn!("[NET] skeleton active but runtime unavailable: {}", err.as_str());
+        }
+    });
+
+    if config::DEBUG_VERBOSE {
+        kprintln!("\x1b[90m[diag]\x1b[0m[boot] step14: security::init begin");
+    }
+    run_component(
+        &mut components,
+        &security::COMPONENT,
+        || match security::init() {
+            Ok(report) => {
+                if config::DEBUG_VERBOSE {
+                    kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[security] component report cred_ready={} hooks_ready={} audit_ready={}",
+                        report.cred_ready,
+                        report.hooks_ready,
+                        report.audit_ready,
+                    );
+                }
+            }
+            Err(err) => {
+                warn!("[SEC] skeleton active but runtime unavailable: {}", err.as_str());
+            }
+        },
+    );
 
     kprintln!();
     ok!("[BOOT] Kernel initialization complete.");
@@ -767,11 +774,14 @@ fn init_drivers() {
     let report = drivers::init_all();
     if config::DEBUG_VERBOSE {
         kprintln!(
-            "\x1b[90m[diag]\x1b[0m[drv] component report block={} pci={} usb={} input={}",
+            "\x1b[90m[diag]\x1b[0m[drv] component report block={} class={} pci={} usb={} input={} net={} devices={}",
             report.block_ready,
+            report.class_ready,
             report.pci_ready,
             report.usb_ready,
             report.input_ready,
+            report.net_ready,
+            report.net_devices_registered,
         );
     }
     ok!("[DRV] PCIe, USB and Input devices initialized.");
