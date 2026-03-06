@@ -7,8 +7,7 @@ mod component;
 use crate::arch;
 use crate::boot::{BootInfo, BOOTINFO_MAGIC, MAX_MEMORY_REGIONS};
 use crate::config;
-use crate::drivers::tty::fbcon;
-use crate::drivers::tty::{serial, serial_enable_rx_interrupt, SerialWriter};
+use crate::drivers::tty::{self, SerialWriter};
 use crate::drivers::{self, acpi};
 use crate::fs;
 use crate::interrupt;
@@ -140,7 +139,7 @@ pub fn init_kernel(info: &BootInfo) {
     let mut components = KernelComponentRegistry::new();
 
     // 1. 串口初始化 (最早进行，以便输出调试信息)
-    run_kernel_component(&mut components, &COMPONENT_SERIAL, serial::init);
+    run_kernel_component(&mut components, &COMPONENT_SERIAL, tty::init_early_serial);
 
     // 2. 验证 BootInfo
     if info.magic != BOOTINFO_MAGIC {
@@ -401,12 +400,24 @@ fn init_graphics(info: &BootInfo, direct_map: u64) {
 
     if fb.address != 0 && fb.width > 0 && fb.height > 0 {
         let fb_virt_addr = direct_map + fb.address;
-        fbcon::init(
+        let _ = tty::init_framebuffer_console(
             fb_virt_addr,
             fb.width,
             fb.height,
             fb.stride,
             fb.pixel_format,
+        );
+    }
+}
+
+fn init_tty_runtime() {
+    let report = tty::init_runtime();
+    if config::DEBUG_VERBOSE {
+        kprintln!(
+            "\x1b[90m[diag]\x1b[0m[tty] component report serial_ready={} fbcon_ready={} pty_ready={}",
+            report.serial_ready,
+            report.framebuffer_console_ready,
+            report.pty_ready,
         );
     }
 }
@@ -775,7 +786,7 @@ fn init_timer_and_enable_interrupts() {
     interrupt::init_apic_timer(interrupt::IRQ_TIMER, TIMER_HZ);
 
     // 启用串口接收中断
-    serial_enable_rx_interrupt();
+    tty::enable_serial_rx();
 
     let if_step11b = interrupt::interrupts_enabled();
     if config::DEBUG_VERBOSE {

@@ -40,6 +40,13 @@ pub mod fbcon;
 pub mod pty;
 pub mod serial;
 
+#[derive(Debug, Clone, Copy)]
+pub struct TtyInitReport {
+    pub serial_ready: bool,
+    pub framebuffer_console_ready: bool,
+    pub pty_ready: bool,
+}
+
 // 导出串口接口
 pub use serial::{
     serial_enable_rx_interrupt, serial_has_input, serial_interrupt_handler, serial_read,
@@ -62,4 +69,34 @@ pub fn init() {
     serial::init();
     // console 由 main.rs 中的 fbcon::init() 初始化
     pty::init();
+}
+
+pub fn init_early_serial() {
+    serial::init();
+}
+
+pub fn enable_serial_rx() {
+    serial::serial_enable_rx_interrupt();
+}
+
+pub fn init_framebuffer_console(
+    addr: u64,
+    width: u32,
+    height: u32,
+    stride: u32,
+    pixel_format: u32,
+) -> bool {
+    fbcon::init(addr, width, height, stride, pixel_format);
+    fbcon::is_initialized()
+}
+
+pub fn init_runtime() -> TtyInitReport {
+    serial::init();
+    pty::init();
+
+    TtyInitReport {
+        serial_ready: true,
+        framebuffer_console_ready: fbcon::is_initialized(),
+        pty_ready: true,
+    }
 }
