@@ -14,6 +14,7 @@ pub use process::exec::{
     ExecMapPreview, ExecMappedPage, ExecMappedPageKind,
 };
 pub use process::fork::{clone_current, fork_current, vfork_current};
+pub use process::wait::WaitEvent;
 pub use id::{ProcessId, TaskId};
 pub use manager::current_mm_ptr;
 pub use manager::find_process_by_pid;
@@ -131,4 +132,13 @@ pub fn consume_observed_wait_event(child_pid: ProcessId, event: WaitChildConsume
 /// 获取已观测子进程的 rusage 快照（仅父进程可见）
 pub fn snapshot_observed_child_rusage(child_pid: ProcessId) -> Option<WaitRusageSnapshot> {
     process::wait::snapshot_observed_rusage(child_pid)
+}
+
+/// 按目标等待子进程事件（支持阻塞/非阻塞）
+pub fn wait_event_by_target(
+    target: WaitTarget,
+    options: WaitChildOptions,
+    nohang: bool,
+) -> WaitEvent {
+    process::wait::wait_event_by_target(target, options, nohang)
 }

@@ -24,16 +24,6 @@ const SIGSTOP: i32 = 19;
 const SIGCONT: i32 = 18;
 const MAX_SIGNAL: i32 = 64;
 
-const CSIGNAL: usize = 0x0000_00ff;
-const CLONE_VM: usize = 0x0000_0100;
-const CLONE_VFORK: usize = 0x0000_4000;
-const CLONE_THREAD: usize = 0x0001_0000;
-const CLONE_PARENT_SETTID: usize = 0x0010_0000;
-const CLONE_CHILD_CLEARTID: usize = 0x0020_0000;
-const CLONE_CHILD_SETTID: usize = 0x0100_0000;
-const CLONE_SETTLS: usize = 0x0008_0000;
-const CLONE_DETACHED: usize = 0x0040_0000;
-const CLONE_SUPPORTED_FLAGS: usize = CSIGNAL | CLONE_VM | CLONE_VFORK;
 
 const EXEC_PATH_MAX: usize = 4096;
 const EXEC_ARG_STR_MAX: usize = 4096;
@@ -166,11 +156,6 @@ fn build_wait_rusage(snapshot: task::WaitRusageSnapshot) -> Rusage {
         ru_nvcsw: saturating_u64_to_i64(snapshot.voluntary_ctxt_switches),
         ru_nivcsw: saturating_u64_to_i64(snapshot.involuntary_ctxt_switches),
     }
-}
-
-fn current_wait_rusage(child_pid: task::ProcessId) -> Rusage {
-    let snapshot = task::snapshot_observed_child_rusage(child_pid).unwrap_or_default();
-    build_wait_rusage(snapshot)
 }
 
 fn parse_wait_options(raw: usize) -> Result<Wait4Options, i32> {
@@ -591,199 +576,12 @@ pub(crate) fn sys_gettid(_args: &SyscallArgs) -> SyscallRet {
     }
 }
 
-#[inline(never)]
-fn fail_and_exit_current_task(code: i32) -> ! {
-    task::exit_current_task(code);
-    loop {
-        task::scheduler::schedule();
-    }
-}
-
-extern "C" fn syscall_child_return_stub() {
-    let Some(task_ref) = task::current_task() else {
-        fail_and_exit_current_task(127);
-    };
-
-    let frame = {
-        let mut task = task_ref.lock();
-        task.fork_return_frame.take()
-    };
-    let Some(frame) = frame else {
-        fail_and_exit_current_task(127);
-    };
-
-    unsafe {
-        task::arch::enter_user_fork_return(&frame);
-    }
-}
-
 fn parse_signal(raw_sig: usize) -> Result<i32, i32> {
     let sig = raw_sig as i32;
     if sig < 0 || sig > MAX_SIGNAL {
         return Err(EINVAL);
     }
     Ok(sig)
-}
-
-fn spawn_minimal_child(
-    name: &str,
-    is_clone_child: bool,
-    mm_mode: task::SpawnMmMode,
-    fork_frame: task::arch::ForkReturnFrame,
-) -> Result<task::ProcessId, i32> {
-    let child_task =
-        task::spawn_kernel_thread_with_mm_mode_checked(name, syscall_child_return_stub, mm_mode)
-            .ok_or(ENOMEM)?;
-    {
-        let mut child = child_task.lock();
-        child.fork_return_frame = Some(fork_frame);
-    }
-    let child_pid = child_task.lock().pid;
-
-    let Some(child_process) = task::find_process_by_pid(child_pid) else {
-        return Err(ESRCH);
-    };
-
-    child_process.lock().is_clone_child = is_clone_child;
-
-    if crate::config::DEBUG_VERBOSE {
-        crate::kprintln!(
-            "\x1b[90m[diag]\x1b[0m[task] syscall spawn child: pid={} clone_child={} name={}",
-            child_pid.0,
-            is_clone_child,
-            name
-        );
-    }
-
-    Ok(child_pid)
-}
-
-fn wait_for_vfork_release(child_pid: task::ProcessId) {
-    let options = task::WaitChildOptions {
-        clone_filter: task::WaitCloneFilter::All,
-        ..task::WaitChildOptions::default()
-    };
-
-    let mut logged_wait = false;
-    loop {
-        match task::wait_child_observe_by_target_with_options(
-            task::WaitTarget::Pid(child_pid),
-            options,
-        ) {
-            task::WaitChildObserveResult::Reapable(_, _)
-            | task::WaitChildObserveResult::NoMatchedChild => {
-                break;
-            }
-            task::WaitChildObserveResult::Stopped(_, _)
-            | task::WaitChildObserveResult::Continued(_)
-            | task::WaitChildObserveResult::ChildRunning => {
-                if !logged_wait {
-                    if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!(
-                            "\x1b[90m[diag]\x1b[0m[task] vfork parent waiting child_pid={}",
-                            child_pid.0
-                        );
-                    }
-                    logged_wait = true;
-                }
-                task::scheduler::schedule();
-            }
-        }
-    }
-}
-
-fn clone_impl(
-    flags: usize,
-    child_stack: usize,
-    parent_tid: usize,
-    child_tid: usize,
-    tls: usize,
-) -> Result<task::ProcessId, i32> {
-    let unsupported = flags & !CLONE_SUPPORTED_FLAGS;
-    if unsupported != 0 {
-        if crate::config::DEBUG_VERBOSE {
-            crate::kprintln!(
-                "\x1b[90m[diag]\x1b[0m[clone] unsupported flags={:#x} allowed={:#x}",
-                unsupported,
-                CLONE_SUPPORTED_FLAGS
-            );
-        }
-        return Err(EINVAL);
-    }
-
-    if (flags & CLONE_VFORK) != 0 && (flags & CLONE_VM) == 0 {
-        if crate::config::DEBUG_VERBOSE {
-            crate::kprintln!(
-                "\x1b[90m[diag]\x1b[0m[clone] invalid flags: CLONE_VFORK without CLONE_VM flags={:#x}",
-                flags
-            );
-        }
-        return Err(EINVAL);
-    }
-
-    if (flags & CLONE_VM) != 0 && (flags & CLONE_VFORK) == 0 {
-        if crate::config::DEBUG_VERBOSE {
-            crate::kprintln!(
-                "\x1b[90m[diag]\x1b[0m[clone] unsupported CLONE_VM without CLONE_VFORK flags={:#x}",
-                flags
-            );
-        }
-        return Err(EINVAL);
-    }
-
-    if child_stack != 0
-        || parent_tid != 0
-        || child_tid != 0
-        || tls != 0
-        || (flags & CLONE_THREAD) != 0
-        || (flags & CLONE_PARENT_SETTID) != 0
-        || (flags & CLONE_CHILD_SETTID) != 0
-        || (flags & CLONE_CHILD_CLEARTID) != 0
-        || (flags & CLONE_SETTLS) != 0
-        || (flags & CLONE_DETACHED) != 0
-    {
-        if crate::config::DEBUG_VERBOSE {
-            crate::kprintln!(
-                "\x1b[90m[diag]\x1b[0m[clone] unsupported args/flags child_stack={:#x} ptid={:#x} ctid={:#x} tls={:#x} flags={:#x}",
-                child_stack,
-                parent_tid,
-                child_tid,
-                tls,
-                flags
-            );
-        }
-        return Err(EINVAL);
-    }
-
-    let exit_signal = (flags & CSIGNAL) as i32;
-    if exit_signal < 0 || exit_signal > MAX_SIGNAL {
-        return Err(EINVAL);
-    }
-
-    let is_clone_child = exit_signal != 0 && exit_signal != SIGCHLD;
-    let child_name = if (flags & CLONE_VFORK) != 0 {
-        "vfork_child"
-    } else if is_clone_child {
-        "clone_child"
-    } else {
-        "fork_child"
-    };
-
-    let mm_mode = if (flags & CLONE_VM) != 0 {
-        task::SpawnMmMode::InheritShared
-    } else {
-        task::SpawnMmMode::InheritPrivate
-    };
-
-    let fork_frame = crate::arch::syscall::current_fork_return_frame().ok_or(EINVAL)?;
-
-    let child_pid = spawn_minimal_child(child_name, is_clone_child, mm_mode, fork_frame)?;
-
-    if (flags & CLONE_VFORK) != 0 {
-        wait_for_vfork_release(child_pid);
-    }
-
-    Ok(child_pid)
 }
 
 fn collect_kill_targets(raw_pid: isize) -> Result<Vec<task::ProcessId>, i32> {
@@ -870,7 +668,7 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
             let removed_ready = task::scheduler::SCHEDULER.remove_tasks_by_pid(pid);
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "\x1b[90m[diag]\x1b[0m[signal] terminate pid={} sig={} removed_ready={}",
+                    "[90m[diag][0m[signal] terminate pid={} sig={} removed_ready={}",
                     pid.0,
                     sig,
                     removed_ready
@@ -898,7 +696,7 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
             let removed_ready = task::scheduler::SCHEDULER.remove_tasks_by_pid(pid);
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "\x1b[90m[diag]\x1b[0m[signal] stop pid={} blocked_tasks={} removed_ready={}",
+                    "[90m[diag][0m[signal] stop pid={} blocked_tasks={} removed_ready={}",
                     pid.0,
                     blocked_tasks,
                     removed_ready
@@ -933,7 +731,7 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
 
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
-                    "\x1b[90m[diag]\x1b[0m[signal] continue pid={} resumed_tasks={}",
+                    "[90m[diag][0m[signal] continue pid={} resumed_tasks={}",
                     pid.0,
                     resumed_tasks
                 );
@@ -945,21 +743,21 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
 }
 
 pub(crate) fn sys_clone(args: &SyscallArgs) -> SyscallRet {
-    match task::process::fork::clone_current(args.arg0, args.arg1, args.arg2, args.arg3, args.arg4) {
+    match task::clone_current(args.arg0, args.arg1, args.arg2, args.arg3, args.arg4) {
         Ok(child_pid) => ok(child_pid.0),
         Err(errno) => err(errno),
     }
 }
 
 pub(crate) fn sys_fork(_args: &SyscallArgs) -> SyscallRet {
-    match task::process::fork::fork_current() {
+    match task::fork_current() {
         Ok(child_pid) => ok(child_pid.0),
         Err(errno) => err(errno),
     }
 }
 
 pub(crate) fn sys_vfork(_args: &SyscallArgs) -> SyscallRet {
-    match task::process::fork::vfork_current() {
+    match task::vfork_current() {
         Ok(child_pid) => ok(child_pid.0),
         Err(errno) => err(errno),
     }
@@ -1185,7 +983,6 @@ pub(crate) fn sys_tgkill(args: &SyscallArgs) -> SyscallRet {
 
 pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
     let raw_pid = args.arg0 as isize;
-    let filter = parse_wait_pid(raw_pid);
     let status_ptr = args.arg1;
     let rusage_ptr = args.arg3;
 
@@ -1203,9 +1000,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
         }
     };
 
-    let mut logged_waiting = false;
-
-    let target = match filter {
+    let target = match parse_wait_pid(raw_pid) {
         WaitPidFilter::Target(target) => target,
         WaitPidFilter::Invalid => {
             if crate::config::DEBUG_VERBOSE {
@@ -1222,179 +1017,143 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
         current_thread_only: options.current_thread_only,
     };
 
-    loop {
-        match task::process::wait::observe_by_target_with_options(target, wait_options) {
-            task::WaitChildObserveResult::Reapable(child_pid, exit_code) => {
-                let rusage = current_wait_rusage(child_pid);
-
-                if let Err(errno) = write_wait_status(status_ptr, encode_exit_status(exit_code)) {
-                    if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!(
-                            "\x1b[90m[diag]\x1b[0m[wait4] write status failed ptr={:#x} errno={}",
-                            status_ptr,
-                            errno
-                        );
-                    }
-                    return err(errno);
-                }
-                if let Err(errno) = write_wait_rusage(rusage_ptr, &rusage) {
-                    if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!(
-                            "\x1b[90m[diag]\x1b[0m[wait4] write rusage failed ptr={:#x} errno={}",
-                            rusage_ptr,
-                            errno
-                        );
-                    }
-                    return err(errno);
-                }
-
-                let Some((reaped_pid, _reaped_exit_code)) = task::process::wait::reap_observed(child_pid)
-                else {
-                    continue;
-                };
-
+    match task::wait_event_by_target(target, wait_options, options.nohang) {
+        task::WaitEvent::Exited {
+            pid,
+            exit_code,
+            rusage,
+        } => {
+            let rusage = build_wait_rusage(rusage);
+            if let Err(errno) = write_wait_status(status_ptr, encode_exit_status(exit_code)) {
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "\x1b[90m[diag]\x1b[0m[wait4] reaped child pid={} target={:?} options={:#x} rusage_ptr={:#x}",
-                        reaped_pid.0,
-                        target,
-                        options.raw,
-                        rusage_ptr
+                        "\x1b[90m[diag]\x1b[0m[wait4] write status failed ptr={:#x} errno={}",
+                        status_ptr,
+                        errno
                     );
                 }
-                return ok(reaped_pid.0);
+                return err(errno);
             }
-            task::WaitChildObserveResult::Stopped(child_pid, signal) => {
-                let rusage = current_wait_rusage(child_pid);
-
-                if let Err(errno) = write_wait_status(status_ptr, encode_stopped_status(signal)) {
-                    if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!(
-                            "\x1b[90m[diag]\x1b[0m[wait4] write status failed ptr={:#x} errno={} (stopped)",
-                            status_ptr,
-                            errno
-                        );
-                    }
-                    return err(errno);
-                }
-
-                if let Err(errno) = write_wait_rusage(rusage_ptr, &rusage) {
-                    if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!(
-                            "\x1b[90m[diag]\x1b[0m[wait4] write rusage failed ptr={:#x} errno={} (stopped)",
-                            rusage_ptr,
-                            errno
-                        );
-                    }
-                    return err(errno);
-                }
-
-                if !task::process::wait::consume_observed_event(
-                    child_pid,
-                    task::WaitChildConsumeEvent::Stopped,
-                ) {
-                    continue;
-                }
-
+            if let Err(errno) = write_wait_rusage(rusage_ptr, &rusage) {
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "\x1b[90m[diag]\x1b[0m[wait4] observed stopped child pid={} sig={} target={:?} options={:#x}",
-                        child_pid.0,
-                        signal,
-                        target,
-                        options.raw
+                        "\x1b[90m[diag]\x1b[0m[wait4] write rusage failed ptr={:#x} errno={}",
+                        rusage_ptr,
+                        errno
                     );
                 }
-                return ok(child_pid.0);
+                return err(errno);
             }
-            task::WaitChildObserveResult::Continued(child_pid) => {
-                let rusage = current_wait_rusage(child_pid);
 
-                if let Err(errno) = write_wait_status(status_ptr, encode_continued_status()) {
-                    if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!(
-                            "\x1b[90m[diag]\x1b[0m[wait4] write status failed ptr={:#x} errno={} (continued)",
-                            status_ptr,
-                            errno
-                        );
-                    }
-                    return err(errno);
-                }
-
-                if let Err(errno) = write_wait_rusage(rusage_ptr, &rusage) {
-                    if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!(
-                            "\x1b[90m[diag]\x1b[0m[wait4] write rusage failed ptr={:#x} errno={} (continued)",
-                            rusage_ptr,
-                            errno
-                        );
-                    }
-                    return err(errno);
-                }
-
-                if !task::process::wait::consume_observed_event(
-                    child_pid,
-                    task::WaitChildConsumeEvent::Continued,
-                ) {
-                    continue;
-                }
-
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[wait4] reaped child pid={} target={:?} options={:#x} rusage_ptr={:#x}",
+                    pid.0,
+                    target,
+                    options.raw,
+                    rusage_ptr
+                );
+            }
+            ok(pid.0)
+        }
+        task::WaitEvent::Stopped { pid, signal, rusage } => {
+            let rusage = build_wait_rusage(rusage);
+            if let Err(errno) = write_wait_status(status_ptr, encode_stopped_status(signal)) {
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "\x1b[90m[diag]\x1b[0m[wait4] observed continued child pid={} target={:?} options={:#x}",
-                        child_pid.0,
-                        target,
-                        options.raw
+                        "\x1b[90m[diag]\x1b[0m[wait4] write status failed ptr={:#x} errno={} (stopped)",
+                        status_ptr,
+                        errno
                     );
                 }
-                return ok(child_pid.0);
+                return err(errno);
             }
-            task::WaitChildObserveResult::NoMatchedChild => {
+            if let Err(errno) = write_wait_rusage(rusage_ptr, &rusage) {
                 if crate::config::DEBUG_VERBOSE {
                     crate::kprintln!(
-                        "\x1b[90m[diag]\x1b[0m[wait4] no matched child target={:?}",
-                        target
+                        "\x1b[90m[diag]\x1b[0m[wait4] write rusage failed ptr={:#x} errno={} (stopped)",
+                        rusage_ptr,
+                        errno
                     );
                 }
-                return err(ECHILD);
+                return err(errno);
             }
-            task::WaitChildObserveResult::ChildRunning => {
-                if options.nohang {
-                    if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!(
-                            "\x1b[90m[diag]\x1b[0m[wait4] nohang: child not exited target={:?}",
-                            target
-                        );
-                    }
-                    return ok(0);
-                }
 
-                if !logged_waiting {
-                    if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!(
-                            "\x1b[90m[diag]\x1b[0m[wait4] blocking wait target={:?}",
-                            target
-                        );
-                    }
-                    logged_waiting = true;
-                }
-
-                task::scheduler::schedule();
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[wait4] observed stopped child pid={} sig={} target={:?} options={:#x}",
+                    pid.0,
+                    signal,
+                    target,
+                    options.raw
+                );
             }
+            ok(pid.0)
+        }
+        task::WaitEvent::Continued { pid, rusage } => {
+            let rusage = build_wait_rusage(rusage);
+            if let Err(errno) = write_wait_status(status_ptr, encode_continued_status()) {
+                if crate::config::DEBUG_VERBOSE {
+                    crate::kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[wait4] write status failed ptr={:#x} errno={} (continued)",
+                        status_ptr,
+                        errno
+                    );
+                }
+                return err(errno);
+            }
+            if let Err(errno) = write_wait_rusage(rusage_ptr, &rusage) {
+                if crate::config::DEBUG_VERBOSE {
+                    crate::kprintln!(
+                        "\x1b[90m[diag]\x1b[0m[wait4] write rusage failed ptr={:#x} errno={} (continued)",
+                        rusage_ptr,
+                        errno
+                    );
+                }
+                return err(errno);
+            }
+
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[wait4] observed continued child pid={} target={:?} options={:#x}",
+                    pid.0,
+                    target,
+                    options.raw
+                );
+            }
+            ok(pid.0)
+        }
+        task::WaitEvent::NoMatchedChild => {
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[wait4] no matched child target={:?}",
+                    target
+                );
+            }
+            err(ECHILD)
+        }
+        task::WaitEvent::StillRunning => {
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[wait4] nohang: child not exited target={:?}",
+                    target
+                );
+            }
+            ok(0)
         }
     }
 }
 
 pub(crate) fn sys_exit(args: &SyscallArgs) -> SyscallRet {
     let exit_code = args.arg0 as i32;
-    task::process::exit::exit_current_task(exit_code);
+    task::exit_current_task(exit_code);
     task::scheduler::schedule();
     ok(0)
 }
 
 pub(crate) fn sys_exit_group(args: &SyscallArgs) -> SyscallRet {
     let exit_code = args.arg0 as i32;
-    task::process::exit::exit_current_process(exit_code);
+    task::exit_current_process(exit_code);
     task::scheduler::schedule();
     ok(0)
 }

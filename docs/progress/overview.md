@@ -98,6 +98,7 @@ january_os 当前开发状态与功能完成情况。
 - ✅ `mm/mod.rs` 从通配 re-export 收紧为显式导出 + 兼容命名空间模块
 - ✅ `task/exec.rs` 已迁入 `task/process/exec.rs`，明确归属进程生命周期组件
 - ✅ `fork/wait/exit` 已开始通过 `task/process/*` façade 暴露，`syscall/process` 向薄适配层收敛
+- ✅ `wait4` 阻塞/观测/回收编排已下沉到 `task/process/wait.rs`，`syscall/handlers/process.rs` 仅保留 ABI 解码与用户态写回
 - ⚠️ 组件化目前主要落在启动编排与接口 façade，跨子系统深层直接依赖仍需继续收敛
 
 **2026-02-08 - 任务管理与系统调用实现**
