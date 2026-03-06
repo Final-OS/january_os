@@ -1,0 +1,10 @@
+[package]
+name = "january_user_coreutils"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+january_user_runtime = { path = "../runtime" }

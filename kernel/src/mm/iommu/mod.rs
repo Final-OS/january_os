@@ -588,7 +588,7 @@ pub fn iommu_stats() -> IommuStats {
 // DMA 一致性内存 API
 // ============================================================================
 
-use super::page::{PageOwner, max_pfn, page_to_pfn, pfn_to_page};
+use super::page::{max_pfn, page_to_pfn, pfn_to_page, PageOwner};
 use crate::mm::page::buddy::alloc_pages;
 use crate::mm::page::zone::GfpFlags;
 

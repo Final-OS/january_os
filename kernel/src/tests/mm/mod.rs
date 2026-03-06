@@ -14,9 +14,10 @@ mod swiotlb;
 mod vmalloc_heal;
 
 use crate::{error, kprintln, ok};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static MM_STEP_SEQ: AtomicUsize = AtomicUsize::new(0);
+static MM_FAILED: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn mm_step(msg: &str) {
     let seq = MM_STEP_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
@@ -31,6 +32,7 @@ pub fn run() {
 
 pub fn run_with_filter(filter: Option<&str>) {
     MM_STEP_SEQ.store(0, Ordering::SeqCst);
+    MM_FAILED.store(false, Ordering::SeqCst);
     kprintln!("=== MM Subsystem Tests ===");
     mm_step("start mm test suite");
     if crate::config::DEBUG_VERBOSE {
@@ -39,30 +41,18 @@ pub fn run_with_filter(filter: Option<&str>) {
 
     match filter {
         None | Some("all") => {
-            mm_step("run case=swiotlb");
-            swiotlb::run();
-            mm_step("run case=dma_coherent_guard");
-            dma_coherent_guard::run();
-            mm_step("run case=slub");
-            slub::run();
-            mm_step("run case=buddy");
-            buddy::run();
-            mm_step("run case=page_counter_guard");
-            page_counter_guard::run();
-            mm_step("run case=status_readonly");
-            status_readonly::run();
-            mm_step("run case=pcp");
-            pcp::run();
-            mm_step("run case=heap");
-            heap::run();
-            mm_step("run case=mmap");
-            mmap::run();
-            mm_step("run case=pt_ownership");
-            pt_ownership::run();
-            mm_step("run case=pt_reclaim");
-            pt_reclaim::run();
-            mm_step("run case=vmalloc_heal");
-            vmalloc_heal::run();
+            run_case("run case=swiotlb", swiotlb::run);
+            run_case("run case=dma_coherent_guard", dma_coherent_guard::run);
+            run_case("run case=slub", slub::run);
+            run_case("run case=buddy", buddy::run);
+            run_case("run case=page_counter_guard", page_counter_guard::run);
+            run_case("run case=status_readonly", status_readonly::run);
+            run_case("run case=pcp", pcp::run);
+            run_case("run case=heap", heap::run);
+            run_case("run case=mmap", mmap::run);
+            run_case("run case=pt_ownership", pt_ownership::run);
+            run_case("run case=pt_reclaim", pt_reclaim::run);
+            run_case("run case=vmalloc_heal", vmalloc_heal::run);
         }
         Some("swiotlb") => {
             mm_step("run case=swiotlb");
@@ -129,5 +119,22 @@ pub(super) fn pass(name: &str) {
 }
 
 pub(super) fn fail(name: &str, msg: &str) {
+    MM_FAILED.store(true, Ordering::SeqCst);
     error!("mm/{}: {}", name, msg);
+}
+
+#[inline]
+fn run_case(step: &str, case: fn()) {
+    if MM_FAILED.load(Ordering::SeqCst) {
+        return;
+    }
+
+    mm_step(step);
+    case();
+
+    if MM_FAILED.load(Ordering::SeqCst) {
+        if crate::config::DEBUG_VERBOSE {
+            kprintln!("[test/mm] abort remaining cases after failure");
+        }
+    }
 }

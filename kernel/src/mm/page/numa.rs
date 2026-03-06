@@ -5,7 +5,7 @@
 // ============================================================================
 
 use super::page::ListHead;
-use super::zone::{FreeArea, MAX_ORDER, NR_ZONES, Zone, ZoneType};
+use super::zone::{FreeArea, Zone, ZoneType, MAX_ORDER, NR_ZONES};
 use crate::config;
 use crate::interrupt::apic::local_apic_id;
 use crate::mm::vm::layout::PAGE_SIZE;

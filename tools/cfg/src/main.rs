@@ -57,6 +57,8 @@ struct KernelConfig {
     vmalloc_end: String,
     heap_init_size: u64,
     stack_size: u64,
+    #[serde(default = "default_initrd_command")]
+    initrd_command: String,
     #[serde(default)]
     layout: KernelLayoutConfig,
 }
@@ -114,6 +116,10 @@ fn default_vmalloc_start() -> String {
 
 fn default_vmalloc_end() -> String {
     "0xFFFFE8FFFFFFFFFF".to_string()
+}
+
+fn default_initrd_command() -> String {
+    "/bin/sh".to_string()
 }
 
 fn default_layout_profile() -> String {
@@ -285,6 +291,7 @@ impl Config {
             "kernel.vmalloc_end" => Some(self.kernel.vmalloc_end.clone()),
             "kernel.heap_init_size" => Some(self.kernel.heap_init_size.to_string()),
             "kernel.stack_size" => Some(self.kernel.stack_size.to_string()),
+            "kernel.initrd_command" => Some(self.kernel.initrd_command.clone()),
             "kernel.layout.profile" => Some(self.kernel.layout.profile.clone()),
             "kernel.layout.va_mode" => Some(self.kernel.layout.va_mode.clone()),
             "kernel.layout.la57_fallback" => Some(self.kernel.layout.la57_fallback.clone()),
@@ -357,6 +364,11 @@ impl Config {
         let max_cpus = self.limits.max_cpus.max(1);
         let max_apic_ids = self.limits.max_apic_ids.max(1);
         let user_stack_init_pages = self.user.stack_init_pages.max(1);
+        let kernel_initrd_command = self
+            .kernel
+            .initrd_command
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
 
         format!(
             r#"//! Auto-generated from os_cfg.toml - DO NOT EDIT
@@ -382,6 +394,7 @@ pub const VMALLOC_START: u64 = {};
 pub const VMALLOC_END: u64 = {};
 pub const KERNEL_HEAP_INIT_SIZE: u64 = {};
 pub const KERNEL_STACK_SIZE: u64 = {};
+pub const KERNEL_INITRD_COMMAND: &str = "{}";
 pub const KERNEL_LAYOUT_PROFILE: &str = "{}";
 pub const KERNEL_VA_MODE: &str = "{}";
 pub const KERNEL_LA57_FALLBACK: &str = "{}";
@@ -439,6 +452,7 @@ pub const DEBUG_PAGE_ALLOC_TRACE: bool = {};
             self.kernel.vmalloc_end,
             self.kernel.heap_init_size,
             self.kernel.stack_size,
+            kernel_initrd_command,
             self.kernel.layout.profile,
             self.kernel.layout.va_mode,
             self.kernel.layout.la57_fallback,
@@ -493,6 +507,7 @@ pub const DEBUG_PAGE_ALLOC_TRACE: bool = {};
         println!("  vmalloc_end = {}", self.kernel.vmalloc_end);
         println!("  heap_init_size = {}", self.kernel.heap_init_size);
         println!("  stack_size = {}", self.kernel.stack_size);
+        println!("  initrd_command = {}", self.kernel.initrd_command);
         println!("  layout.profile = {}", self.kernel.layout.profile);
         println!("  layout.va_mode = {}", self.kernel.layout.va_mode);
         println!(
@@ -500,11 +515,20 @@ pub const DEBUG_PAGE_ALLOC_TRACE: bool = {};
             self.kernel.layout.la57_fallback
         );
         println!("  layout.kaslr = {}", self.kernel.layout.kaslr);
-        println!("  layout.vmemmap_start = {}", self.kernel.layout.vmemmap_start);
+        println!(
+            "  layout.vmemmap_start = {}",
+            self.kernel.layout.vmemmap_start
+        );
         println!("  layout.vmemmap_end = {}", self.kernel.layout.vmemmap_end);
-        println!("  layout.modules_start = {}", self.kernel.layout.modules_start);
+        println!(
+            "  layout.modules_start = {}",
+            self.kernel.layout.modules_start
+        );
         println!("  layout.modules_end = {}", self.kernel.layout.modules_end);
-        println!("  layout.fixmap_start = {}", self.kernel.layout.fixmap_start);
+        println!(
+            "  layout.fixmap_start = {}",
+            self.kernel.layout.fixmap_start
+        );
         println!("  layout.fixmap_end = {}", self.kernel.layout.fixmap_end);
         println!(
             "  layout.manage_full_phys = {}",

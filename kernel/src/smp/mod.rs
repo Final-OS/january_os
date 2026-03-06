@@ -61,7 +61,11 @@ pub fn current_cpu_id() -> usize {
         return 0;
     }
     let cpu_id = APIC_ID_TO_CPU_ID[apic_id].load(Ordering::Acquire);
-    if cpu_id == CPU_ID_UNMAPPED { 0 } else { cpu_id }
+    if cpu_id == CPU_ID_UNMAPPED {
+        0
+    } else {
+        cpu_id
+    }
 }
 
 pub(crate) fn ap_boot_probe_reset() {

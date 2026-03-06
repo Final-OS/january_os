@@ -8,7 +8,9 @@
 /// 将 hlist 节点指针还原为宿主结构体指针。
 #[macro_export]
 macro_rules! hlist_entry {
-    ($ptr:expr, $type:ty, $field:ident) => {{ $crate::container_of!($ptr, $type, $field) }};
+    ($ptr:expr, $type:ty, $field:ident) => {{
+        $crate::container_of!($ptr, $type, $field)
+    }};
 }
 
 /// 遍历 hlist 节点（`$pos` 为 `*mut HListNode`）。

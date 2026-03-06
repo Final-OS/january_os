@@ -2,7 +2,7 @@ use super::{fail, mm_step, pass};
 use crate::{kprintln, warn};
 
 pub(super) fn run() {
-    use crate::mm::{GFP_KERNEL, GfpFlags, MAX_ORDER, alloc_pages, free_pages, page_to_pfn};
+    use crate::mm::{alloc_pages, free_pages, page_to_pfn, GfpFlags, GFP_KERNEL, MAX_ORDER};
 
     mm_step("buddy: case=invalid_order_rejected");
     let invalid = alloc_pages(MAX_ORDER, GFP_KERNEL);

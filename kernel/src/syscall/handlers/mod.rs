@@ -10,7 +10,7 @@ pub(crate) use common::sys_ni;
 pub(crate) use file::{
     sys_chdir, sys_close, sys_dup, sys_dup2, sys_fcntl, sys_fstat, sys_getcwd, sys_getdents64,
     sys_ioctl, sys_lseek, sys_lstat, sys_open, sys_pipe, sys_pipe2, sys_poll, sys_read, sys_select,
-    sys_stat, sys_write,
+    sys_stat, sys_write, wake_stdin_waiters_if_ready,
 };
 pub(crate) use memory::{sys_brk, sys_mmap, sys_mprotect, sys_munmap};
 pub(crate) use process::{

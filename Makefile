@@ -2,7 +2,7 @@
 # Configuration: os_cfg.toml + vm_cfg.toml
 # Tools: tools/cfg + tools/vmcfg
 
-.PHONY: all build build-boot build-kernel build-tools run run-gui debug prepare-virtio-blk clean config vm-config help iso install-deps
+.PHONY: all build build-boot build-kernel build-userland build-tools run run-gui debug prepare-virtio-blk prepare-initramfs clean config vm-config help iso install-deps
 
 # ==============================================================================
 # 工具路径
@@ -16,6 +16,7 @@ ESP_DIR      := $(BUILD_DIR)/esp
 TOOLS_BIN    := $(ROOT_DIR)/tools/bin
 CFG          := $(TOOLS_BIN)/cfg
 VMCFG        := $(TOOLS_BIN)/vmcfg
+MKINITRAMFS  := $(TOOLS_BIN)/mkinitramfs
 
 # 从 os_cfg.toml 读取内核构建配置（通过 cfg 工具）
 define oscfg_get
@@ -44,6 +45,12 @@ $(VMCFG): tools/vmcfg/vmcfg.sh
 	@mkdir -p $(TOOLS_BIN)
 	@cp tools/vmcfg/vmcfg.sh $(VMCFG)
 	@chmod +x $(VMCFG)
+
+$(MKINITRAMFS): tools/mkinitramfs/src/main.rs tools/mkinitramfs/Cargo.toml
+	@echo "==> Building mkinitramfs tool..."
+	@mkdir -p $(TOOLS_BIN)
+	@cd tools/mkinitramfs && CARGO_TARGET_DIR=/tmp/january_os_tools cargo build --release -q
+	@cp /tmp/january_os_tools/release/mkinitramfs $(MKINITRAMFS)
 
 # ==============================================================================
 # 从配置文件读取
@@ -81,6 +88,12 @@ LINKER       = $(KERNEL_DIR)/arch/$(ARCH)/linker.ld
 BOOT_EFI     = $(BUILD_DIR)/$(BOOT_TARGET)/release/january_os-boot-$(ARCH).efi
 KERNEL_ELF   = $(BUILD_DIR)/$(KERNEL_TARGET)/release/january_os-kernel
 KERNEL_BIN   = $(BUILD_DIR)/kernel.bin
+INITRAMFS_CPIO = $(BUILD_DIR)/initramfs.cpio
+INITRAMFS_ROOT = $(ROOT_DIR)/initramfs
+INITRAMFS_STAGE = $(BUILD_DIR)/initramfs-root
+USERLAND_DIR = $(ROOT_DIR)/userland
+USERLAND_TARGET_DIR = $(BUILD_DIR)/userland
+USERLAND_BINS = sh ls cat pwd echo
 VIRTIO_BLK_IMG = $(BUILD_DIR)/virtio-blk.img
 VIRTIO_BLK_SIZE = 64M
 
@@ -121,14 +134,39 @@ RUSTFLAGS = -C link-arg=-T$(LINKER) -C link-arg=--gc-sections \
 # ==============================================================================
 # 构建目标
 # ==============================================================================
-build: build-boot build-kernel
+build: build-boot build-kernel build-userland prepare-initramfs
 	@mkdir -p $(ESP_DIR)/EFI/BOOT $(ESP_DIR)/EFI/january_os
 	@cp $(BOOT_EFI) $(ESP_DIR)/EFI/BOOT/$(EFI_BOOT_FILE)
 	@cp $(KERNEL_BIN) $(ESP_DIR)/EFI/january_os/kernel.bin
+	@cp $(INITRAMFS_CPIO) $(ESP_DIR)/EFI/january_os/initramfs.cpio
 	@echo "\\EFI\\BOOT\\$(EFI_BOOT_FILE)" > $(ESP_DIR)/startup.nsh
 	@echo "Build complete. Run 'make run' to start"
 
-build-tools: $(CFG) $(VMCFG)
+build-tools: $(CFG) $(VMCFG) $(MKINITRAMFS)
+
+build-userland:
+	@if [ "$(ARCH)" != "x86_64" ]; then \
+		echo "==> Skipping userland build for ARCH=$(ARCH)"; \
+		exit 0; \
+	fi
+	@echo "==> Building userland ($(KERNEL_TARGET))..."
+	@CARGO_TARGET_DIR=$(USERLAND_TARGET_DIR) \
+		RUSTFLAGS="-C link-arg=-T$(USERLAND_DIR)/linker.ld -C link-arg=--gc-sections -C relocation-model=static -C code-model=large -C link-arg=-no-pie -C debuginfo=1" \
+		cargo build --release --manifest-path $(USERLAND_DIR)/Cargo.toml --target $(KERNEL_TARGET) \
+		-Zbuild-std=core
+
+prepare-initramfs: $(MKINITRAMFS) build-userland
+	@mkdir -p $(BUILD_DIR)
+	@rm -rf $(INITRAMFS_STAGE)
+	@mkdir -p $(INITRAMFS_STAGE)
+	@cp -a $(INITRAMFS_ROOT)/. $(INITRAMFS_STAGE)/
+	@if [ "$(ARCH)" = "x86_64" ]; then \
+		mkdir -p $(INITRAMFS_STAGE)/bin; \
+		for bin in $(USERLAND_BINS); do \
+			cp $(USERLAND_TARGET_DIR)/$(KERNEL_TARGET)/release/$$bin $(INITRAMFS_STAGE)/bin/$$bin; \
+		done; \
+	fi
+	@$(MKINITRAMFS) $(INITRAMFS_CPIO) --root $(INITRAMFS_STAGE)
 
 build-boot: $(CFG)
 	@echo "==> Building bootloader ($(BOOT_TARGET))..."
@@ -178,6 +216,8 @@ debug: $(VMCFG) build prepare-virtio-blk
 clean:
 	@cargo clean
 	@rm -rf $(ESP_DIR) $(KERNEL_BIN) $(KERNEL_DIR)/src/generated
+	@rm -f $(INITRAMFS_CPIO)
+	@rm -rf $(INITRAMFS_STAGE)
 	@rm -f $(KERNEL_DIR)/src/smp/arch/x86_64/trampoline.bin
 	@rm -rf $(TOOLS_BIN) /tmp/january_os_tools
 
@@ -190,11 +230,13 @@ iso: build
 	@mkdir -p $(BUILD_DIR)/iso/EFI/BOOT $(BUILD_DIR)/iso/EFI/january_os
 	@cp $(BOOT_EFI) $(BUILD_DIR)/iso/EFI/BOOT/$(EFI_BOOT_FILE)
 	@cp $(KERNEL_BIN) $(BUILD_DIR)/iso/EFI/january_os/kernel.bin
+	@cp $(INITRAMFS_CPIO) $(BUILD_DIR)/iso/EFI/january_os/initramfs.cpio
 	@dd if=/dev/zero of=$(BUILD_DIR)/iso/efi.img bs=1M count=8 2>/dev/null
 	@mkfs.fat -F 12 $(BUILD_DIR)/iso/efi.img >/dev/null
 	@mmd -i $(BUILD_DIR)/iso/efi.img ::/EFI ::/EFI/BOOT ::/EFI/january_os
 	@mcopy -i $(BUILD_DIR)/iso/efi.img $(BOOT_EFI) ::/EFI/BOOT/$(EFI_BOOT_FILE)
 	@mcopy -i $(BUILD_DIR)/iso/efi.img $(KERNEL_BIN) ::/EFI/january_os/kernel.bin
+	@mcopy -i $(BUILD_DIR)/iso/efi.img $(INITRAMFS_CPIO) ::/EFI/january_os/initramfs.cpio
 	@xorriso -as mkisofs -R -J -V "JANUARY_OS" -o $(BUILD_DIR)/january_os.iso \
 		-e efi.img -no-emul-boot -append_partition 2 0xef $(BUILD_DIR)/iso/efi.img \
 		-appended_part_as_gpt $(BUILD_DIR)/iso 2>/dev/null

@@ -75,8 +75,8 @@ pub use iommu::{IommuType, TranslationMode};
 // ============================================================================
 
 pub use setup::{
-    MemoryRegionInfo, MmInitStage, finish_mm_init, init_buddy_system, init_memblock, init_slub,
-    init_stage,
+    finish_mm_init, init_buddy_system, init_memblock, init_slub, init_stage, MemoryRegionInfo,
+    MmInitStage,
 };
 
 // ============================================================================

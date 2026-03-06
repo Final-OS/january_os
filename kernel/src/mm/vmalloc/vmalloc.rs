@@ -12,7 +12,7 @@ use crate::mm::page::page::{page_to_pfn, pfn_to_page};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::vm::layout::PAGE_SIZE;
 use crate::mm::vm::paging::{
-    PTE_GLOBAL, PTE_NO_CACHE, PTE_PRESENT, PTE_WRITABLE, PageTableManager,
+    PageTableManager, PTE_GLOBAL, PTE_NO_CACHE, PTE_PRESENT, PTE_WRITABLE,
 };
 use crate::sync::{Mutex, OnceCell};
 use core::panic::Location;

@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "runtime",
+    "coreutils",
+    "sh",
+    "ls",
+    "cat",
+    "pwd",
+    "echo",
+]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = "z"

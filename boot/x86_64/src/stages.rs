@@ -1,19 +1,23 @@
 //! 引导阶段流程（退出 Boot Services 之前）
 
 use crate::boot_services::{
-    find_acpi_rsdp, find_smbios, get_runtime_services, load_kernel, scan_disks, setup_graphics,
+    find_acpi_rsdp, find_smbios, get_runtime_services, load_initramfs, load_kernel, scan_disks,
+    setup_graphics,
 };
 use crate::bootinfo::FramebufferInfo;
 use crate::buffers::BootBufferLayout;
+use crate::cfg;
 use crate::console::{print_bool, print_dec, print_hex, print_stage, print_uefi, println_uefi};
 use crate::paging::probe_paging_mode;
 
-const KERNEL_CMDLINE: &[u8] = b"console=ttyS0 loglevel=7\0";
+const CMDLINE_PREFIX: &[u8] = b"console=ttyS0 loglevel=7 initrd=";
 
 #[derive(Clone, Copy)]
 pub struct StageState {
     pub framebuffer: FramebufferInfo,
     pub kernel_size: u64,
+    pub initramfs_phys_addr: u64,
+    pub initramfs_size: u64,
     pub disk_count: u32,
     pub boot_disk_index: i32,
     pub acpi_rsdp_addr: u64,
@@ -43,9 +47,16 @@ pub fn run_pre_exit_stages(buffers: &BootBufferLayout) -> StageState {
     // Stage 2: Kernel
     print_stage(2, "Kernel");
     let kernel_size = load_kernel() as u64;
+    let (initramfs_phys_addr, initramfs_size) = load_initramfs();
     print_uefi("      ");
     print_dec(kernel_size / 1024);
-    println_uefi(" KB");
+    print_uefi(" KB, initramfs=");
+    if initramfs_size > 0 {
+        print_dec(initramfs_size / 1024);
+        println_uefi(" KB");
+    } else {
+        println_uefi("none");
+    }
 
     // Stage 3: Storage
     print_stage(3, "Storage");
@@ -138,6 +149,8 @@ pub fn run_pre_exit_stages(buffers: &BootBufferLayout) -> StageState {
     StageState {
         framebuffer,
         kernel_size,
+        initramfs_phys_addr,
+        initramfs_size,
         disk_count,
         boot_disk_index,
         acpi_rsdp_addr,
@@ -156,12 +169,28 @@ pub fn print_handoff_stage() {
 }
 
 fn write_kernel_cmdline(cmdline_phys: u64) -> u32 {
-    unsafe {
-        let cmdline_ptr = cmdline_phys as *mut u8;
-        for (index, &byte) in KERNEL_CMDLINE.iter().enumerate() {
-            *cmdline_ptr.add(index) = byte;
-        }
+    let initrd = cfg::INITRD_COMMAND.as_bytes();
+    let total_len = CMDLINE_PREFIX
+        .len()
+        .saturating_add(initrd.len())
+        .saturating_add(1);
+    if total_len == 0 || total_len > 4096 {
+        return 0;
     }
 
-    (KERNEL_CMDLINE.len() - 1) as u32
+    unsafe {
+        let cmdline_ptr = cmdline_phys as *mut u8;
+        let mut index = 0usize;
+        for &byte in CMDLINE_PREFIX.iter() {
+            *cmdline_ptr.add(index) = byte;
+            index += 1;
+        }
+        for &byte in initrd.iter() {
+            *cmdline_ptr.add(index) = byte;
+            index += 1;
+        }
+        *cmdline_ptr.add(index) = 0;
+    }
+
+    (total_len - 1) as u32
 }

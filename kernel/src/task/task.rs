@@ -1,6 +1,6 @@
 use super::arch::TaskContext;
 use super::id::{ProcessId, TaskId};
-use alloc::alloc::{Layout, alloc, dealloc};
+use alloc::alloc::{alloc, dealloc, Layout};
 use alloc::string::String;
 use core::ptr::NonNull;
 

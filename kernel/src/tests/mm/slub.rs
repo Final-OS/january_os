@@ -3,9 +3,9 @@ use crate::config;
 use crate::kprintln;
 
 pub(super) fn run() {
-    use crate::mm::GFP_KERNEL;
     use crate::mm::page::page::pfn_to_page;
     use crate::mm::slub::{kfree, kmalloc};
+    use crate::mm::GFP_KERNEL;
     use core::ptr;
 
     // 1) 异常输入：kfree(null) 必须是 no-op

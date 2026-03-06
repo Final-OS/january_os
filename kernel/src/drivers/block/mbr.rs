@@ -1,7 +1,7 @@
 //! MBR partition parser.
 
-use super::BlockDevice;
 use super::partition::{Partition, PartitionError, PartitionType};
+use super::BlockDevice;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;

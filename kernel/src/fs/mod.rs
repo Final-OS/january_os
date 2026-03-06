@@ -1010,7 +1010,7 @@ impl FsState {
             return Err(ENOENT);
         }
 
-        if let Some(data) = vfs::staticfs::read_file(resolved.as_str()) {
+        if let Some(data) = vfs::initramfs::read_file(resolved.as_str()) {
             return Ok(data.to_vec());
         }
 
@@ -1037,19 +1037,22 @@ impl FsState {
 
 static FS_STATE: Mutex<FsState> = Mutex::new(FsState::new());
 
-pub fn init() {
+pub fn init(initramfs: Option<(u64, u64)>) {
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!("\x1b[90m[diag]\x1b[0m[fs] init vfs-backed fd runtime");
     }
-    vfs::mount_root(Arc::new(vfs::staticfs::StaticFileSystem::new()));
-}
-
-pub fn register_static_file(path: &'static str, data: &'static [u8]) -> Result<(), i32> {
-    vfs::staticfs::register_file(path, data).map_err(|e| e.errno())
-}
-
-pub fn read_static_file(path: &str) -> Option<&'static [u8]> {
-    vfs::staticfs::read_file(path)
+    if let Some((phys, size)) = initramfs {
+        if let Err(err) = vfs::initramfs::init_from_phys(phys, size) {
+            let _ = vfs::initramfs::init_from_phys(0, 0);
+            crate::warn!("[fs] initramfs parse failed: {:?}", err);
+        }
+    } else {
+        let _ = vfs::initramfs::init_from_phys(0, 0);
+        if crate::config::DEBUG_VERBOSE {
+            crate::kprintln!("\x1b[90m[diag]\x1b[0m[fs] initramfs not provided");
+        }
+    }
+    vfs::mount_root(Arc::new(vfs::initramfs::InitramfsFileSystem::new()));
 }
 
 pub fn open_for_pid(pid: usize, path: &str, flags: u32, mode: u16) -> Result<i32, i32> {
@@ -1060,7 +1063,7 @@ pub fn open_for_pid(pid: usize, path: &str, flags: u32, mode: u16) -> Result<i32
 
     let inode = vfs::lookup_path(resolved.as_str()).map_err(|e| e.errno())?;
     let meta = inode.metadata().map_err(|e| e.errno())?;
-    let static_data = vfs::staticfs::read_file(resolved.as_str());
+    let static_data = vfs::initramfs::read_file(resolved.as_str());
 
     let hint = VfsOpenHint {
         inode,

@@ -12,6 +12,7 @@ const EFER_SCE: u64 = 1 << 0;
 const EFER_NXE: u64 = 1 << 11;
 
 const FMASK_CLEAR_FLAGS: u64 = (1 << 9) | (1 << 8);
+const SYSCALL_TRACE_VERBOSE: bool = false;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -133,7 +134,7 @@ extern "C" fn syscall_dispatch_from_asm(frame: *const RawSyscallFrame) -> usize 
     let should_log = seq < 32 || frame.nr == 59 || frame.nr == 60 || frame.nr == 231;
 
     if should_log {
-        if crate::config::DEBUG_VERBOSE {
+        if crate::config::DEBUG_VERBOSE && SYSCALL_TRACE_VERBOSE {
             crate::kprintln!(
                 "\x1b[90m[diag]\x1b[0m[syscall] enter seq={} nr={} args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}] k_rsp={:#x}",
                 seq,
@@ -154,7 +155,7 @@ extern "C" fn syscall_dispatch_from_asm(frame: *const RawSyscallFrame) -> usize 
     );
 
     if should_log {
-        if crate::config::DEBUG_VERBOSE {
+        if crate::config::DEBUG_VERBOSE && SYSCALL_TRACE_VERBOSE {
             crate::kprintln!(
                 "\x1b[90m[diag]\x1b[0m[syscall] leave seq={} nr={} ret={:#x}",
                 seq,

@@ -2,7 +2,7 @@
 //!
 //! 负责任务的创建、销毁和查找。
 
-use super::exec::{ExecMappedPage, rollback_exec_mappings};
+use super::exec::{rollback_exec_mappings, ExecMappedPage};
 use super::id::{ProcessId, TaskId};
 use super::process::{Process, ProcessStatus};
 use super::scheduler::SCHEDULER;
@@ -95,6 +95,8 @@ pub struct TaskManager {
 pub enum SpawnMmMode {
     InheritShared,
     InheritPrivate,
+    InheritInit,
+    InheritInitPrivate,
 }
 
 impl TaskManager {
@@ -192,6 +194,11 @@ fn resolve_child_mm(parent_pid: Option<ProcessId>, mm_mode: SpawnMmMode) -> Opti
         SpawnMmMode::InheritShared => Some(crate::mm::mm_retain(parent_mm) as usize),
         SpawnMmMode::InheritPrivate => {
             let cloned = crate::mm::mm_clone(parent_mm);
+            (!cloned.is_null()).then_some(cloned as usize)
+        }
+        SpawnMmMode::InheritInit => Some(crate::mm::mm_retain(crate::mm::init_mm_ptr()) as usize),
+        SpawnMmMode::InheritInitPrivate => {
+            let cloned = crate::mm::mm_clone(crate::mm::init_mm_ptr());
             (!cloned.is_null()).then_some(cloned as usize)
         }
     }

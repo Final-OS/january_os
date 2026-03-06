@@ -5,11 +5,11 @@
 // ============================================================================
 
 use super::page::{
-    Page, PageFlags, PageOwner, max_pfn, page_to_pfn, pfn_to_page, vmemmap_base_ptr,
+    max_pfn, page_to_pfn, pfn_to_page, vmemmap_base_ptr, Page, PageFlags, PageOwner,
 };
 use super::pcp::{pcp_alloc_page, pcp_free_page, pcp_initialized};
-use super::zone::{GfpFlags, MAX_ORDER, Zone, get_zone, gfp_to_zone_list};
 use super::zone::{get_buddy_pfn, pages_per_order};
+use super::zone::{get_zone, gfp_to_zone_list, GfpFlags, Zone, MAX_ORDER};
 use crate::mm::vm::layout::PAGE_SIZE;
 use core::sync::atomic::{AtomicBool, Ordering};
 

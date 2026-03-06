@@ -10,20 +10,12 @@ const USERMODE_WAIT_TIMEOUT: usize = usize::MAX - 1;
 const TEST_EXEC_PATH: &str = "/tests/task/test_user.elf";
 
 #[cfg(target_arch = "x86_64")]
-static USERMODE_TEST_ELF: &[u8] = include_bytes!("assets/test_user.elf");
-
-#[cfg(target_arch = "x86_64")]
 pub(super) fn run() {
     let _ = run_with_label("usermode exec/switch");
 }
 
 #[cfg(target_arch = "x86_64")]
 pub(super) fn run_with_label(result_label: &str) -> bool {
-    if let Err(errno) = fs::register_static_file(TEST_EXEC_PATH, USERMODE_TEST_ELF) {
-        error!("task: usermode FAIL (register_static_file errno={})", errno);
-        return false;
-    }
-
     #[inline(never)]
     fn fail_and_exit_current_task(code: i32) -> ! {
         task::exit_current_task(code);
@@ -38,7 +30,20 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
             kprintln!("[test/task] usermode_entry: begin path={}", TEST_EXEC_PATH);
         }
 
-        let load_plan = match task::build_elf_load_plan(USERMODE_TEST_ELF) {
+        let Some(pid) = task::current_pid().map(|pid| pid.0) else {
+            error!("task: usermode FAIL (missing current pid)");
+            fail_and_exit_current_task(127);
+        };
+
+        let image = match fs::read_all_for_pid(pid, TEST_EXEC_PATH) {
+            Ok(image) => image,
+            Err(errno) => {
+                error!("task: usermode FAIL (read_all_for_pid errno={})", errno);
+                fail_and_exit_current_task(127);
+            }
+        };
+
+        let load_plan = match task::build_elf_load_plan(image.as_slice()) {
             Ok(plan) => plan,
             Err(errno) => {
                 error!("task: usermode FAIL (build_elf_load_plan errno={})", errno);
@@ -54,7 +59,7 @@ pub(super) fn run_with_label(result_label: &str) -> bool {
             );
         }
 
-        let staged_mappings = match task::stage_pt_load_mappings(USERMODE_TEST_ELF, &load_plan) {
+        let staged_mappings = match task::stage_pt_load_mappings(image.as_slice(), &load_plan) {
             Ok(mappings) => mappings,
             Err(errno) => {
                 error!(

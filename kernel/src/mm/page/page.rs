@@ -4,7 +4,7 @@
 // 参考 Linux 内核设计，每个物理页帧都有一个对应的 Page 结构
 // ============================================================================
 
-use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,7 +364,11 @@ impl Page {
         let prev = self
             .mapcount
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
-                if old <= -1 { None } else { Some(old - 1) }
+                if old <= -1 {
+                    None
+                } else {
+                    Some(old - 1)
+                }
             });
         let old = match prev {
             Ok(v) => v,

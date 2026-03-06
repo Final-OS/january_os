@@ -42,19 +42,19 @@ pub mod serial;
 
 // 导出串口接口
 pub use serial::{
-    COM1_PORT, Serial, SerialWriter, serial_enable_rx_interrupt, serial_has_input,
-    serial_interrupt_handler, serial_read, serial_read_char, serial_try_read, serial_write,
+    serial_enable_rx_interrupt, serial_has_input, serial_interrupt_handler, serial_read,
+    serial_read_char, serial_try_read, serial_write, Serial, SerialWriter, COM1_PORT,
 };
 
 // 导出控制台接口
 pub use console::{
-    ANSI_COLORS, DEFAULT_BG, DEFAULT_FG, MAX_CONSOLES, VtAction, VtParser, VtState, ansi_to_rgb,
+    ansi_to_rgb, VtAction, VtParser, VtState, ANSI_COLORS, DEFAULT_BG, DEFAULT_FG, MAX_CONSOLES,
 };
 
 // 导出 PTY 接口
 pub use pty::{
-    ControlChar, InputFlags, LocalFlags, MAX_PTYS, OutputFlags, PTY_BUFFER_SIZE, PtyManager,
-    PtyPair, RingBuffer, Termios, WinSize,
+    ControlChar, InputFlags, LocalFlags, OutputFlags, PtyManager, PtyPair, RingBuffer, Termios,
+    WinSize, MAX_PTYS, PTY_BUFFER_SIZE,
 };
 
 /// 初始化 TTY 子系统

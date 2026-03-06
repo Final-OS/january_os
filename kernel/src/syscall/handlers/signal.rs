@@ -1,7 +1,7 @@
 use alloc::collections::BTreeMap;
 
 use crate::sync::Mutex;
-use crate::syscall::{EFAULT, EINVAL, ENOSYS, ESRCH, SyscallArgs, SyscallRet, err, ok};
+use crate::syscall::{err, ok, SyscallArgs, SyscallRet, EFAULT, EINVAL, ENOSYS, ESRCH};
 use crate::task;
 
 const MAX_SIGNAL: usize = 64;

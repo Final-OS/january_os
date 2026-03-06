@@ -10,6 +10,44 @@ use uefi::Identify;
 use crate::bootinfo::{
     DiskInfo, DiskType, FramebufferInfo, PixelFormatType, KERNEL_PHYS_ADDR, MAX_DISKS,
 };
+
+const KERNEL_PATH: &uefi::CStr16 = uefi::cstr16!("\\EFI\\january_os\\kernel.bin");
+const INITRAMFS_PATH: &uefi::CStr16 = uefi::cstr16!("\\EFI\\january_os\\initramfs.cpio");
+
+fn load_file_to_pages(
+    path: &uefi::CStr16,
+    fixed_phys: Option<u64>,
+    memory_type: MemoryType,
+) -> Option<(u64, usize)> {
+    let fs_handle = boot::get_handle_for_protocol::<SimpleFileSystem>().ok()?;
+    let mut fs = boot::open_protocol_exclusive::<SimpleFileSystem>(fs_handle).ok()?;
+    let mut root = fs.open_volume().ok()?;
+
+    let file_handle = root
+        .open(path, FileMode::Read, FileAttribute::empty())
+        .ok()?;
+    let mut file = file_handle.into_regular_file()?;
+
+    let mut info_buf = [0u8; 512];
+    let file_info: &FileInfo = file.get_info(&mut info_buf).ok()?;
+    let file_size = file_info.file_size() as usize;
+    let pages = (file_size + 4095) / 4096;
+    if pages == 0 {
+        return None;
+    }
+
+    let alloc_type = match fixed_phys {
+        Some(phys) => boot::AllocateType::Address(phys),
+        None => boot::AllocateType::AnyPages,
+    };
+    let phys = boot::allocate_pages(alloc_type, memory_type, pages)
+        .ok()?
+        .as_ptr() as u64;
+    let buffer = unsafe { core::slice::from_raw_parts_mut(phys as *mut u8, file_size) };
+    file.read(buffer).ok()?;
+
+    Some((phys, file_size))
+}
 pub fn setup_graphics() -> FramebufferInfo {
     let gop_handle = match boot::get_handle_for_protocol::<GraphicsOutput>() {
         Ok(h) => h,
@@ -82,46 +120,19 @@ pub fn setup_graphics() -> FramebufferInfo {
 }
 
 pub fn load_kernel() -> usize {
-    let fs_handle =
-        boot::get_handle_for_protocol::<SimpleFileSystem>().expect("No filesystem found");
-    let mut fs = boot::open_protocol_exclusive::<SimpleFileSystem>(fs_handle)
-        .expect("Failed to open filesystem");
+    let (phys, size) =
+        load_file_to_pages(KERNEL_PATH, Some(KERNEL_PHYS_ADDR), MemoryType::LOADER_CODE)
+            .expect("Failed to load kernel file");
+    assert_eq!(phys, KERNEL_PHYS_ADDR, "kernel physical address mismatch");
+    size
+}
 
-    let mut root = fs.open_volume().expect("Failed to open volume");
-
-    let kernel_file_handle = root
-        .open(
-            uefi::cstr16!("\\EFI\\january_os\\kernel.bin"),
-            FileMode::Read,
-            FileAttribute::empty(),
-        )
-        .expect("Failed to open kernel file");
-
-    let mut kernel_file = kernel_file_handle
-        .into_regular_file()
-        .expect("Kernel is not a regular file");
-
-    let mut info_buf = [0u8; 256];
-    let file_info: &FileInfo = kernel_file
-        .get_info(&mut info_buf)
-        .expect("Failed to get file info");
-    let kernel_size = file_info.file_size() as usize;
-
-    let pages = (kernel_size + 4095) / 4096;
-    boot::allocate_pages(
-        boot::AllocateType::Address(KERNEL_PHYS_ADDR),
-        MemoryType::LOADER_CODE,
-        pages,
-    )
-    .expect("Failed to allocate memory for kernel");
-
-    let kernel_buffer =
-        unsafe { core::slice::from_raw_parts_mut(KERNEL_PHYS_ADDR as *mut u8, kernel_size) };
-    kernel_file
-        .read(kernel_buffer)
-        .expect("Failed to read kernel");
-
-    kernel_size
+pub fn load_initramfs() -> (u64, u64) {
+    let Some((phys, size)) = load_file_to_pages(INITRAMFS_PATH, None, MemoryType::LOADER_DATA)
+    else {
+        return (0, 0);
+    };
+    (phys, size as u64)
 }
 
 pub fn scan_disks(diskinfo_phys: u64) -> (u32, i32) {

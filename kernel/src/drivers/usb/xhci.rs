@@ -11,7 +11,7 @@ use crate::interrupt::IRQ_XHCI;
 use crate::mm::buddy::alloc_pages;
 use crate::mm::page::page_to_pfn;
 use crate::mm::vmalloc::{ioremap, iounmap};
-use crate::mm::zone::{GFP_KERNEL_ZERO, GfpFlags};
+use crate::mm::zone::{GfpFlags, GFP_KERNEL_ZERO};
 use crate::sync::IrqSpinLock;
 use crate::{debug, error, info, kprintln, ok, warn};
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
@@ -1599,10 +1599,10 @@ unsafe fn check_ports(xhci: &mut XhciController) {
                 let mut new_sc = port_sc | PORTSC_PR;
                 // 清除状态位 (Write 1 to Clear)
                 new_sc &= !(PORTSC_CSC | PORTSC_PRC); // 不要写 1 到这些位，否则会清除它们?
-                // Wait, spec says RW1C. If we write 1, we clear them.
-                // We want to SET PR.
-                // Ideally we read, mask off RW1C bits, set PR, write back.
-                // RW1C bits: CSC (17), PESC (18), WRC (19), OC (20), PRC (21), PLC (22), CEC (23)
+                                                      // Wait, spec says RW1C. If we write 1, we clear them.
+                                                      // We want to SET PR.
+                                                      // Ideally we read, mask off RW1C bits, set PR, write back.
+                                                      // RW1C bits: CSC (17), PESC (18), WRC (19), OC (20), PRC (21), PLC (22), CEC (23)
                 let change_bits = 0x00FE0000; // Bits 17-23
                 new_sc = (port_sc & !change_bits) | PORTSC_PR;
 

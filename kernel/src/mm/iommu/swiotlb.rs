@@ -5,7 +5,7 @@
 // 用于 32 位设备访问高地址内存
 // ============================================================================
 
-use super::{DMA_ADDR_SIZE, DmaAddr, DmaDirection, PAGE_SIZE};
+use super::{DmaAddr, DmaDirection, DMA_ADDR_SIZE, PAGE_SIZE};
 use alloc::boxed::Box;
 use alloc::vec;
 use core::sync::atomic::{AtomicUsize, Ordering};

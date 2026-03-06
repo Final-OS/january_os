@@ -1,0 +1,8 @@
+[package]
+name = "pwd"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+january_user_runtime = { path = "../runtime" }
+january_user_coreutils = { path = "../coreutils" }

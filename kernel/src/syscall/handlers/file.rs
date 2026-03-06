@@ -1,7 +1,13 @@
+use crate::drivers;
+use crate::drivers::input::hid::keyboard;
+use crate::drivers::tty::serial_read_char;
 use crate::fs;
+use crate::interrupt;
+use crate::libs::wait_queue::{WaitMode, WaitQueue};
+use crate::sync::IrqSpinLock;
 use crate::syscall::{
-    EAGAIN, EBADF, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOSYS, ENOTDIR, ENOTTY, ERANGE, ESRCH,
-    SyscallArgs, SyscallRet, err, ok,
+    err, ok, SyscallArgs, SyscallRet, EAGAIN, EBADF, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOSYS,
+    ENOTDIR, ENOTTY, ERANGE, ESRCH,
 };
 use crate::task;
 use alloc::string::String;
@@ -42,6 +48,8 @@ const POLLNVAL: i16 = 0x0020;
 const TCGETS: usize = 0x5401;
 const TIOCGWINSZ: usize = 0x5413;
 const FIONBIO: usize = 0x5421;
+
+static STDIN_WAITERS: IrqSpinLock<WaitQueue> = IrqSpinLock::new(WaitQueue::new());
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -218,6 +226,89 @@ fn read_user_struct<T: Copy>(ptr: usize) -> Result<T, i32> {
     Ok(unsafe { core::ptr::read(ptr as *const T) })
 }
 
+#[inline]
+fn read_tty_byte() -> Option<u8> {
+    interrupt::read_char()
+        .or_else(serial_read_char)
+        .or_else(keyboard::read_char)
+        .map(|b| if b == b'\r' { b'\n' } else { b })
+}
+
+#[inline]
+fn stdin_has_pending_input() -> bool {
+    drivers::input::has_char() || crate::drivers::tty::serial_has_input()
+}
+
+#[inline]
+fn enqueue_current_stdin_waiter() -> bool {
+    let Some(task_ref) = task::current_task() else {
+        return false;
+    };
+
+    let tid = {
+        let task = task_ref.lock();
+        task.id
+    };
+
+    {
+        let mut waiters = STDIN_WAITERS.lock();
+        waiters.enqueue_mode(tid.0, WaitMode::Exclusive);
+    }
+
+    let mut task = task_ref.lock();
+    if task.status == task::TaskStatus::Exited {
+        let mut waiters = STDIN_WAITERS.lock();
+        let _ = waiters.dequeue(tid.0);
+        return false;
+    }
+    task.status = task::TaskStatus::Blocked;
+    true
+}
+
+#[inline]
+fn dequeue_current_stdin_waiter() {
+    if let Some(tid) = task::current_tid() {
+        let mut waiters = STDIN_WAITERS.lock();
+        let _ = waiters.dequeue(tid.0);
+    }
+}
+
+pub(crate) fn wake_stdin_waiters_if_ready() -> usize {
+    if !stdin_has_pending_input() {
+        return 0;
+    }
+
+    let token = {
+        let mut waiters = STDIN_WAITERS.lock();
+        waiters.wake_one().map(|entry| entry.token)
+    };
+
+    let Some(token) = token else {
+        return 0;
+    };
+
+    let tid = task::TaskId(token);
+    let Some(task_ref) = task::manager::find_task_by_tid(tid) else {
+        return 0;
+    };
+
+    let mut should_enqueue = false;
+    {
+        let mut task = task_ref.lock();
+        if task.status == task::TaskStatus::Blocked {
+            task.status = task::TaskStatus::Ready;
+            should_enqueue = true;
+        }
+    }
+
+    if should_enqueue {
+        task::scheduler::SCHEDULER.add_task(task_ref);
+        1
+    } else {
+        0
+    }
+}
+
 pub(crate) fn sys_open(args: &SyscallArgs) -> SyscallRet {
     let path_ptr = args.arg0;
     let flags = args.arg1 as u32;
@@ -315,6 +406,28 @@ pub(crate) fn sys_read(args: &SyscallArgs) -> SyscallRet {
 
     if let Err(errno) = validate_user_range(buf_ptr, count) {
         return err(errno);
+    }
+
+    if fd == 0 {
+        loop {
+            if let Some(byte) = read_tty_byte() {
+                dequeue_current_stdin_waiter();
+                unsafe {
+                    core::ptr::write(buf_ptr as *mut u8, byte);
+                }
+                return ok(1);
+            }
+
+            if crate::task::current_task().is_some() {
+                if !enqueue_current_stdin_waiter() {
+                    return err(EAGAIN);
+                }
+                crate::task::scheduler::schedule();
+                continue;
+            }
+
+            return err(EAGAIN);
+        }
     }
 
     let pid = match current_pid_raw() {

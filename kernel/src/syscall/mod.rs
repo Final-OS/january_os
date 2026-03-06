@@ -96,3 +96,7 @@ pub fn dispatch(
 pub fn syscall_table() -> &'static [SyscallDef] {
     arch::interface().syscall_table()
 }
+
+pub fn wake_stdin_waiters_if_ready() -> usize {
+    handlers::wake_stdin_waiters_if_ready()
+}

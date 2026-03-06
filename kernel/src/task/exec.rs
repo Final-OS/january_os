@@ -11,7 +11,7 @@ use core::cmp;
 use core::mem::size_of;
 
 use crate::mm;
-use crate::syscall::{E2BIG, EBUSY, EINVAL, ENOENT, ENOMEM};
+use crate::syscall::{E2BIG, EBUSY, EFAULT, EINVAL, ENOENT, ENOMEM};
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELF_CLASS_64: u8 = 2;
@@ -108,6 +108,139 @@ pub struct ExecMappedPage {
     pub phys: u64,
     pub flags: u64,
     pub kind: ExecMappedPageKind,
+}
+
+#[inline]
+unsafe fn write_user_bytes(dst: u64, src: &[u8]) -> Result<(), i32> {
+    if src.is_empty() {
+        return Ok(());
+    }
+
+    let end = dst.checked_add(src.len() as u64).ok_or(E2BIG)?;
+    if !mm::is_user_addr(dst) || !mm::is_user_addr(end - 1) {
+        return Err(EFAULT);
+    }
+
+    core::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, src.len());
+    Ok(())
+}
+
+#[inline]
+unsafe fn write_user_usize(dst: u64, value: usize) -> Result<(), i32> {
+    let end = dst
+        .checked_add(core::mem::size_of::<usize>() as u64)
+        .ok_or(E2BIG)?;
+    if !mm::is_user_addr(dst) || !mm::is_user_addr(end - 1) {
+        return Err(EFAULT);
+    }
+
+    core::ptr::write(dst as *mut usize, value);
+    Ok(())
+}
+
+pub fn setup_initial_user_stack(
+    stack_top: u64,
+    stack_pages: u64,
+    argv: &[&str],
+    envp: &[&str],
+) -> Result<u64, i32> {
+    if stack_pages == 0 {
+        return Err(EINVAL);
+    }
+
+    let stack_span = stack_pages.checked_mul(mm::PAGE_SIZE).ok_or(E2BIG)?;
+    let stack_bottom = stack_top.checked_sub(stack_span).ok_or(E2BIG)?;
+    let mut sp = stack_top;
+    let mut argv_ptrs: Vec<u64> = Vec::with_capacity(argv.len());
+    let mut envp_ptrs: Vec<u64> = Vec::with_capacity(envp.len());
+
+    for value in envp.iter().rev() {
+        let bytes = value.as_bytes();
+        let reserve = (bytes.len() as u64).saturating_add(1);
+        sp = sp.checked_sub(reserve).ok_or(E2BIG)?;
+        if sp < stack_bottom {
+            return Err(E2BIG);
+        }
+        unsafe {
+            write_user_bytes(sp, bytes)?;
+            write_user_bytes(sp + bytes.len() as u64, &[0])?;
+        }
+        envp_ptrs.push(sp);
+    }
+    envp_ptrs.reverse();
+
+    for value in argv.iter().rev() {
+        let bytes = value.as_bytes();
+        let reserve = (bytes.len() as u64).saturating_add(1);
+        sp = sp.checked_sub(reserve).ok_or(E2BIG)?;
+        if sp < stack_bottom {
+            return Err(E2BIG);
+        }
+        unsafe {
+            write_user_bytes(sp, bytes)?;
+            write_user_bytes(sp + bytes.len() as u64, &[0])?;
+        }
+        argv_ptrs.push(sp);
+    }
+    argv_ptrs.reverse();
+
+    sp &= !0xFu64;
+    let word = core::mem::size_of::<usize>() as u64;
+    let planned_pushes = argv_ptrs
+        .len()
+        .saturating_add(envp_ptrs.len())
+        .saturating_add(3);
+    if planned_pushes % 2 == 0 {
+        sp = sp.checked_sub(word).ok_or(E2BIG)?;
+        if sp < stack_bottom {
+            return Err(E2BIG);
+        }
+    }
+    let mut push = |value: usize| -> Result<(), i32> {
+        sp = sp.checked_sub(word).ok_or(E2BIG)?;
+        if sp < stack_bottom {
+            return Err(E2BIG);
+        }
+        unsafe { write_user_usize(sp, value) }
+    };
+
+    push(0)?;
+    for ptr in envp_ptrs.iter().rev() {
+        push(*ptr as usize)?;
+    }
+    let env_start = envp_ptrs.first().copied().unwrap_or(0);
+    let env_end = envp_ptrs
+        .iter()
+        .zip(envp.iter())
+        .last()
+        .map(|(ptr, text)| ptr.saturating_add(text.len() as u64 + 1))
+        .unwrap_or(0);
+
+    push(0)?;
+    for ptr in argv_ptrs.iter().rev() {
+        push(*ptr as usize)?;
+    }
+    let arg_start = argv_ptrs.first().copied().unwrap_or(0);
+    let arg_end = argv_ptrs
+        .iter()
+        .zip(argv.iter())
+        .last()
+        .map(|(ptr, text)| ptr.saturating_add(text.len() as u64 + 1))
+        .unwrap_or(0);
+
+    push(argv.len())?;
+
+    let mm_ptr = crate::task::current_mm_ptr();
+    if !mm_ptr.is_null() {
+        unsafe {
+            (*mm_ptr).arg_start = arg_start;
+            (*mm_ptr).arg_end = arg_end;
+            (*mm_ptr).env_start = env_start;
+            (*mm_ptr).env_end = env_end;
+        }
+    }
+
+    Ok(sp)
 }
 
 #[inline]

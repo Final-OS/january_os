@@ -2,6 +2,8 @@
 //!
 //! 提供基本的命令行交互功能。
 
+use super::coreutils;
+
 use crate::arch::{reboot, shutdown};
 use crate::config;
 use crate::drivers;
@@ -15,9 +17,9 @@ use alloc::vec::Vec;
 
 const CMD_BUF_SIZE: usize = 256;
 const HISTORY_SIZE: usize = 16;
-const SHELL_COMMANDS: [&str; 11] = [
-    "shutdown", "poweroff", "reboot", "status", "mm", "drivers", "pci", "usb", "test", "hotkey",
-    "help",
+const SHELL_COMMANDS: [&str; 16] = [
+    "cat", "cd", "shutdown", "poweroff", "reboot", "status", "mm", "drivers", "pci", "usb", "test",
+    "hotkey", "help", "ls", "pwd", "/bin/sh",
 ];
 
 #[derive(Clone, Copy)]
@@ -304,7 +306,7 @@ fn complete_command(state: &mut ShellState) {
 
 /// 进入 Shell 主循环
 pub fn run() -> ! {
-    kprintln!("Commands: shutdown, status, test, hotkey, help");
+    kprintln!("Commands: shutdown, status, test, hotkey, help, /bin/sh");
     kprintln!("Shortcuts: Tab=complete, Up/Down=history");
     kprintln!();
     print_prompt();
@@ -445,6 +447,23 @@ fn execute_command(cmd: &[u8]) {
                 interrupt::timer_ticks() / 100
             );
         }
+        "ls" => {
+            coreutils::execute_ls_command(args);
+        }
+        "cd" => {
+            coreutils::execute_cd_command(args);
+        }
+        "pwd" => {
+            coreutils::execute_pwd_command();
+        }
+        "/bin/sh" => {
+            if super::bootstrap::try_run_user_init("/bin/sh") {
+                super::bootstrap::run_scheduler_loop();
+            }
+        }
+        "cat" => {
+            coreutils::execute_cat_command(args);
+        }
         "mm" => {
             execute_mm_command(args);
         }
@@ -468,6 +487,11 @@ fn execute_command(cmd: &[u8]) {
             kprintln!("  shutdown   - Power off system");
             kprintln!("  reboot     - Restart system");
             kprintln!("  status     - Show system status");
+            kprintln!("  ls [path]  - List directory entries");
+            kprintln!("  cd <path>  - Change shell working directory");
+            kprintln!("  pwd        - Print shell working directory");
+            kprintln!("  cat <file> - Print file content");
+            kprintln!("  /bin/sh    - Enter user shell");
             kprintln!("  drivers    - Driver management commands");
             kprintln!("  mm         - Memory management commands");
             kprintln!("  pci        - Show PCI devices");
@@ -485,6 +509,10 @@ fn execute_command(cmd: &[u8]) {
             );
         }
     }
+}
+
+pub(super) fn execute_kernel_command(line: &str) {
+    execute_command(line.as_bytes());
 }
 
 fn execute_mm_command(args: &[&str]) {

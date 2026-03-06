@@ -7,7 +7,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use crate::mm::page::buddy::{alloc_pages, free_pages};
-use crate::mm::page::page::{Page, PageFlags, PageOwner, max_pfn, page_to_pfn, pfn_to_page};
+use crate::mm::page::page::{max_pfn, page_to_pfn, pfn_to_page, Page, PageFlags, PageOwner};
 use crate::mm::page::zone::GfpFlags;
 use crate::mm::vm::layout::PAGE_SIZE;
 use crate::sync::IrqSpinLock;

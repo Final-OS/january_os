@@ -8,7 +8,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 
-use crate::mm::{self, PAGE_SIZE, alloc_pages, free_pages, page_to_pfn};
+use crate::mm::{self, alloc_pages, free_pages, page_to_pfn, PAGE_SIZE};
 use crate::sync::SpinLock;
 
 // ============================================================================

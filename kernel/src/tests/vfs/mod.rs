@@ -238,7 +238,7 @@ fn test_mount_case() -> Result<(), alloc::string::String> {
     })();
 
     // Keep VFS tests isolated: always restore runtime default root mount.
-    vfs::mount_root(Arc::new(vfs::staticfs::StaticFileSystem::new()));
+    vfs::mount_root(Arc::new(vfs::initramfs::InitramfsFileSystem::new()));
     result
 }
 

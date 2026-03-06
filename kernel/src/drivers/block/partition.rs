@@ -1,6 +1,6 @@
 //! Partition table abstraction and partition-backed block devices.
 
-use super::{BlockDevice, BlockError, gpt, mbr};
+use super::{gpt, mbr, BlockDevice, BlockError};
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;

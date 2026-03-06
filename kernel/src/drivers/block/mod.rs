@@ -8,8 +8,8 @@ pub mod mbr;
 pub mod partition;
 pub mod virtio_blk;
 pub use partition::{
-    Partition, PartitionBlockDevice, PartitionError, PartitionTableKind, PartitionType,
-    PartitionedDevice, discover_partitions,
+    discover_partitions, Partition, PartitionBlockDevice, PartitionError, PartitionTableKind,
+    PartitionType, PartitionedDevice,
 };
 
 /// Block device error types

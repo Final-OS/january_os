@@ -78,12 +78,15 @@ pub struct BootInfo {
     pub cmdline_addr: u64,
     pub cmdline_len: u32,
     pub _cmdline_reserved: u32,
+    pub initramfs_phys_addr: u64,
+    pub initramfs_size: u64,
     pub root_table_phys_addr: u64,
 }
 
 pub const BOOTINFO_MAGIC: u64 = 0x4A414E5F4F530000;
 /// 与 bootloader `boot/x86_64/src/bootinfo.rs::MAX_MEMORY_REGIONS` 保持一致。
 pub const MAX_MEMORY_REGIONS: usize = 256;
+pub const DEFAULT_INITRD_COMMAND: &str = "/bin/sh";
 
 impl BootInfo {
     #[inline]
@@ -94,4 +97,36 @@ impl BootInfo {
             self.pml4_phys_addr
         }
     }
+
+    #[inline]
+    pub fn cmdline(&self) -> &str {
+        if self.cmdline_addr == 0 || self.cmdline_len == 0 {
+            return "";
+        }
+
+        let ptr = self.cmdline_addr as *const u8;
+        let len = self.cmdline_len as usize;
+        let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+        core::str::from_utf8(bytes).unwrap_or("")
+    }
+
+    #[inline]
+    pub fn initrd_command(&self) -> &str {
+        cmdline_value(self.cmdline(), "initrd")
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_INITRD_COMMAND)
+    }
+}
+
+#[inline]
+fn cmdline_value<'a>(cmdline: &'a str, key: &str) -> Option<&'a str> {
+    for token in cmdline.split_ascii_whitespace() {
+        let Some((name, value)) = token.split_once('=') else {
+            continue;
+        };
+        if name == key {
+            return Some(value);
+        }
+    }
+    None
 }

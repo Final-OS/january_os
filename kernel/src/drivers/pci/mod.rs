@@ -7,7 +7,7 @@ pub mod msix;
 pub mod pci;
 pub mod pcie;
 
-pub use driver::{PciDeviceId, PciDriver, ProbeResult, probe_device, register_driver};
+pub use driver::{probe_device, register_driver, PciDeviceId, PciDriver, ProbeResult};
 pub use pci::*;
 
 pub fn init() {

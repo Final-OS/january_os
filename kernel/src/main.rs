@@ -59,6 +59,44 @@ unsafe extern "C" {
     static __bss_end: u8;
 }
 
+#[repr(align(16))]
+struct RuntimeBootStack([u8; 64 * 1024]);
+
+extern "C" fn runtime_entry(init_cmd_ptr: *const u8, init_cmd_len: usize) -> ! {
+    let init_cmd = unsafe {
+        let bytes = core::slice::from_raw_parts(init_cmd_ptr, init_cmd_len);
+        core::str::from_utf8_unchecked(bytes)
+    };
+    // 进入用户态 initrd 命令（失败时回退到内核 Shell）
+    shell::run(init_cmd);
+}
+
+#[inline(never)]
+unsafe fn switch_to_runtime_boot_stack(init_cmd: &str) -> ! {
+    let layout = alloc::alloc::Layout::from_size_align(core::mem::size_of::<RuntimeBootStack>(), 4096)
+        .expect("runtime boot stack layout");
+    let stack_base = alloc::alloc::alloc(layout);
+    if stack_base.is_null() {
+        panic!("runtime boot stack alloc failed");
+    }
+
+    let stack_top = stack_base as usize + core::mem::size_of::<RuntimeBootStack>();
+    let stack_top_aligned = stack_top & !0xFusize;
+
+    core::arch::asm!(
+        "mov rsp, {stack}",
+        "xor rbp, rbp",
+        "mov rdi, {arg0}",
+        "mov rsi, {arg1}",
+        "jmp {entry}",
+        stack = in(reg) stack_top_aligned,
+        arg0 = in(reg) init_cmd.as_ptr(),
+        arg1 = in(reg) init_cmd.len(),
+        entry = sym runtime_entry,
+        options(noreturn)
+    );
+}
+
 /// 清零 BSS 段
 ///
 /// # Safety
@@ -89,8 +127,8 @@ pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
     // 初始化内核
     init::init_kernel(info);
 
-    // 进入 Shell
-    shell::run();
+    // 切换到内核自有启动栈，避免后续调度依赖引导器栈映射。
+    switch_to_runtime_boot_stack(info.initrd_command());
 }
 
 #[panic_handler]

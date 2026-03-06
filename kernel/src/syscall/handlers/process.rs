@@ -1,7 +1,7 @@
 use crate::fs;
 use crate::syscall::{
-    E2BIG, ECHILD, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOMEM, EPERM, ESRCH, SyscallArgs,
-    SyscallRet, err, ok,
+    err, ok, SyscallArgs, SyscallRet, E2BIG, ECHILD, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOMEM,
+    EPERM, ESRCH,
 };
 use crate::task;
 use alloc::string::String;
@@ -424,7 +424,6 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
     };
 
     let map_preview = task::preview_pt_load_mapping(&load_plan);
-    let user_frame = task::arch::build_user_enter_frame(load_plan.entry, load_plan.stack_top);
 
     let staged_mappings = match task::stage_pt_load_mappings(image.as_slice(), &load_plan) {
         Ok(mapped) => mapped,
@@ -498,17 +497,6 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         );
     }
 
-    if crate::config::DEBUG_VERBOSE {
-        crate::kprintln!(
-            "\x1b[90m[diag]\x1b[0m[execve] user frame rip={:#x} rsp={:#x} cs={:#x} ss={:#x} rflags={:#x}",
-            user_frame.rip,
-            user_frame.rsp,
-            user_frame.cs,
-            user_frame.ss,
-            user_frame.rflags
-        );
-    }
-
     let staged_count = staged_mappings.len();
     let replaced_pages = match task::set_current_exec_mappings(staged_mappings) {
         Some(replaced) => replaced,
@@ -523,6 +511,35 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
             return err(ESRCH);
         }
     };
+
+    let mut argv_refs: Vec<&str> = if argv.is_empty() {
+        vec![path.as_str()]
+    } else {
+        argv.iter().map(|arg| arg.as_str()).collect()
+    };
+    let envp_refs: Vec<&str> = envp.iter().map(|arg| arg.as_str()).collect();
+
+    let user_rsp = match task::setup_initial_user_stack(
+        load_plan.stack_top,
+        load_plan.stack_pages,
+        argv_refs.as_slice(),
+        envp_refs.as_slice(),
+    ) {
+        Ok(rsp) => rsp,
+        Err(errno) => return err(errno),
+    };
+    let user_frame = task::arch::build_user_enter_frame(load_plan.entry, user_rsp);
+
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "\x1b[90m[diag]\x1b[0m[execve] user frame rip={:#x} rsp={:#x} cs={:#x} ss={:#x} rflags={:#x}",
+            user_frame.rip,
+            user_frame.rsp,
+            user_frame.cs,
+            user_frame.ss,
+            user_frame.rflags
+        );
+    }
 
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(

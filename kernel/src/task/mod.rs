@@ -10,18 +10,10 @@ pub mod scheduler;
 pub mod task;
 
 pub use exec::{
-    ExecLoadPlan, ExecMapPreview, ExecMappedPage, ExecMappedPageKind, build_elf_load_plan,
-    preview_pt_load_mapping, rollback_exec_mappings, stage_pt_load_mappings,
+    build_elf_load_plan, preview_pt_load_mapping, rollback_exec_mappings, setup_initial_user_stack,
+    stage_pt_load_mappings, ExecLoadPlan, ExecMapPreview, ExecMappedPage, ExecMappedPageKind,
 };
 pub use id::{ProcessId, TaskId};
-pub use manager::SpawnMmMode;
-pub use manager::WaitChildConsumeEvent;
-pub use manager::WaitChildObserveResult;
-pub use manager::WaitChildOptions;
-pub use manager::WaitChildResult;
-pub use manager::WaitCloneFilter;
-pub use manager::WaitRusageSnapshot;
-pub use manager::WaitTarget;
 pub use manager::current_mm_ptr;
 pub use manager::find_process_by_pid;
 pub use manager::find_task_by_pid;
@@ -31,9 +23,17 @@ pub use manager::set_current_exec_mappings;
 pub use manager::spawn_kernel_thread;
 pub use manager::spawn_kernel_thread_with_mm_mode;
 pub use manager::spawn_kernel_thread_with_mm_mode_checked;
+pub use manager::SpawnMmMode;
+pub use manager::WaitChildConsumeEvent;
+pub use manager::WaitChildObserveResult;
+pub use manager::WaitChildOptions;
+pub use manager::WaitChildResult;
+pub use manager::WaitCloneFilter;
+pub use manager::WaitRusageSnapshot;
+pub use manager::WaitTarget;
 pub use processor::current_task;
-pub use scheduler::SchedulerStats;
 pub use scheduler::snapshot_stats as scheduler_snapshot_stats;
+pub use scheduler::SchedulerStats;
 pub use task::{Task, TaskStatus};
 
 /// 初始化任务子系统

@@ -4,12 +4,13 @@
 
 use crate::config::PAGE_SIZE;
 use crate::drivers::pci::{
-    self, PciAddress, PciHeader,
+    self,
     driver::{PciDeviceId, PciDriver, ProbeResult},
+    PciAddress, PciHeader,
 };
 use crate::mm::page::buddy::alloc_pages;
-use crate::mm::page::zone::{GFP_DMA32, GfpFlags};
-use crate::mm::vm::layout::{PAGE_SIZE as PAGE_SIZE_U64, page_align_up, phys_to_virt};
+use crate::mm::page::zone::{GfpFlags, GFP_DMA32};
+use crate::mm::vm::layout::{page_align_up, phys_to_virt, PAGE_SIZE as PAGE_SIZE_U64};
 use crate::mm::vmalloc::ioremap;
 use crate::sync::IrqSpinLock;
 use crate::{diag, error, info, ok, warn};

@@ -4,7 +4,7 @@
 
 use crate::boot::{BootInfo, KernelVaLayout};
 use crate::config;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 const DEFAULT_VA_BITS: u8 = 48;
 const DEFAULT_PAGE_LEVELS: u8 = 4;

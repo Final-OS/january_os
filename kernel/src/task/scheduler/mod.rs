@@ -82,7 +82,11 @@ fn active_cpu_slots() -> usize {
 #[inline]
 fn runqueue_slot_index(cpu_id: usize) -> usize {
     let slots = active_cpu_slots();
-    if cpu_id < slots { cpu_id } else { 0 }
+    if cpu_id < slots {
+        cpu_id
+    } else {
+        0
+    }
 }
 
 #[inline]
@@ -355,9 +359,13 @@ pub fn schedule() {
                     let prev_ctx_ptr: *mut usize = {
                         let mut t = prev.lock();
                         t.on_switch_out(now_ticks, false);
-                        if t.status != TaskStatus::Exited {
-                            t.status = TaskStatus::Switching;
-                            should_requeue = true;
+                        match t.status {
+                            TaskStatus::Exited => {}
+                            TaskStatus::Blocked => {}
+                            _ => {
+                                t.status = TaskStatus::Switching;
+                                should_requeue = true;
+                            }
                         }
                         &mut t.context_sp as *mut usize
                     };
@@ -395,9 +403,13 @@ pub fn schedule() {
         let prev_ctx_ptr: *mut usize = {
             let mut t = prev.lock();
             t.on_switch_out(now_ticks, false);
-            if t.status != TaskStatus::Exited {
-                t.status = TaskStatus::Switching;
-                should_requeue = true;
+            match t.status {
+                TaskStatus::Exited => {}
+                TaskStatus::Blocked => {}
+                _ => {
+                    t.status = TaskStatus::Switching;
+                    should_requeue = true;
+                }
             }
             &mut t.context_sp as *mut usize
         };
