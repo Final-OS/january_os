@@ -70,6 +70,28 @@ pub use iommu::init_iommu;
 pub use iommu::iommu_stats;
 pub use iommu::{IommuType, TranslationMode};
 
+#[derive(Debug, Clone, Copy)]
+pub struct MmComponentReport {
+    pub page_levels: u8,
+    pub va_bits: u8,
+    pub direct_map_start: u64,
+    pub direct_map_end: u64,
+    pub vmalloc_start: u64,
+    pub vmalloc_end: u64,
+}
+
+pub fn component_report() -> MmComponentReport {
+    let snapshot = snapshot();
+    MmComponentReport {
+        page_levels: snapshot.page_levels,
+        va_bits: snapshot.va_bits,
+        direct_map_start: snapshot.direct_map_start,
+        direct_map_end: snapshot.direct_map_end,
+        vmalloc_start: snapshot.vmalloc_start,
+        vmalloc_end: snapshot.vmalloc_end,
+    }
+}
+
 // ============================================================================
 // 初始化相关
 // ============================================================================

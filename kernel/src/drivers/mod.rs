@@ -17,3 +17,25 @@ pub mod input;
 pub mod pci;
 pub mod tty;
 pub mod usb;
+
+#[derive(Debug, Clone, Copy)]
+pub struct DriverInitReport {
+    pub block_ready: bool,
+    pub pci_ready: bool,
+    pub usb_ready: bool,
+    pub input_ready: bool,
+}
+
+pub fn init_all() -> DriverInitReport {
+    block::init();
+    pci::init();
+    usb::init();
+    input::init();
+
+    DriverInitReport {
+        block_ready: true,
+        pci_ready: true,
+        usb_ready: true,
+        input_ready: true,
+    }
+}

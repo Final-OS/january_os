@@ -1037,10 +1037,21 @@ impl FsState {
 
 static FS_STATE: Mutex<FsState> = Mutex::new(FsState::new());
 
+#[derive(Debug, Clone, Copy)]
+pub struct FsInitReport {
+    pub initramfs_present: bool,
+    pub rootfs: &'static str,
+}
+
 pub fn init(initramfs: Option<(u64, u64)>) {
+    let _ = init_runtime(initramfs);
+}
+
+pub fn init_runtime(initramfs: Option<(u64, u64)>) -> FsInitReport {
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!("\x1b[90m[diag]\x1b[0m[fs] init vfs-backed fd runtime");
     }
+    let initramfs_present = initramfs.is_some();
     if let Some((phys, size)) = initramfs {
         if let Err(err) = vfs::initramfs::init_from_phys(phys, size) {
             let _ = vfs::initramfs::init_from_phys(0, 0);
@@ -1053,6 +1064,11 @@ pub fn init(initramfs: Option<(u64, u64)>) {
         }
     }
     vfs::mount_root(Arc::new(vfs::initramfs::InitramfsFileSystem::new()));
+
+    FsInitReport {
+        initramfs_present,
+        rootfs: "initramfs",
+    }
 }
 
 pub fn open_for_pid(pid: usize, path: &str, flags: u32, mode: u16) -> Result<i32, i32> {

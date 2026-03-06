@@ -37,11 +37,26 @@ pub use scheduler::snapshot_stats as scheduler_snapshot_stats;
 pub use scheduler::SchedulerStats;
 pub use task::{Task, TaskStatus};
 
-/// 初始化任务子系统
-pub fn init() {
+#[derive(Debug, Clone, Copy)]
+pub struct TaskInitReport {
+    pub scheduler_ready: bool,
+    pub process_runtime_ready: bool,
+}
+
+pub fn init_runtime() -> TaskInitReport {
     crate::info!("[TASK] Initializing Task subsystem...");
     manager::init();
     crate::ok!("[TASK] Task subsystem initialized.");
+
+    TaskInitReport {
+        scheduler_ready: true,
+        process_runtime_ready: true,
+    }
+}
+
+/// 初始化任务子系统
+pub fn init() {
+    let _ = init_runtime();
 }
 
 /// 获取当前任务的进程 ID
