@@ -4,7 +4,7 @@ use core::cmp;
 use crate::fs;
 use crate::mm;
 use crate::syscall::{
-    E2BIG, EBADF, EBUSY, EINVAL, ENOMEM, ESRCH, SyscallArgs, SyscallRet, err, ok,
+    err, ok, SyscallArgs, SyscallRet, E2BIG, EBADF, EBUSY, EINVAL, ENOMEM, ESRCH,
 };
 use crate::task;
 
@@ -17,6 +17,29 @@ const MMAP_FLAGS_ALLOWED: u32 = mm::mmap_flags::MAP_SHARED
     | mm::mmap_flags::MAP_GROWSDOWN
     | mm::mmap_flags::MAP_LOCKED
     | mm::mmap_flags::MAP_HUGETLB;
+const MMAP_FLAGS_UNSUPPORTED: u32 = mm::mmap_flags::MAP_LOCKED | mm::mmap_flags::MAP_HUGETLB;
+
+#[derive(Clone)]
+struct VmaSegment {
+    start: u64,
+    end: u64,
+    info: mm::VmaInfo,
+}
+
+#[derive(Clone, Copy)]
+struct BackingAdjust {
+    backing_id: u64,
+    retain_count: usize,
+    release_count: usize,
+}
+
+#[derive(Clone, Copy)]
+struct PteUpdate {
+    start: u64,
+    end: u64,
+    old_flags: u64,
+    new_flags: u64,
+}
 
 #[inline]
 fn page_align_up_usize(value: usize) -> Result<usize, i32> {
@@ -72,26 +95,228 @@ fn vma_backing_id(info: &mm::VmaInfo) -> Option<u64> {
     }
 }
 
-fn adjust_backing_refs_after_vma_replace(
-    info: &mm::VmaInfo,
-    kept_segments: usize,
-) -> Result<(), i32> {
-    let Some(backing_id) = vma_backing_id(info) else {
-        return Ok(());
-    };
+#[inline]
+fn clone_vma_slice(base: &VmaSegment, start: u64, end: u64) -> VmaSegment {
+    let mut info = base.info.clone();
+    let pgoff_delta = (start.saturating_sub(base.start)) / mm::PAGE_SIZE;
+    info.pgoff = info.pgoff.saturating_add(pgoff_delta);
+    VmaSegment { start, end, info }
+}
 
-    if kept_segments == 0 {
-        fs::mmap_release_backing(backing_id);
-        return Ok(());
-    }
-    if kept_segments == 1 {
-        return Ok(());
+#[inline]
+fn backing_adjust_for_segments(base: &VmaSegment, kept_segments: usize) -> Option<BackingAdjust> {
+    let backing_id = vma_backing_id(&base.info)?;
+    Some(BackingAdjust {
+        backing_id,
+        retain_count: kept_segments.saturating_sub(1),
+        release_count: usize::from(kept_segments == 0),
+    })
+}
+
+fn apply_backing_retains(adjustments: &[BackingAdjust]) -> Result<(), i32> {
+    let mut retained: Vec<u64> = Vec::new();
+
+    for adjust in adjustments {
+        for _ in 0..adjust.retain_count {
+            if let Err(errno) = fs::mmap_retain_backing(adjust.backing_id) {
+                for backing_id in retained.into_iter().rev() {
+                    fs::mmap_release_backing(backing_id);
+                }
+                return Err(errno);
+            }
+            retained.push(adjust.backing_id);
+        }
     }
 
-    for _ in 1..kept_segments {
-        fs::mmap_retain_backing(backing_id)?;
-    }
     Ok(())
+}
+
+fn rollback_backing_retains(adjustments: &[BackingAdjust]) {
+    for adjust in adjustments.iter().rev() {
+        for _ in 0..adjust.retain_count {
+            fs::mmap_release_backing(adjust.backing_id);
+        }
+    }
+}
+
+fn apply_backing_releases(adjustments: &[BackingAdjust]) {
+    for adjust in adjustments {
+        for _ in 0..adjust.release_count {
+            fs::mmap_release_backing(adjust.backing_id);
+        }
+    }
+}
+
+#[inline]
+fn mm_insert_vma_locked(mm_state: &mut mm::Mm, segment: &VmaSegment) -> bool {
+    let nr_pages = (segment.end - segment.start) / mm::PAGE_SIZE;
+    let flags = segment.info.flags;
+
+    if mm_state
+        .vma_tree
+        .insert(segment.start as usize, segment.end as usize, segment.info.clone())
+        .is_err()
+    {
+        return false;
+    }
+
+    mm_state.vma_count = mm_state.vma_count.saturating_add(1);
+    mm_state.total_vm = mm_state.total_vm.saturating_add(nr_pages);
+    if flags.contains(mm::VmFlags::EXEC) {
+        mm_state.exec_vm = mm_state.exec_vm.saturating_add(nr_pages);
+    }
+    if flags.contains(mm::VmFlags::GROWSDOWN) {
+        mm_state.stack_vm = mm_state.stack_vm.saturating_add(nr_pages);
+    }
+    true
+}
+
+#[inline]
+fn mm_remove_vma_locked(mm_state: &mut mm::Mm, start: u64) -> Option<VmaSegment> {
+    let (end, info) = mm_state.vma_tree.remove(start as usize)?;
+    let end = end as u64;
+    let nr_pages = (end - start) / mm::PAGE_SIZE;
+
+    mm_state.vma_count = mm_state.vma_count.saturating_sub(1);
+    mm_state.total_vm = mm_state.total_vm.saturating_sub(nr_pages);
+    if info.flags.contains(mm::VmFlags::EXEC) {
+        mm_state.exec_vm = mm_state.exec_vm.saturating_sub(nr_pages);
+    }
+    if info.flags.contains(mm::VmFlags::GROWSDOWN) {
+        mm_state.stack_vm = mm_state.stack_vm.saturating_sub(nr_pages);
+    }
+
+    Some(VmaSegment { start, end, info })
+}
+
+fn rollback_vma_transaction(
+    mm_state: &mut mm::Mm,
+    removed: &[VmaSegment],
+    inserted: &[VmaSegment],
+) -> bool {
+    let mut ok = true;
+
+    for segment in inserted.iter().rev() {
+        if mm_remove_vma_locked(mm_state, segment.start).is_none() {
+            ok = false;
+        }
+    }
+
+    for segment in removed {
+        if !mm_insert_vma_locked(mm_state, segment) {
+            ok = false;
+        }
+    }
+
+    ok
+}
+
+fn plan_mprotect_updates(
+    mm_state: &mm::Mm,
+    start: u64,
+    end: u64,
+    prot: u32,
+) -> Result<(Vec<VmaSegment>, Vec<VmaSegment>, Vec<BackingAdjust>, Vec<PteUpdate>), i32> {
+    let mut cursor = start;
+    let mut removed: Vec<VmaSegment> = Vec::new();
+    let mut inserted: Vec<VmaSegment> = Vec::new();
+    let mut backing_adjusts: Vec<BackingAdjust> = Vec::new();
+    let mut pte_updates: Vec<PteUpdate> = Vec::new();
+
+    while cursor < end {
+        let Some((vma_start, vma_end, info)) = mm_state.vma_tree.find(cursor as usize) else {
+            return Err(ENOMEM);
+        };
+        let vma_start = vma_start as u64;
+        let vma_end = vma_end as u64;
+        if vma_start > cursor {
+            return Err(ENOMEM);
+        }
+
+        let original = VmaSegment {
+            start: vma_start,
+            end: vma_end,
+            info: info.clone(),
+        };
+        let seg_start = cursor;
+        let seg_end = cmp::min(vma_end, end);
+        let mut kept_segments = 0usize;
+
+        removed.push(original.clone());
+        if original.start < seg_start {
+            inserted.push(clone_vma_slice(&original, original.start, seg_start));
+            kept_segments += 1;
+        }
+
+        let mut protected = clone_vma_slice(&original, seg_start, seg_end);
+        protected.info.flags = mprotect_flags_from_prot(original.info.flags, prot);
+        inserted.push(protected.clone());
+        kept_segments += 1;
+
+        pte_updates.push(PteUpdate {
+            start: seg_start,
+            end: seg_end,
+            old_flags: original.info.flags.to_user_pte_flags(),
+            new_flags: protected.info.flags.to_user_pte_flags(),
+        });
+
+        if seg_end < original.end {
+            inserted.push(clone_vma_slice(&original, seg_end, original.end));
+            kept_segments += 1;
+        }
+
+        if let Some(adjust) = backing_adjust_for_segments(&original, kept_segments) {
+            backing_adjusts.push(adjust);
+        }
+
+        cursor = seg_end;
+    }
+
+    Ok((removed, inserted, backing_adjusts, pte_updates))
+}
+
+fn plan_unmap_changes(
+    mm_state: &mm::Mm,
+    addr: u64,
+    end: u64,
+) -> Result<(Vec<VmaSegment>, Vec<VmaSegment>, Vec<BackingAdjust>, Vec<(u64, u64)>), i32> {
+    let mut removed: Vec<VmaSegment> = Vec::new();
+    let mut inserted: Vec<VmaSegment> = Vec::new();
+    let mut backing_adjusts: Vec<BackingAdjust> = Vec::new();
+    let mut unmap_ranges: Vec<(u64, u64)> = Vec::new();
+
+    let mut cursor = addr;
+    while let Some((vma_start, vma_end, info)) = mm_state.vma_tree.iter_intersecting(cursor as usize, end as usize).next() {
+        let original = VmaSegment {
+            start: vma_start as u64,
+            end: vma_end as u64,
+            info: info.clone(),
+        };
+        let cut_start = cmp::max(original.start, addr);
+        let cut_end = cmp::min(original.end, end);
+        let mut kept_segments = 0usize;
+
+        removed.push(original.clone());
+        if original.start < cut_start {
+            inserted.push(clone_vma_slice(&original, original.start, cut_start));
+            kept_segments += 1;
+        }
+        if cut_end < original.end {
+            inserted.push(clone_vma_slice(&original, cut_end, original.end));
+            kept_segments += 1;
+        }
+
+        if let Some(adjust) = backing_adjust_for_segments(&original, kept_segments) {
+            backing_adjusts.push(adjust);
+        }
+        unmap_ranges.push((cut_start, cut_end));
+        cursor = cut_end;
+        if cursor >= end {
+            break;
+        }
+    }
+
+    Ok((removed, inserted, backing_adjusts, unmap_ranges))
 }
 
 fn mprotect_range_for_mm(
@@ -100,51 +325,49 @@ fn mprotect_range_for_mm(
     end: u64,
     prot: u32,
 ) -> Result<(), i32> {
-    let mut cursor = start;
-    while cursor < end {
-        let Some(vma) = mm_state.find_vma(cursor) else {
-            return Err(ENOMEM);
-        };
-        if vma.vm_start > cursor {
-            return Err(ENOMEM);
-        }
+    let (removed, inserted, backing_adjusts, pte_updates) = {
+        let _guard = mm_state.lock.lock();
+        plan_mprotect_updates(mm_state, start, end, prot)?
+    };
 
-        let seg_start = cursor;
-        let seg_end = cmp::min(vma.vm_end, end);
-        let Some((_old_end, info)) = mm_state.remove_vma(vma.vm_start) else {
-            return Err(EBUSY);
-        };
+    apply_backing_retains(&backing_adjusts)?;
 
-        let mut kept_segments = 0usize;
-        if vma.vm_start < seg_start {
-            if !mm_state.insert_vma(vma.vm_start, seg_start, info.clone()) {
+    {
+        let mm_ptr = mm_state as *mut mm::Mm;
+        let _guard = unsafe { (*core::ptr::addr_of!((*mm_ptr).lock)).lock() };
+
+        for segment in &removed {
+            if unsafe { mm_remove_vma_locked(&mut *mm_ptr, segment.start) }.is_none() {
+                rollback_backing_retains(&backing_adjusts);
                 return Err(EBUSY);
             }
-            kept_segments += 1;
         }
-        if seg_end < vma.vm_end {
-            if !mm_state.insert_vma(seg_end, vma.vm_end, info.clone()) {
+
+        let mut inserted_now: Vec<VmaSegment> = Vec::new();
+        for segment in &inserted {
+            if !unsafe { mm_insert_vma_locked(&mut *mm_ptr, segment) } {
+                let _ = unsafe { rollback_vma_transaction(&mut *mm_ptr, &removed, &inserted_now) };
+                rollback_backing_retains(&backing_adjusts);
                 return Err(EBUSY);
             }
-            kept_segments += 1;
+            inserted_now.push(segment.clone());
         }
+    }
 
-        let mut protected_info = info.clone();
-        protected_info.flags = mprotect_flags_from_prot(info.flags, prot);
-        if !mm_state.insert_vma(seg_start, seg_end, protected_info.clone()) {
-            return Err(EBUSY);
+    let mut applied_updates: Vec<PteUpdate> = Vec::new();
+    for update in &pte_updates {
+        if let Err(errno) = apply_pte_flags_range(mm_state.pgd, update.start, update.end, update.new_flags)
+        {
+            for applied in applied_updates.iter().rev() {
+                let _ = apply_pte_flags_range(mm_state.pgd, applied.start, applied.end, applied.old_flags);
+            }
+            let mm_ptr = mm_state as *mut mm::Mm;
+            let _guard = unsafe { (*core::ptr::addr_of!((*mm_ptr).lock)).lock() };
+            let _ = unsafe { rollback_vma_transaction(&mut *mm_ptr, &removed, &inserted) };
+            rollback_backing_retains(&backing_adjusts);
+            return Err(errno);
         }
-        kept_segments += 1;
-
-        adjust_backing_refs_after_vma_replace(&info, kept_segments)?;
-
-        apply_pte_flags_range(
-            mm_state.pgd,
-            seg_start,
-            seg_end,
-            protected_info.flags.to_user_pte_flags(),
-        )?;
-        cursor = seg_end;
+        applied_updates.push(*update);
     }
 
     Ok(())
@@ -290,36 +513,33 @@ fn collect_unmap_ranges_for_mm(
     addr: u64,
     end: u64,
 ) -> Result<Vec<(u64, u64)>, i32> {
-    let mut unmap_ranges: Vec<(u64, u64)> = Vec::new();
+    let (removed, inserted, backing_adjusts, unmap_ranges) = {
+        let _guard = mm_state.lock.lock();
+        plan_unmap_changes(mm_state, addr, end)?
+    };
 
-    while let Some(vma) = mm_state.find_vma_intersection(addr, end) {
-        let vma_start = vma.vm_start;
-        let vma_end = vma.vm_end;
-        let cut_start = cmp::max(vma_start, addr);
-        let cut_end = cmp::min(vma_end, end);
+    apply_backing_retains(&backing_adjusts)?;
 
-        let Some((_old_end, info)) = mm_state.remove_vma(vma_start) else {
+    let mm_ptr = mm_state as *mut mm::Mm;
+    let _guard = unsafe { (*core::ptr::addr_of!((*mm_ptr).lock)).lock() };
+    for segment in &removed {
+        if unsafe { mm_remove_vma_locked(&mut *mm_ptr, segment.start) }.is_none() {
+            rollback_backing_retains(&backing_adjusts);
             return Err(EBUSY);
-        };
-
-        let mut kept_segments = 0usize;
-        if vma_start < cut_start {
-            if !mm_state.insert_vma(vma_start, cut_start, info.clone()) {
-                return Err(EBUSY);
-            }
-            kept_segments += 1;
         }
-        if cut_end < vma_end {
-            if !mm_state.insert_vma(cut_end, vma_end, info.clone()) {
-                return Err(EBUSY);
-            }
-            kept_segments += 1;
-        }
-        adjust_backing_refs_after_vma_replace(&info, kept_segments)?;
-
-        unmap_ranges.push((cut_start, cut_end));
     }
 
+    let mut inserted_now: Vec<VmaSegment> = Vec::new();
+    for segment in &inserted {
+        if !unsafe { mm_insert_vma_locked(&mut *mm_ptr, segment) } {
+            let _ = unsafe { rollback_vma_transaction(&mut *mm_ptr, &removed, &inserted_now) };
+            rollback_backing_retains(&backing_adjusts);
+            return Err(EBUSY);
+        }
+        inserted_now.push(segment.clone());
+    }
+
+    apply_backing_releases(&backing_adjusts);
     Ok(unmap_ranges)
 }
 
@@ -340,6 +560,9 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
     if (flags & !MMAP_FLAGS_ALLOWED) != 0 {
         return err(EINVAL);
     }
+    if (flags & MMAP_FLAGS_UNSUPPORTED) != 0 {
+        return err(EINVAL);
+    }
 
     let shared = (flags & mm::mmap_flags::MAP_SHARED) != 0;
     let private = (flags & mm::mmap_flags::MAP_PRIVATE) != 0;
@@ -347,7 +570,7 @@ pub(crate) fn sys_mmap(args: &SyscallArgs) -> SyscallRet {
         return err(EINVAL);
     }
 
-    if offset != 0 || (offset & (mm::PAGE_SIZE - 1)) != 0 {
+    if (offset & (mm::PAGE_SIZE - 1)) != 0 {
         return err(EINVAL);
     }
 

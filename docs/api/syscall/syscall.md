@@ -398,9 +398,10 @@ pub(crate) fn sys_brk(args: &SyscallArgs) -> SyscallRet
 ```
 
 **当前行为**:
-- `mmap` 支持匿名映射和基于 FD 的文件映射（最小语义）。
+- `mmap` 支持匿名映射和基于 FD 的文件映射（最小语义），并接受页对齐的非零 `offset`。
+- `mmap` 当前显式拒绝 `MAP_LOCKED` / `MAP_HUGETLB`，直到对应内核能力落地。
 - `munmap` 支持按页对齐区域解除映射并回收页。
-- `mprotect` 支持已映射区域权限更新并同步页表标志。
+- `mprotect` 支持已映射区域权限更新并同步页表标志；范围内遇到空洞时会回滚已计划的 VMA 拆分。
 - `brk` 支持进程堆边界查询与增长。
 
 内存映射细节见 [mmap API](../mm/mmap.md)。

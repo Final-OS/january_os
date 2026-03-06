@@ -2,13 +2,14 @@ use super::{fail, mm_step, pass};
 use crate::fs;
 use crate::mm;
 use crate::syscall;
-use crate::syscall::handlers::{sys_mmap, sys_munmap};
+use crate::syscall::handlers::{sys_mmap, sys_mprotect, sys_munmap};
 use crate::{kprintln, warn};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const TLB_OLD_VALUE: u64 = 0x1111_2222_3333_4444;
 const TLB_NEW_VALUE: u64 = 0xaaaa_bbbb_cccc_dddd;
 const MMAP_FILE_PATH: &str = "/tests/mm/mmap_file.bin";
+const MMAP_OFFSET_FILE_PATH: &str = "/tests/mm/mmap_offset.bin";
 const MMAP_FILE_DATA: &[u8] = b"file-backed-mmap-ok";
 
 static MMAP_ASYNC_DONE: AtomicBool = AtomicBool::new(false);
@@ -61,6 +62,12 @@ fn do_mmap(addr: usize, len: usize, prot: u32, flags: u32, fd: usize, offset: us
 fn do_munmap(addr: usize, len: usize) -> usize {
     let args = syscall::SyscallArgs::new(11, addr, len, 0, 0, 0, 0);
     sys_munmap(&args)
+}
+
+#[inline]
+fn do_mprotect(addr: usize, len: usize, prot: u32) -> usize {
+    let args = syscall::SyscallArgs::new(10, addr, len, prot as usize, 0, 0, 0);
+    sys_mprotect(&args)
 }
 
 extern "C" fn mmap_run_in_task_thread() {
@@ -137,18 +144,51 @@ fn run_in_task_context() {
         );
     }
 
+    mm_step("mmap: case=invalid_map_locked_rejected");
+    if expect_errno(
+        "map-locked",
+        do_mmap(
+            0,
+            page,
+            prot_rw,
+            map_flags | crate::mm::mmap_flags::MAP_LOCKED,
+            usize::MAX,
+            0,
+        ),
+        syscall::EINVAL,
+    )
+    .is_err()
+    {
+        return fail("mmap", "MAP_LOCKED must be rejected until mlock is implemented");
+    }
+
+    mm_step("mmap: case=invalid_map_hugetlb_rejected");
+    if expect_errno(
+        "map-hugetlb",
+        do_mmap(
+            0,
+            page,
+            prot_rw,
+            map_flags | crate::mm::mmap_flags::MAP_HUGETLB,
+            usize::MAX,
+            0,
+        ),
+        syscall::EINVAL,
+    )
+    .is_err()
+    {
+        return fail(
+            "mmap",
+            "MAP_HUGETLB must be rejected until huge-page mappings are implemented",
+        );
+    }
+
     mm_step("mmap: case=file_backed_private_read_map_and_access");
     {
         let pid = match crate::task::current_pid() {
             Some(pid) => pid.0,
             None => return fail("mmap", "file-backed mmap setup missing current pid"),
         };
-        if let Err(errno) = fs::register_static_file(MMAP_FILE_PATH, MMAP_FILE_DATA) {
-            if crate::config::DEBUG_VERBOSE {
-                kprintln!("[test/mm][mmap][file-backed] register errno={}", errno);
-            }
-            return fail("mmap", "file-backed mmap setup register_static_file failed");
-        }
         let fd = match fs::open_for_pid(pid, MMAP_FILE_PATH, 0, 0) {
             Ok(fd) => fd,
             Err(errno) => {
@@ -212,6 +252,98 @@ fn run_in_task_context() {
         let _ = fs::close_for_pid(pid, fd);
     }
 
+    mm_step("mmap: case=file_backed_private_nonzero_offset_read_map_and_access");
+    {
+        let pid = match crate::task::current_pid() {
+            Some(pid) => pid.0,
+            None => return fail("mmap", "file-backed offset mmap setup missing current pid"),
+        };
+        let fd = match fs::open_for_pid(pid, MMAP_OFFSET_FILE_PATH, 0, 0) {
+            Ok(fd) => fd,
+            Err(_) => return fail("mmap", "file-backed offset mmap setup open_for_pid failed"),
+        };
+
+        let map_ret = do_mmap(
+            0,
+            page,
+            crate::mm::prot_flags::PROT_READ,
+            crate::mm::mmap_flags::MAP_PRIVATE,
+            fd as usize,
+            page,
+        );
+        if ret_is_err(map_ret) {
+            let _ = fs::close_for_pid(pid, fd);
+            return fail("mmap", "file-backed mmap with non-zero page-aligned offset must succeed");
+        }
+
+        let map_addr = map_ret as u64;
+        unsafe {
+            let bytes = core::slice::from_raw_parts(map_addr as *const u8, 16);
+            if bytes.iter().any(|b| *b != b'B') {
+                let _ = do_munmap(map_addr as usize, page);
+                let _ = fs::close_for_pid(pid, fd);
+                return fail("mmap", "file-backed mmap with offset returned wrong file page");
+            }
+        }
+
+        let _ = do_munmap(map_addr as usize, page);
+        let _ = fs::close_for_pid(pid, fd);
+    }
+
+    mm_step("mmap: case=file_backed_munmap_split_preserves_page_offset");
+    {
+        let pid = match crate::task::current_pid() {
+            Some(pid) => pid.0,
+            None => return fail("mmap", "file-backed munmap split setup missing current pid"),
+        };
+        let fd = match fs::open_for_pid(pid, MMAP_OFFSET_FILE_PATH, 0, 0) {
+            Ok(fd) => fd,
+            Err(_) => return fail("mmap", "file-backed munmap split open_for_pid failed"),
+        };
+
+        let map_ret = do_mmap(
+            0,
+            page * 2,
+            crate::mm::prot_flags::PROT_READ,
+            crate::mm::mmap_flags::MAP_PRIVATE,
+            fd as usize,
+            0,
+        );
+        if ret_is_err(map_ret) {
+            let _ = fs::close_for_pid(pid, fd);
+            return fail("mmap", "two-page file-backed mmap must succeed");
+        }
+
+        let map_addr = map_ret as u64;
+        unsafe {
+            let first = core::ptr::read(map_addr as *const u8);
+            if first != b'A' {
+                let _ = do_munmap(map_addr as usize, page * 2);
+                let _ = fs::close_for_pid(pid, fd);
+                return fail("mmap", "file-backed base page readback mismatch before split");
+            }
+        }
+
+        let unmap_ret = do_munmap(map_addr as usize, page);
+        if ret_is_err(unmap_ret) {
+            let _ = do_munmap(map_addr as usize + page, page);
+            let _ = fs::close_for_pid(pid, fd);
+            return fail("mmap", "munmap of first file-backed page failed");
+        }
+
+        unsafe {
+            let bytes = core::slice::from_raw_parts((map_addr + mm::PAGE_SIZE) as *const u8, 16);
+            if bytes.iter().any(|b| *b != b'B') {
+                let _ = do_munmap(map_addr as usize + page, page);
+                let _ = fs::close_for_pid(pid, fd);
+                return fail("mmap", "munmap split lost right-side file offset after VMA rewrite");
+            }
+        }
+
+        let _ = do_munmap(map_addr as usize + page, page);
+        let _ = fs::close_for_pid(pid, fd);
+    }
+
     mm_step("mmap: case=invalid_unaligned_fixed_addr");
     if expect_errno(
         "fixed-unaligned",
@@ -228,6 +360,77 @@ fn run_in_task_context() {
     .is_err()
     {
         return fail("mmap", "MAP_FIXED with unaligned addr must fail");
+    }
+
+    mm_step("mmap: case=mprotect_gap_failure_rolls_back_vma_flags");
+    {
+        let mm_ptr = crate::task::current_mm_ptr();
+        if mm_ptr.is_null() {
+            return fail("mmap", "mprotect rollback setup missing current mm");
+        }
+
+        let base = unsafe { &*mm_ptr }
+            .find_free_area(
+                low_hint.saturating_add(0x40_0000),
+                mm::PAGE_SIZE * 5,
+                mm::VmFlags::empty(),
+            )
+            .unwrap_or(low_hint.saturating_add(0x40_0000));
+        let second = base.saturating_add(mm::PAGE_SIZE * 3);
+
+        let first_map = do_mmap(
+            base as usize,
+            page,
+            prot_rw,
+            map_flags | crate::mm::mmap_flags::MAP_FIXED,
+            usize::MAX,
+            0,
+        );
+        if ret_is_err(first_map) || first_map as u64 != base {
+            return fail("mmap", "mprotect rollback setup first fixed mmap failed");
+        }
+
+        let second_map = do_mmap(
+            second as usize,
+            page,
+            prot_rw,
+            map_flags | crate::mm::mmap_flags::MAP_FIXED,
+            usize::MAX,
+            0,
+        );
+        if ret_is_err(second_map) || second_map as u64 != second {
+            let _ = do_munmap(base as usize, page);
+            return fail("mmap", "mprotect rollback setup second fixed mmap failed");
+        }
+
+        let prot_ret = do_mprotect(
+            base as usize,
+            page * 3,
+            crate::mm::prot_flags::PROT_READ,
+        );
+        if !ret_is_err(prot_ret) || ret_errno(prot_ret) != syscall::ENOMEM {
+            let _ = do_munmap(base as usize, page);
+            let _ = do_munmap(second as usize, page);
+            return fail("mmap", "mprotect spanning an unmapped gap must fail with ENOMEM");
+        }
+
+        let first_vma = unsafe { &*mm_ptr }.find_vma(base);
+        let second_vma = unsafe { &*mm_ptr }.find_vma(second);
+        let first_ok = first_vma
+            .as_ref()
+            .map(|vma| vma.vm_start == base && vma.vm_end == base + mm::PAGE_SIZE && vma.vm_flags.is_write())
+            .unwrap_or(false);
+        let second_ok = second_vma
+            .as_ref()
+            .map(|vma| vma.vm_start == second && vma.vm_end == second + mm::PAGE_SIZE && vma.vm_flags.is_write())
+            .unwrap_or(false);
+
+        let _ = do_munmap(base as usize, page);
+        let _ = do_munmap(second as usize, page);
+
+        if !first_ok || !second_ok {
+            return fail("mmap", "failed mprotect must leave surrounding VMAs and flags unchanged");
+        }
     }
 
     mm_step("mmap: case=brk_bootstrap_heap_vma");

@@ -32,7 +32,8 @@ january_os 当前开发状态与功能完成情况。
 - ✅ 新增 `mmap(9)/munmap(11)` syscall 最小实现并接入分发
 - ✅ 支持匿名映射 VMA 建立、`munmap` 区间拆分/回收、与缺页分配链路联动
 - ✅ 增加 `test mm mmap` 覆盖：正常映射、非法参数、边界与空洞回收路径
-- ⚠️ 文件后备 `mmap` 暂未接入（待后续 VFS/page cache）
+- ✅ 文件后备 `mmap` 已接入最小只读路径，支持页对齐 `offset` 与 split 后 `pgoff` 保持
+- ⚠️ `MAP_SHARED` 写回、`msync`、锁页/大页语义仍待后续补齐
 
 **2026-02-27 - Batch 3/5 最小闭环推进（exec 后端 + 文件 I/O 子集）**
 - ✅ 新增最小内核文件后端（静态只读文件注册 + 按进程 fd 表）
