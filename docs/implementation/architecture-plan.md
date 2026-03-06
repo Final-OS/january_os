@@ -143,6 +143,15 @@ Runtime Image
 - 组件初始化依赖必须显式化，禁止仅靠启动顺序隐式生效
 - 当前代码基线已在 `kernel/src/init/component.rs` 引入轻量组件注册/运行器，作为启动期组件编排的统一入口
 
+7. façade 优先
+- 顶层组件应优先通过显式 façade 暴露能力，例如：
+  - `drivers::init_all()`
+  - `drivers::tty::* façade`
+  - `fs::runtime::*`
+  - `fs::backing::*`
+  - `mm::component_report()`
+- 顶层 `mod.rs` 可以保留兼容导出，但应避免继续扩大扁平导出面
+
 ---
 
 ## 4. 子系统详细规划（职责 + 接口 + 实现顺序）

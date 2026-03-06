@@ -2,6 +2,8 @@
 //!
 //! Runtime file semantics are provided by VFS in `fs/vfs`.
 
+pub mod backing;
+pub mod runtime;
 pub mod vfs;
 
 use alloc::collections::{BTreeMap, VecDeque};
