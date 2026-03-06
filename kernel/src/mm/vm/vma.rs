@@ -755,7 +755,7 @@ unsafe fn free_page_table_page(phys: u64) {
 
     let page = &mut *pfn_to_page(pfn);
     if !page.is_reserved() && page.refcount() > 0 {
-        free_page(page);
+        crate::mm::arch::paging::release_table_page(phys);
     }
 }
 

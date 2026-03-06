@@ -14,6 +14,7 @@ pub use process::exec::{
     ExecMapPreview, ExecMappedPage, ExecMappedPageKind,
 };
 pub use process::fork::{clone_current, fork_current, vfork_current};
+pub use process::signal::{collect_kill_targets, send_signal};
 pub use process::wait::WaitEvent;
 pub use id::{ProcessId, TaskId};
 pub use manager::current_mm_ptr;
@@ -141,4 +142,9 @@ pub fn wait_event_by_target(
     nohang: bool,
 ) -> WaitEvent {
     process::wait::wait_event_by_target(target, options, nohang)
+}
+
+/// 向进程投递信号并执行相应状态变更
+pub fn send_process_signal(pid: ProcessId, sig: i32) -> Result<bool, i32> {
+    process::signal::send_signal(pid, sig)
 }

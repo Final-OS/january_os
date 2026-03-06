@@ -84,6 +84,7 @@
 - `task/scheduler/` 不得承载 `fork/exec/wait/exit` 的主实现逻辑。
 - `syscall/handlers/process.rs` 应保持薄适配层：参数解析、errno 映射、调用 `task/process/*` façade；不得长期承载 `fork/wait/exit` 主逻辑。
 - `wait4` 等等待型系统调用的阻塞轮询、事件消费、回收编排应沉到 `task/process/wait.rs` 或等价生命周期 façade，`syscall` 只保留 ABI 相关的 option/status/rusage 处理。
+- `kill/tkill/tgkill` 等信号类系统调用的进程状态迁移应沉到 `task/process/signal.rs` 或等价生命周期 façade，`syscall` 只保留信号号/目标解析与 errno/调度编排。
 
 ## 8. 架构隔离
 

@@ -108,6 +108,11 @@ impl PageTableEntry {
         self.0
     }
 
+    /// 从原始值构造条目
+    pub const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
     /// 检查是否存在
     pub const fn is_present(&self) -> bool {
         self.0 & PTE_PRESENT != 0
@@ -749,12 +754,44 @@ unsafe fn retain_table_page_ref(table_phys: u64) {
 }
 
 #[inline]
+unsafe fn borrowed_parent_entry_raw(table_phys: u64) -> u64 {
+    let pfn = table_phys / config::PAGE_SIZE;
+    if pfn >= max_pfn() {
+        return 0;
+    }
+    let page = unsafe { &*pfn_to_page(pfn) };
+    page.private() as usize as u64
+}
+
+#[inline]
+unsafe fn set_borrowed_parent_entry_raw(table_phys: u64, raw: u64) {
+    let pfn = table_phys / config::PAGE_SIZE;
+    if pfn >= max_pfn() {
+        return;
+    }
+    let page = unsafe { &mut *pfn_to_page(pfn) };
+    page.set_private(raw as usize as *mut u8);
+}
+
+#[inline]
+unsafe fn clear_borrowed_parent_entry_raw(table_phys: u64) {
+    unsafe { set_borrowed_parent_entry_raw(table_phys, 0) };
+}
+
 unsafe fn release_table_page_ref(table_phys: u64) {
     let pfn = table_phys / config::PAGE_SIZE;
     if pfn >= max_pfn() {
         return;
     }
     let page = unsafe { &mut *pfn_to_page(pfn) };
+    let borrowed_raw = page.private() as usize as u64;
+    if borrowed_raw != 0 {
+        page.set_private(core::ptr::null_mut());
+        let borrowed_entry = PageTableEntry::from_raw(borrowed_raw);
+        if entry_references_lower_table(borrowed_entry) {
+            unsafe { release_table_page_ref(borrowed_entry.phys_addr()) };
+        }
+    }
     if !page.is_pgtable() && !page.is_reserved() {
         // 兼容早期路径：页表页可能缺失 PGTABLE/owner 元数据，允许在回收点按表项语义自愈。
         // 若 refcount 为 0 则视为真正异常，保持 mismatch 统计并拒绝释放。
@@ -821,6 +858,11 @@ unsafe fn release_table_page_ref(table_phys: u64) {
     unsafe {
         free_page(page);
     }
+}
+
+
+pub unsafe fn release_table_page(table_phys: u64) {
+    unsafe { release_table_page_ref(table_phys) };
 }
 
 /// 复制内核高半区根条目，并维护下级页表页引用计数。
@@ -1254,7 +1296,8 @@ impl PageTableManager {
                 // (e.g. low runtime mapping borrowed from init_mm).
                 // Clone the next-level table before setting U bit to avoid mutating shared roots.
                 if need_user && !entry.is_user() {
-                    let old_phys = entry.phys_addr();
+                    let old_entry = *entry;
+                    let old_phys = old_entry.phys_addr();
                     let Some(new_phys) = (unsafe { self.alloc_zeroed_table_phys() }) else {
                         return false;
                     };
@@ -1264,6 +1307,7 @@ impl PageTableManager {
                             self.phys_to_virt(new_phys) as *mut u8,
                             config::PAGE_SIZE as usize,
                         );
+                        set_borrowed_parent_entry_raw(new_phys, old_entry.raw());
                     }
                     entry.set_phys_addr(new_phys);
                     entry.set_present(true);
@@ -1426,6 +1470,15 @@ impl PageTableManager {
             let parent_phys = parent_phys_path[i];
             let parent_idx = parent_idx_path[i];
             let parent = unsafe { self.table_mut(parent_phys) };
+            let borrowed_raw = unsafe { borrowed_parent_entry_raw(child_phys) };
+            if borrowed_raw != 0 {
+                let borrowed_entry = PageTableEntry::from_raw(borrowed_raw);
+                *parent.entry_mut(parent_idx) = borrowed_entry;
+                unsafe { clear_borrowed_parent_entry_raw(child_phys) };
+                Self::free_table_page(child_phys);
+                break;
+            }
+
             *parent.entry_mut(parent_idx) = PageTableEntry::empty();
             Self::free_table_page(child_phys);
             child_phys = parent_phys;

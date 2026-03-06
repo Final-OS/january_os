@@ -200,7 +200,7 @@ pub fn handle_page_fault(ctx: &FaultCtx) -> FaultResult;
 - `task/scheduler/` 负责纯运行时调度
 - `task/process/` 负责进程生命周期
 - `task/process/exec.rs` 承载 ELF 加载、用户栈构建、exec 地址空间替换
-- `task/process/fork.rs` / `wait.rs` / `exit.rs` 承载进程生命周期 façade，`syscall` 仅保留 ABI 适配层
+- `task/process/fork.rs` / `wait.rs` / `exit.rs` / `signal.rs` 承载进程生命周期 façade，`syscall` 仅保留 ABI 适配层
 - `wait4` 的阻塞/观测/回收编排下沉到 `task/process/wait.rs`，`syscall/handlers/process.rs` 仅处理 PID/option 解码与用户态状态写回
 
 核心接口：
@@ -221,7 +221,7 @@ pub fn wait_child(target: WaitTarget, opts: WaitOpts) -> WaitResult;
 
 职责：
 - Linux ABI 编号兼容、参数校验、权限校验、错误码映射、调用分发
-- 处理器保持薄适配：`fork/clone/vfork/wait4/exit` 等流程统一委托给 `task` façade
+- 处理器保持薄适配：`fork/clone/vfork/wait4/exit/kill*` 等流程统一委托给 `task` façade
 
 核心接口：
 ```rust

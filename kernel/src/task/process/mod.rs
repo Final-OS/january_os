@@ -5,6 +5,7 @@
 pub mod exec;
 pub mod exit;
 pub mod fork;
+pub mod signal;
 pub mod wait;
 
 use alloc::string::String;
