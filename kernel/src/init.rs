@@ -11,7 +11,16 @@ use crate::drivers::tty::{self, SerialWriter};
 use crate::drivers::{self, acpi};
 use crate::fs;
 use crate::interrupt;
-use crate::mm::{self, MemoryRegion};
+use crate::mm::MemoryRegion;
+use crate::mm::arch as mm_arch;
+use crate::mm::iommu as mm_iommu;
+use crate::mm::page::numa as mm_numa;
+use crate::mm::vm::layout as mm_layout;
+use crate::mm::vm::layout_runtime as mm_runtime;
+use crate::mm::vm::paging as mm_paging;
+use crate::mm::vm::vma as mm_vma;
+use crate::mm::{self, component_report};
+use crate::mm::setup as mm_setup;
 use crate::smp;
 use crate::virt;
 use crate::{error, info, kprint, kprintln, ok, warn};
@@ -115,7 +124,7 @@ fn resolve_kernel_reserved_end_phys(info: &BootInfo) -> u64 {
     let linked_file_size = core::ptr::addr_of!(__kernel_file_size) as u64;
     let linked_mem_size = core::ptr::addr_of!(__kernel_mem_size) as u64;
     let linked_mem_end = info.kernel_phys_addr.saturating_add(linked_mem_size);
-    let reserved_end = mm::page_align_up(boot_file_end.max(linked_mem_end));
+    let reserved_end = mm_layout::page_align_up(boot_file_end.max(linked_mem_end));
 
     if config::DEBUG_VERBOSE {
         kprintln!(
@@ -150,11 +159,11 @@ pub fn init_kernel(info: &BootInfo) {
     }
 
     run_kernel_component(&mut components, &COMPONENT_MM_LAYOUT, || {
-        if !mm::init_from_boot_info(info) {
+        if !mm_runtime::init_from_boot_info(info) {
             panic!("Invalid kernel layout in BootInfo");
         }
     });
-    let direct_map = mm::direct_map_offset();
+    let direct_map = mm_runtime::direct_map_offset();
 
     // 3. 初始化 Framebuffer 控制台
     init_graphics(info, direct_map);
@@ -163,15 +172,15 @@ pub fn init_kernel(info: &BootInfo) {
     kprint!("\x1b[2J\x1b[1;1H"); // Clear screen, move cursor to 1,1
     kprintln!("\n\x1b[36;1m   January OS \x1b[0;36mv0.1.0\x1b[0m");
     kprintln!("\x1b[90m   --------------------------------\x1b[0m\n");
-    let runtime_layout = mm::snapshot();
-    let boot_levels = mm::boot_reported_page_levels();
-    let boot_va_bits = mm::boot_reported_va_bits();
-    let hw_levels = mm::hardware_page_levels();
-    let hw_va_bits = mm::hardware_va_bits();
-    let boot_root = mm::boot_reported_root_phys();
-    let hw_root = mm::hardware_root_phys();
-    let corrected = mm::paging_corrected_by_hw();
-    let root_mismatch = mm::paging_root_mismatch();
+    let runtime_layout = mm_runtime::snapshot();
+    let boot_levels = mm_runtime::boot_reported_page_levels();
+    let boot_va_bits = mm_runtime::boot_reported_va_bits();
+    let hw_levels = mm_runtime::hardware_page_levels();
+    let hw_va_bits = mm_runtime::hardware_va_bits();
+    let boot_root = mm_runtime::boot_reported_root_phys();
+    let hw_root = mm_runtime::hardware_root_phys();
+    let corrected = mm_runtime::paging_corrected_by_hw();
+    let root_mismatch = mm_runtime::paging_root_mismatch();
     if config::DEBUG_VERBOSE {
         kprintln!(
             "\x1b[90m[diag]\x1b[0m[boot] bootinfo: mem_entries={} usable={}MB direct_map=[{:#x},{:#x}) vmalloc=[{:#x},{:#x}) boot={}/L{} runtime={}/L{} hw={}/L{} root_boot={:#x} root_hw={:#x} corrected={} root_mismatch={} rsdp={:#x}",
@@ -209,7 +218,7 @@ pub fn init_kernel(info: &BootInfo) {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step4: init_memory begin");
     }
     run_kernel_component(&mut components, &COMPONENT_MEMORY, || init_memory(info, direct_map));
-    let mm_report = mm::component_report();
+    let mm_report = component_report();
     if config::DEBUG_VERBOSE {
         kprintln!(
             "\x1b[90m[diag]\x1b[0m[mm] component report levels={} va_bits={} direct_map=[{:#x},{:#x}) vmalloc=[{:#x},{:#x})",
@@ -255,7 +264,7 @@ pub fn init_kernel(info: &BootInfo) {
             cpu_count
         );
     }
-    run_kernel_component(&mut components, &COMPONENT_PCP, || mm::init_pcp(cpu_count as u32));
+    run_kernel_component(&mut components, &COMPONENT_PCP, || mm::pcp::init_pcp(cpu_count as u32));
 
     // 7. 中断控制器初始化
     if config::DEBUG_VERBOSE {
@@ -290,7 +299,7 @@ pub fn init_kernel(info: &BootInfo) {
         if config::DEBUG_VERBOSE {
             kprintln!("\x1b[90m[diag]\x1b[0m[mm] teardown_identity_map begin");
         }
-        let removed_identity = mm::arch::paging::teardown_bootstrap_identity_map(direct_map);
+        let removed_identity = mm_arch::paging::teardown_bootstrap_identity_map(direct_map);
         if config::DEBUG_VERBOSE {
             kprintln!(
                 "\x1b[90m[diag]\x1b[0m[mm] teardown_identity_map removed_entries={} window_gib=3",
@@ -423,13 +432,13 @@ fn init_tty_runtime() {
 }
 
 /// 检测 NUMA 节点信息
-fn detect_numa_nodes() -> ([mm::numa::NumaNodeInfo; mm::numa::MAX_NUMNODES], usize) {
-    let mut nodes = [mm::numa::NumaNodeInfo {
+fn detect_numa_nodes() -> ([mm_numa::NumaNodeInfo; mm_numa::MAX_NUMNODES], usize) {
+    let mut nodes = [mm_numa::NumaNodeInfo {
         node_id: 0,
         start_addr: 0,
         size: 0,
         cpu_mask: 0,
-    }; mm::numa::MAX_NUMNODES];
+    }; mm_numa::MAX_NUMNODES];
     let mut node_count = 0;
 
     // 尝试从 SRAT 获取信息
@@ -441,7 +450,7 @@ fn detect_numa_nodes() -> ([mm::numa::NumaNodeInfo; mm::numa::MAX_NUMNODES], usi
                 drivers::acpi::SratEntry::MemoryAffinity(mem) => {
                     if mem.is_enabled() {
                         let node_id = mem.proximity_domain as usize;
-                        if node_id < mm::numa::MAX_NUMNODES {
+                        if node_id < mm_numa::MAX_NUMNODES {
                             let info = &mut nodes[node_id];
                             info.node_id = node_id as u32;
 
@@ -470,7 +479,7 @@ fn detect_numa_nodes() -> ([mm::numa::NumaNodeInfo; mm::numa::MAX_NUMNODES], usi
                 drivers::acpi::SratEntry::LocalApicAffinity(apic) => {
                     if apic.is_enabled() {
                         let node_id = apic.proximity_domain() as usize;
-                        if node_id < mm::numa::MAX_NUMNODES && (apic.apic_id as usize) < 64 {
+                        if node_id < mm_numa::MAX_NUMNODES && (apic.apic_id as usize) < 64 {
                             nodes[node_id].cpu_mask |= 1 << apic.apic_id;
 
                             if node_id > max_node_id {
@@ -508,7 +517,7 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
     let kernel_end_phys = resolve_kernel_reserved_end_phys(info);
     // 与 boot/x86_64/src/paging.rs 保持一致：
     // direct-map 最多扩展到 vmalloc 起始地址之前，避免两者虚拟地址重叠。
-    let vmalloc_start = mm::vmalloc_start();
+    let vmalloc_start = mm_runtime::vmalloc_start();
     let direct_map_span = vmalloc_start.saturating_sub(direct_map);
     if direct_map_span == 0 {
         panic!(
@@ -559,7 +568,7 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
 
     // 构建内存区域信息
     const MAX_REGIONS: usize = MAX_MEMORY_REGIONS;
-    let mut region_infos: [mm::MemoryRegionInfo; MAX_REGIONS] = [mm::MemoryRegionInfo {
+    let mut region_infos: [mm_setup::MemoryRegionInfo; MAX_REGIONS] = [mm_setup::MemoryRegionInfo {
         phys_start: 0,
         page_count: 0,
         is_usable: false,
@@ -567,7 +576,7 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
     let mut region_info_count = 0usize;
     for i in 0..entries_count.min(MAX_REGIONS) {
         let region = unsafe { &*mem_regions.add(i) };
-        region_infos[region_info_count] = mm::MemoryRegionInfo {
+        region_infos[region_info_count] = mm_setup::MemoryRegionInfo {
             phys_start: region.phys_start,
             page_count: region.page_count,
             is_usable: region.region_type == 0,
@@ -577,7 +586,7 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
 
     // Memblock
     unsafe {
-        mm::init_memblock(
+        mm_setup::init_memblock(
             &region_infos[..region_info_count],
             info.kernel_phys_addr,
             kernel_end_phys,
@@ -590,16 +599,16 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
         }
 
         // Buddy System
-        mm::init_buddy_system(&region_infos[..region_info_count], max_pfn, direct_map)
+        mm_setup::init_buddy_system(&region_infos[..region_info_count], max_pfn, direct_map)
             .expect("Buddy init failed");
 
         // SLUB
-        mm::init_slub().expect("SLUB init failed");
-        mm::finish_mm_init();
+        mm_setup::init_slub().expect("SLUB init failed");
+        mm_setup::finish_mm_init();
 
         // 初始化堆（按配置分段预热，可在运行期继续增长）
         let heap_target = config::KERNEL_HEAP_INIT_SIZE as usize;
-        let heap_actual = mm::init_heap(heap_target);
+        let heap_actual = mm::heap::init_heap(heap_target);
         if heap_actual == 0 {
             panic!("Kernel heap init failed: target={} bytes", heap_target);
         } else if heap_actual < heap_target {
@@ -618,7 +627,7 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
     }
 
     // 初始化其他内存组件
-    mm::init_vma();
+    mm_vma::init_vma();
 
     // 根据配置初始化内存模型
     if config::MEMORY_MODEL_NUMA {
@@ -629,10 +638,10 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
             warn!("SRAT not found or empty. Using UMA.");
         }
         unsafe {
-            mm::init_numa(&nodes[..count]);
+            mm_numa::init_numa(&nodes[..count]);
         }
     } else {
-        mm::init_uma();
+        mm_numa::init_uma();
     }
 
     // 初始化 vmalloc
@@ -713,17 +722,17 @@ fn init_interrupts(acpi_config: &acpi::AcpiConfig, kernel_stack_top: u64, direct
 
 fn init_iommu() {
     info!("[IOMMU] Initializing IOMMU...");
-    mm::init_iommu();
-    let stats = mm::iommu_stats();
+    mm_iommu::init_iommu();
+    let stats = mm_iommu::iommu_stats();
     let iommu_type = match stats.iommu_type {
-        mm::IommuType::IntelVtd => "Intel VT-d",
-        mm::IommuType::AmdVi => "AMD-Vi",
-        mm::IommuType::Swiotlb => "SWIOTLB",
-        mm::IommuType::None => "None",
+        mm_iommu::IommuType::IntelVtd => "Intel VT-d",
+        mm_iommu::IommuType::AmdVi => "AMD-Vi",
+        mm_iommu::IommuType::Swiotlb => "SWIOTLB",
+        mm_iommu::IommuType::None => "None",
     };
     let trans_mode = match stats.translation_mode {
-        mm::TranslationMode::Passthrough => "Passthrough",
-        mm::TranslationMode::Translate => "Translate",
+        mm_iommu::TranslationMode::Passthrough => "Passthrough",
+        mm_iommu::TranslationMode::Translate => "Translate",
     };
     ok!("[IOMMU] {} | Mode: {}", iommu_type, trans_mode);
 }
@@ -809,7 +818,7 @@ fn init_timer_and_enable_interrupts() {
             if_step11c
         );
     }
-    mm::paging::register_tlb_shootdown_cpu();
+    mm_paging::register_tlb_shootdown_cpu();
 
     ok!(
         "[Timer] {} MHz | Tick: {} Hz | Interrupts: ENABLED",

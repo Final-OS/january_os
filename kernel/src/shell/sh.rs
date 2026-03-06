@@ -11,6 +11,15 @@ use crate::drivers::input::hid::keyboard;
 use crate::drivers::tty::serial_read_char;
 use crate::interrupt;
 use crate::mm;
+use crate::mm::heap as mm_heap;
+use crate::mm::iommu as mm_iommu;
+use crate::mm::page::page as mm_page;
+use crate::mm::page::pcp as mm_pcp;
+use crate::mm::page::zone as mm_zone;
+use crate::mm::slub as mm_slub;
+use crate::mm::vm::fault as mm_fault;
+use crate::mm::vm::layout_runtime as mm_runtime;
+use crate::mm::vmalloc as mm_vmalloc;
 use crate::{info, kprint, kprintln};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -522,8 +531,8 @@ fn execute_mm_command(args: &[&str]) {
         "status" => {
             let mut total_free = 0u64;
             let mut zone_drifted = 0u64;
-            for zone_type in mm::ZoneType::iter() {
-                let zone = mm::get_zone(zone_type);
+            for zone_type in mm_zone::ZoneType::iter() {
+                let zone = mm_zone::get_zone(zone_type);
                 if !zone.initialized {
                     continue;
                 }
@@ -533,24 +542,24 @@ fn execute_mm_command(args: &[&str]) {
                 }
                 total_free = total_free.saturating_add(recomputed);
             }
-            let fault_stats = mm::get_fault_stats();
-            let vmalloc_heal = mm::vmalloc::vmalloc_heal_stats();
-            let pcp = mm::page::pcp::pcp_stats();
-            let pt_reclaim = mm::pt_reclaim_stats();
-            let zone_guard = mm::zone::zone_guard_stats();
-            let page_guard = mm::page_guard_stats();
-            let dma_guard = mm::iommu::dma_coherent_guard_stats();
-            let heap = mm::heap::heap_stats();
-            let kmalloc = mm::slub::kmalloc_stats();
-            let layout = mm::snapshot();
-            let boot_va_bits = mm::boot_reported_va_bits();
-            let boot_levels = mm::boot_reported_page_levels();
-            let hw_va_bits = mm::hardware_va_bits();
-            let hw_levels = mm::hardware_page_levels();
-            let boot_root = mm::boot_reported_root_phys();
-            let hw_root = mm::hardware_root_phys();
-            let corrected = mm::paging_corrected_by_hw();
-            let root_mismatch = mm::paging_root_mismatch();
+            let fault_stats = mm_fault::get_fault_stats();
+            let vmalloc_heal = mm_vmalloc::vmalloc_heal_stats();
+            let pcp = mm_pcp::pcp_stats();
+            let pt_reclaim = mm::vm::paging::pt_reclaim_stats();
+            let zone_guard = mm_zone::zone_guard_stats();
+            let page_guard = mm_page::page_guard_stats();
+            let dma_guard = mm_iommu::dma_coherent_guard_stats();
+            let heap = mm_heap::heap_stats();
+            let kmalloc = mm_slub::kmalloc_stats();
+            let layout = mm_runtime::snapshot();
+            let boot_va_bits = mm_runtime::boot_reported_va_bits();
+            let boot_levels = mm_runtime::boot_reported_page_levels();
+            let hw_va_bits = mm_runtime::hardware_va_bits();
+            let hw_levels = mm_runtime::hardware_page_levels();
+            let boot_root = mm_runtime::boot_reported_root_phys();
+            let hw_root = mm_runtime::hardware_root_phys();
+            let corrected = mm_runtime::paging_corrected_by_hw();
+            let root_mismatch = mm_runtime::paging_root_mismatch();
             kprintln!("Memory Status:");
             kprintln!("  Free pages:  {}", total_free);
             kprintln!(
@@ -667,7 +676,7 @@ fn execute_mm_command(args: &[&str]) {
             );
         }
         "faults" => {
-            let fault_stats = mm::get_fault_stats();
+            let fault_stats = mm_fault::get_fault_stats();
             kprintln!("Page Fault Stats:");
             kprintln!(
                 "  total_faults: {}",
@@ -734,7 +743,7 @@ fn execute_mm_command(args: &[&str]) {
         }
         "iommu" => {
             let stats = mm::iommu_stats();
-            let dma_guard = mm::iommu::dma_coherent_guard_stats();
+            let dma_guard = mm_iommu::dma_coherent_guard_stats();
             kprintln!("IOMMU Status:");
             kprintln!("  Enabled:     {}", stats.enabled);
             kprintln!("  Type:        {:?}", stats.iommu_type);
@@ -759,8 +768,8 @@ fn execute_mm_command(args: &[&str]) {
             let mut repaired_zones = 0u64;
             let mut total_before = 0u64;
             let mut total_after = 0u64;
-            for zone_type in mm::ZoneType::iter() {
-                let mut zone = mm::get_zone(zone_type);
+            for zone_type in mm_zone::ZoneType::iter() {
+                let mut zone = mm_zone::get_zone(zone_type);
                 if !zone.initialized {
                     continue;
                 }
