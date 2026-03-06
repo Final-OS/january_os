@@ -1,6 +1,5 @@
 pub mod arch;
 pub mod context;
-pub mod exec;
 pub mod id;
 pub mod ipc;
 pub mod manager;
@@ -9,7 +8,7 @@ pub mod processor;
 pub mod scheduler;
 pub mod task;
 
-pub use exec::{
+pub use process::exec::{
     build_elf_load_plan, install_current_exec_vmas, preview_pt_load_mapping,
     rollback_exec_mappings, setup_initial_user_stack, stage_pt_load_mappings, ExecLoadPlan,
     ExecMapPreview, ExecMappedPage, ExecMappedPageKind,

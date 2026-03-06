@@ -80,6 +80,8 @@
   - 进程/线程元数据
   - exec/fork/wait 生命周期
 - 这两个组件可以协作，但不得彼此吞并职责。
+- `task/process/exec.rs` 属于**进程生命周期组件**，不得继续放回 `task/` 根层或调度器实现中。
+- `task/scheduler/` 不得承载 `fork/exec/wait/exit` 的主实现逻辑。
 
 ## 8. 架构隔离
 

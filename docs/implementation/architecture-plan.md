@@ -196,6 +196,11 @@ pub fn handle_page_fault(ctx: &FaultCtx) -> FaultResult;
 职责：
 - 进程/线程生命周期、上下文切换、运行队列、负载均衡、等待与回收
 
+当前收敛规则：
+- `task/scheduler/` 负责纯运行时调度
+- `task/process/` 负责进程生命周期
+- `task/process/exec.rs` 承载 ELF 加载、用户栈构建、exec 地址空间替换
+
 核心接口：
 ```rust
 pub fn spawn_kernel_thread(name: &str, entry: extern "C" fn()) -> Arc<TaskRef>;
