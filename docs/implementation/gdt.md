@@ -182,7 +182,7 @@ RPL: Requestor Privilege Level (0 = 内核, 3 = 用户)
 ### 获取内核栈并设置 TSS
 
 ```rust
-use kernel::interrupt::{init_gdt, set_interrupt_stack};
+use kernel::interrupt::arch::x86_64::entry::gdt::{init_gdt, set_interrupt_stack};
 
 // 获取当前栈顶
 let rsp: u64;
@@ -190,7 +190,7 @@ unsafe { asm!("mov {}, rsp", out(reg) rsp); }
 let kernel_stack_top = (rsp + 0xFFF) & !0xFFF;
 
 // 初始化 GDT
-unsafe { init_gdt(kernel_stack_top); }
+unsafe { init_gdt(0, kernel_stack_top); }
 
 // 为 Double Fault 设置 IST1
 let ist1_page = alloc_pages(2, GFP_KERNEL).unwrap();

@@ -5,7 +5,7 @@
 ## 当前组织
 
 - `kernel/src/syscall/`：统一参数结构、返回值编码、号表和跨架构分发接口
-- `kernel/src/syscall/arch/x86_64/`：x86_64 Linux ABI 编号表与号到组件入口的分发
+- `kernel/src/syscall/arch/x86_64/`：x86_64 Linux ABI 编号表与按号精确分发的入口绑定
 - `kernel/src/arch/x86_64/syscall/`：`syscall` 指令陷入入口、寄存器保存与返回路径
 - `kernel/src/fs/syscall/`：FS 域 ABI 入口；真实运行时分布在 `fs/runtime/fd/pipe/backing/vfs`
 - `kernel/src/mm/syscall/`：`mmap/munmap/mprotect/brk` 专属 ABI 入口
@@ -42,6 +42,7 @@ pub struct SyscallArgs {
 pub struct SyscallDef {
     pub nr: usize,
     pub name: &'static str,
+    pub domain: SyscallDomain,
 }
 
 pub trait SyscallArch {
@@ -90,8 +91,9 @@ pub fn syscall_table() -> &'static [SyscallDef];
 
 ## 当前边界原则
 
-- `syscall` 只做 ABI 解码和组件分发
-- 真实内核语义落在 `fs/mm/task` 各自组件内
+- `syscall` 只做 ABI 解码与按 Linux ABI 号精确分发
+- 不使用自定义号段推导组件归属；domain 仅作为诊断/统计元数据
+- 真实内核语义落在 `fs/mm/task/net/security/virt` 各自组件内
 - 架构相关实现只放在 `arch/<arch>` 路径下
 
 ## 相关文档

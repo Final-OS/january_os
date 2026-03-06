@@ -4,8 +4,8 @@
 
 ## 文件
 
-- `kernel/src/interrupt/idt.rs` - IDT 管理
-- `kernel/src/interrupt/handlers.rs` - 异常处理程序
+- `kernel/src/interrupt/arch/x86_64/trap/idt.rs` - IDT 管理
+- `kernel/src/interrupt/arch/x86_64/trap/handlers.rs` - 异常处理程序
 
 ## IDT 结构
 

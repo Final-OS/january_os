@@ -2,7 +2,7 @@
 
 use core::arch::asm;
 
-use crate::interrupt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
+use crate::interrupt::arch::x86_64::entry::gdt::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
 /// 用户态入口帧（用于 iretq 切换）
 #[derive(Debug, Clone, Copy)]

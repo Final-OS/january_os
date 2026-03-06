@@ -21,7 +21,7 @@ kprintln!("Uptime: {} ticks", ticks);
 
 **调试输出**：
 ```rust
-use kernel::interrupt::set_timer_debug;
+use kernel::interrupt::diag::set_timer_debug;
 
 set_timer_debug(true);  // 每个 tick 打印信息
 ```
@@ -198,7 +198,7 @@ extern "x86-interrupt" fn custom_page_fault(
 ### 调试信息
 
 ```rust
-use kernel::interrupt::set_timer_debug;
+use kernel::interrupt::diag::set_timer_debug;
 
 set_timer_debug(true);
 

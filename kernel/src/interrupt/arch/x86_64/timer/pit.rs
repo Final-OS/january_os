@@ -157,7 +157,7 @@ pub fn pit_wait_ms(ms: u32) {
 /// 
 /// 使用 PIT 作为参考时钟
 pub fn calibrate_apic_timer() -> u64 {
-    use super::apic;
+    use crate::interrupt::arch::x86_64::controller::apic;
     
     // 设置 APIC Timer 为最大计数，分频 = 16
     const APIC_TIMER_DIV: u32 = 0x03; // 除以 16

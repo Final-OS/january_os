@@ -35,8 +35,8 @@
 //! 32-255  IRQ                 User-defined Interrupts
 //! ```
 
-use super::gdt::KERNEL_CODE_SELECTOR;
-use super::handlers;
+use crate::interrupt::arch::x86_64::entry::gdt::KERNEL_CODE_SELECTOR;
+use crate::interrupt::arch::x86_64::trap::handlers;
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::mem::size_of;

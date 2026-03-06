@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `kernel/src/interrupt/apic.rs`
+- `kernel/src/interrupt/arch/x86_64/controller/apic.rs`
 
 ## Local APIC
 

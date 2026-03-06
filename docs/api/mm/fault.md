@@ -182,7 +182,7 @@ if error_code.contains(PageErrorCode::ID) &&
 ## 中断处理程序
 
 ```rust
-// kernel/src/interrupt/handlers.rs
+// kernel/src/interrupt/arch/x86_64/trap/handlers.rs
 
 extern "x86-interrupt" fn page_fault_handler(
     frame: InterruptFrame,

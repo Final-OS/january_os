@@ -134,7 +134,7 @@ let cpu_id = local_apic_id();
 通过 Local APIC 发送核间中断。
 
 ```rust
-use crate::interrupt::apic;
+use crate::interrupt::arch::x86_64::controller::apic;
 
 // 发送 IPI 到指定 CPU
 apic::send_ipi(target_apic_id, vector);
@@ -242,7 +242,7 @@ if let Some(task) = PROCESSOR.lock().current() {
 ### 发送核间中断
 
 ```rust
-use crate::interrupt::apic;
+use crate::interrupt::arch::x86_64::controller::apic;
 
 // 发送 IPI 到 CPU 1
 apic::send_ipi(1, 0x30); // 向量 0x30

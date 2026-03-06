@@ -7,7 +7,7 @@
 use super::page::{max_pfn, page_to_pfn, vmemmap_base_ptr, ListHead, Page, PageOwner};
 use super::zone::{get_zone, GfpFlags, Zone, ZoneType, NR_ZONES};
 use crate::config;
-use crate::interrupt::apic::local_apic_id;
+use crate::interrupt::local_apic_id;
 use crate::sync::IrqSpinLock;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};

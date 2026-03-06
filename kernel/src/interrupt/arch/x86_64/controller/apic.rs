@@ -396,7 +396,7 @@ pub fn calibrate_timer() -> u64 {
     }
 
     // 尝试使用 TSC 校准
-    let tsc_freq = super::tsc::tsc_frequency();
+    let tsc_freq = crate::interrupt::arch::x86_64::timer::tsc::tsc_frequency();
     let ticks_per_sec = if tsc_freq > 0 {
         // 使用 TSC 测量 100ms
         crate::info!("[APIC] Calibrating timer using TSC...");
@@ -408,7 +408,7 @@ pub fn calibrate_timer() -> u64 {
         lapic_write(LAPIC_TIMER, TIMER_ONE_SHOT | TIMER_MASKED);
 
         // 2. 准备开始
-        let start_tsc = super::tsc::rdtsc();
+        let start_tsc = crate::interrupt::arch::x86_64::timer::tsc::rdtsc();
         let wait_ticks = tsc_freq / 10; // 100ms
 
         // 3. 启动 APIC Timer (倒计时从最大值开始)
@@ -416,7 +416,7 @@ pub fn calibrate_timer() -> u64 {
 
         // 4. 等待 100ms
         loop {
-            if super::tsc::rdtsc() - start_tsc >= wait_ticks {
+            if crate::interrupt::arch::x86_64::timer::tsc::rdtsc() - start_tsc >= wait_ticks {
                 break;
             }
         }

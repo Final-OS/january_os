@@ -4,7 +4,7 @@
 // 异常和中断的具体处理逻辑
 // ============================================================================
 
-use super::idt::{InterruptFrame, InterruptFrameWithError};
+use crate::interrupt::arch::x86_64::trap::idt::{InterruptFrame, InterruptFrameWithError};
 use crate::mm::fault::{handle_page_fault, FaultContext, FaultResult};
 use core::arch::asm;
 
@@ -251,7 +251,7 @@ pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
     }
 
     // 发送 EOI
-    super::apic::local_apic_eoi();
+    crate::interrupt::arch::x86_64::controller::apic::local_apic_eoi();
 }
 
 /// Keyboard 中断处理程序
@@ -272,7 +272,7 @@ pub extern "x86-interrupt" fn keyboard_handler(frame: InterruptFrame) {
     crate::drivers::input::handle_scancode(scancode);
 
     // 发送 EOI
-    super::apic::local_apic_eoi();
+    crate::interrupt::arch::x86_64::controller::apic::local_apic_eoi();
 }
 
 /// Mouse 中断处理程序
@@ -293,7 +293,7 @@ pub extern "x86-interrupt" fn mouse_handler(frame: InterruptFrame) {
     crate::drivers::input::mouse_handle_interrupt(data);
 
     // 发送 EOI
-    super::apic::local_apic_eoi();
+    crate::interrupt::arch::x86_64::controller::apic::local_apic_eoi();
 }
 
 /// 串口 (COM1) 中断处理程序
@@ -304,7 +304,7 @@ pub extern "x86-interrupt" fn serial_handler(frame: InterruptFrame) {
     crate::drivers::tty::serial_interrupt_handler();
 
     // 发送 EOI
-    super::apic::local_apic_eoi();
+    crate::interrupt::arch::x86_64::controller::apic::local_apic_eoi();
 }
 
 /// xHCI 中断处理程序
@@ -315,7 +315,7 @@ pub extern "x86-interrupt" fn xhci_handler(frame: InterruptFrame) {
     crate::drivers::usb::xhci::handle_interrupt();
 
     // 发送 EOI
-    super::apic::local_apic_eoi();
+    crate::interrupt::arch::x86_64::controller::apic::local_apic_eoi();
 }
 
 /// TLB shootdown IPI 处理程序
@@ -324,7 +324,7 @@ pub extern "x86-interrupt" fn tlb_shootdown_handler(frame: InterruptFrame) {
 
     crate::mm::paging::handle_tlb_shootdown_ipi();
 
-    super::apic::local_apic_eoi();
+    crate::interrupt::arch::x86_64::controller::apic::local_apic_eoi();
 }
 
 /// TLB probe IPI 处理程序（用于跨核可见性回归）
@@ -333,7 +333,7 @@ pub extern "x86-interrupt" fn tlb_probe_handler(frame: InterruptFrame) {
 
     crate::mm::paging::handle_tlb_probe_ipi();
 
-    super::apic::local_apic_eoi();
+    crate::interrupt::arch::x86_64::controller::apic::local_apic_eoi();
 }
 
 /// Spurious 中断处理程序
@@ -347,5 +347,5 @@ pub extern "x86-interrupt" fn generic_handler(frame: InterruptFrame) {
     let _ = frame;
 
     // 发送 EOI
-    super::apic::local_apic_eoi();
+    crate::interrupt::arch::x86_64::controller::apic::local_apic_eoi();
 }

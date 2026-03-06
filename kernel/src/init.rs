@@ -23,6 +23,8 @@ use crate::net;
 use crate::security;
 use crate::smp;
 use crate::virt;
+#[cfg(target_arch = "x86_64")]
+use crate::interrupt::arch::x86_64::{InterruptInitInfo, IrqRouteOverride};
 use crate::{error, info, kprint, kprintln, ok, warn};
 use crate::component::{
     run_component, ComponentDescriptor as KernelComponentDescriptor,
@@ -686,7 +688,7 @@ fn init_acpi(info: &BootInfo) -> acpi::AcpiConfig {
 fn init_interrupts(acpi_config: &acpi::AcpiConfig, kernel_stack_top: u64, direct_map: u64) {
     info!("[INT] Initializing Interrupt Controller...");
 
-    let mut irq_overrides = [interrupt::IrqRouteOverride {
+    let mut irq_overrides = [IrqRouteOverride {
         source: 0,
         gsi: 0,
         level_triggered: false,
@@ -698,7 +700,7 @@ fn init_interrupts(acpi_config: &acpi::AcpiConfig, kernel_stack_top: u64, direct
         .zip(acpi_config.irq_overrides.iter())
         .take(irq_override_count)
     {
-        *dst = interrupt::IrqRouteOverride {
+        *dst = IrqRouteOverride {
             source: src.source,
             gsi: src.gsi,
             level_triggered: src.level_triggered,
@@ -706,7 +708,7 @@ fn init_interrupts(acpi_config: &acpi::AcpiConfig, kernel_stack_top: u64, direct
         };
     }
 
-    let int_info = interrupt::InterruptInitInfo {
+    let int_info = InterruptInitInfo {
         kernel_stack_top,
         local_apic_addr: acpi_config.local_apic_addr,
         ioapic_addr: acpi_config.ioapic_addr,

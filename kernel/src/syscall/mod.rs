@@ -4,7 +4,6 @@ pub mod abi;
 pub mod dispatch;
 pub mod arch;
 pub mod table;
-pub mod uaccess;
 
 use alloc::format;
 use alloc::string::String;
@@ -56,6 +55,7 @@ impl SyscallArgs {
 pub struct SyscallDef {
     pub nr: usize,
     pub name: &'static str,
+    pub domain: abi::SyscallDomain,
 }
 
 pub trait SyscallArch {

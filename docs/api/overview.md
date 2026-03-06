@@ -30,11 +30,11 @@
 | 模块 | 说明 | 文件 |
 |------|------|------|
 | [interrupt](./interrupt/interrupt.md) | 中断子系统 | `kernel/src/interrupt/mod.rs` |
-| [gdt](./interrupt/gdt.md) | 全局描述符表 | `kernel/src/interrupt/gdt.rs` |
-| [idt](./interrupt/idt.md) | 中断描述符表 | `kernel/src/interrupt/idt.rs` |
-| [handlers](./interrupt/handlers.md) | 异常和中断处理程序 | `kernel/src/interrupt/handlers.rs` |
-| [apic](./interrupt/apic.md) | Local/I/O APIC | `kernel/src/interrupt/apic.rs` |
-| [pit](./interrupt/pit.md) | 可编程间隔定时器 | `kernel/src/interrupt/pit.rs` |
+| [gdt](./interrupt/gdt.md) | 全局描述符表 | `kernel/src/interrupt/arch/x86_64/entry/gdt.rs` |
+| [idt](./interrupt/idt.md) | 中断描述符表 | `kernel/src/interrupt/arch/x86_64/trap/idt.rs` |
+| [handlers](./interrupt/handlers.md) | 异常和中断处理程序 | `kernel/src/interrupt/arch/x86_64/trap/handlers.rs` |
+| [apic](./interrupt/apic.md) | Local/I/O APIC | `kernel/src/interrupt/arch/x86_64/controller/apic.rs` |
+| [pit](./interrupt/pit.md) | 可编程间隔定时器 | `kernel/src/interrupt/arch/x86_64/timer/pit.rs` |
 
 ### 设备驱动 (drivers)
 
