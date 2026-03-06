@@ -680,14 +680,7 @@ pub fn run_tlb_probe_on_other_cpus(addr: u64, expected: u64) -> (u32, u32, u32) 
 ///
 /// 返回成功移除的 1GiB 条目数量。
 pub fn teardown_bootstrap_identity_map(direct_map_offset: u64) -> usize {
-    unsafe extern "C" {
-        static __kernel_start: u8;
-        static __kernel_mem_end: u8;
-    }
-
     let cr3_phys = crate::mm::arch::read_cr3() & PTE_ADDR_MASK;
-    let kernel_start = core::ptr::addr_of!(__kernel_start) as u64;
-    let kernel_end = core::ptr::addr_of!(__kernel_mem_end) as u64;
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
             "\x1b[90m[diag]\x1b[0m[mm] teardown_bootstrap_identity_map enter cr3={:#x}",
@@ -705,31 +698,15 @@ pub fn teardown_bootstrap_identity_map(direct_map_offset: u64) -> usize {
 
     let mut removed = 0usize;
     let mut addr = 0u64;
-    let _pt_guard = PAGE_TABLE_OP_LOCK.lock();
     while addr < LOW_IDENTITY_WINDOW_BYTES {
         let block_end = addr.saturating_add(LOW_IDENTITY_STEP_BYTES);
-        let overlap_kernel = kernel_start < block_end && kernel_end > addr;
-        if overlap_kernel {
-            if crate::config::DEBUG_VERBOSE {
-                crate::kprintln!(
-                    "\x1b[90m[diag]\x1b[0m[mm] teardown_identity_map keep addr={:#x} (overlap kernel [{:#x}, {:#x}))",
-                    addr,
-                    kernel_start,
-                    kernel_end
-                );
-            }
-            addr = block_end;
-            continue;
-        }
         if crate::config::DEBUG_VERBOSE {
             crate::kprintln!(
                 "\x1b[90m[diag]\x1b[0m[mm] teardown_identity_map unmap begin addr={:#x}",
                 addr
             );
         }
-        // Boot-time teardown must not depend on cross-CPU shootdown progress.
-        // APs may still be in early bring-up states and stale low TLB entries are harmless here.
-        if unsafe { pt_mgr.clear_huge_mapping_no_flush_locked(addr) } {
+        if unsafe { pt_mgr.unmap_page(addr) } {
             removed += 1;
             if crate::config::DEBUG_VERBOSE {
                 crate::kprintln!(
@@ -745,8 +722,6 @@ pub fn teardown_bootstrap_identity_map(direct_map_offset: u64) -> usize {
         }
         addr = block_end;
     }
-    drop(_pt_guard);
-    flush_tlb_all_local_only();
     if crate::config::DEBUG_VERBOSE {
         crate::kprintln!(
             "\x1b[90m[diag]\x1b[0m[mm] teardown_bootstrap_identity_map leave removed={}",
@@ -1124,25 +1099,6 @@ impl PageTableManager {
         }
         *entry = PageTableEntry::new(child_phys, parent_flags);
         true
-    }
-
-    #[inline]
-    unsafe fn clear_huge_mapping_no_flush_locked(&self, virt: u64) -> bool {
-        let mut table_phys = self.root_phys;
-        for level in (2..=self.page_levels).rev() {
-            let idx = level_index(virt, level);
-            let table = unsafe { self.table_mut(table_phys) };
-            let entry = table.entry_mut(idx);
-            if !entry.is_present() {
-                return false;
-            }
-            if (level == 3 || level == 2) && entry.is_huge() {
-                *entry = PageTableEntry::empty();
-                return true;
-            }
-            table_phys = entry.phys_addr();
-        }
-        false
     }
 
     /// 遍历页表，查找虚拟地址对应的页表条目

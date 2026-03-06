@@ -213,6 +213,10 @@ pub struct BootInfo {
     /// 命令行长度
     pub cmdline_len: u32,
     pub _cmdline_reserved: u32,
+    /// initramfs 物理地址（0 表示未提供）
+    pub initramfs_phys_addr: u64,
+    /// initramfs 大小（字节）
+    pub initramfs_size: u64,
     /// 根页表物理地址（v4+，4-level 为 PML4，5-level 为 PML5）
     pub root_table_phys_addr: u64,
 }
@@ -220,11 +224,11 @@ pub struct BootInfo {
 /// BootInfo 魔数: "JAN_OS\0\0" 的 ASCII 值
 pub const BOOTINFO_MAGIC: u64 = 0x4A414E5F4F530000;
 /// BootInfo 版本
-pub const BOOTINFO_VERSION: u32 = 4;
+pub const BOOTINFO_VERSION: u32 = 5;
 /// 内核加载的物理地址
 pub const KERNEL_PHYS_ADDR: u64 = 0x100000;
 /// 内核运行的虚拟地址（高半部分）
-pub const KERNEL_VIRT_ADDR: u64 = 0xFFFF_8000_0010_0000;
+pub const KERNEL_VIRT_ADDR: u64 = 0xFFFF_FFFF_8010_0000;
 /// 直接映射区偏移（物理地址 + 此偏移 = 虚拟地址）
 pub const DIRECT_MAP_OFFSET: u64 = crate::cfg::DIRECT_MAP_OFFSET;
 /// 最大磁盘数

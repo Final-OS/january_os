@@ -796,36 +796,11 @@ unsafe fn teardown_user_page_tables(pgd_phys: u64) {
     let root = &mut *phys_to_table_mut(pgd_phys);
     let levels = runtime_page_levels();
     let user_entries = user_root_entry_count();
-    let init_root_phys = init_mm_pgd_phys() & crate::mm::PTE_ADDR_MASK;
-    let init_root = if init_root_phys != 0 {
-        Some(&*phys_to_table_mut(init_root_phys))
-    } else {
-        None
-    };
 
     for idx in 0..user_entries {
         let entry = root.entry_mut(idx);
         if !entry.is_present() {
             continue;
-        }
-
-        // The cloned mm may temporarily mirror a low runtime root entry from init_mm
-        // (non-user, shared kernel path). Never recurse/free through that shared subtree.
-        if !entry.is_user() {
-            if let Some(init_tbl) = init_root {
-                let init_entry = *init_tbl.entry(idx);
-                if init_entry.raw() == entry.raw() {
-                    if crate::config::DEBUG_VERBOSE {
-                        crate::kprintln!(
-                            "\x1b[90m[diag]\x1b[0m[mm_release] skip shared low root entry idx={} raw={:#x}",
-                            idx,
-                            entry.raw()
-                        );
-                    }
-                    *entry = PageTableEntry::empty();
-                    continue;
-                }
-            }
         }
 
         if levels <= 1 {
@@ -854,23 +829,6 @@ fn init_mm_pgd_phys() -> u64 {
 
 unsafe fn clone_kernel_root_entries(src_pgd: u64, dst_pgd: u64) {
     crate::mm::arch::paging::clone_kernel_root_entries_with_refs(src_pgd, dst_pgd);
-}
-
-unsafe fn clone_low_runtime_root_entry(src_pgd: u64, dst_pgd: u64) {
-    let levels = runtime_page_levels();
-    let kernel_root_start = level_index(KERNEL_BASE, levels);
-    let rip_idx = level_index(mm_clone as *const () as usize as u64, levels);
-    if rip_idx >= kernel_root_start {
-        return;
-    }
-
-    let direct_map = crate::mm::direct_map_offset();
-    let va_bits = crate::mm::va_bits();
-    let src_mgr = PageTableManager::new_with_layout(src_pgd, direct_map, levels, va_bits);
-    let mut dst_mgr = PageTableManager::new_with_layout(dst_pgd, direct_map, levels, va_bits);
-    let src_root = src_mgr.root_table();
-    let dst_root = dst_mgr.root_table_mut();
-    *dst_root.entry_mut(rip_idx) = *src_root.entry(rip_idx);
 }
 
 unsafe fn clone_user_present_pages(src: &Mm, dst: &mut Mm) -> bool {
@@ -1024,9 +982,6 @@ pub fn mm_clone(mm: *mut Mm) -> *mut Mm {
 
     unsafe {
         clone_kernel_root_entries(src.pgd, new_pgd_phys);
-        if src_ptr == init_ptr {
-            clone_low_runtime_root_entry(src.pgd, new_pgd_phys);
-        }
     }
 
     let mut inserted = 0u32;

@@ -11,8 +11,10 @@ OUTPUT_FORMAT(elf64-x86-64)
 OUTPUT_ARCH(i386:x86-64)
 ENTRY(_start)
 
-KERNEL_LOAD_ADDR = 0x00100000; /* 1 MiB */
-PAGE_SIZE        = 0x1000;     /* 4 KiB */
+KERNEL_LOAD_ADDR = 0x00100000;          /* 1 MiB 物理加载地址 */
+KERNEL_VIRT_ADDR = 0xFFFFFFFF80100000;  /* 高半区运行地址（small code model 友好） */
+KERNEL_VIRT_OFF  = KERNEL_VIRT_ADDR - KERNEL_LOAD_ADDR;
+PAGE_SIZE        = 0x1000;              /* 4 KiB */
 
 PHDRS
 {
@@ -23,20 +25,19 @@ PHDRS
 
 SECTIONS
 {
-    . = KERNEL_LOAD_ADDR;
+    . = KERNEL_VIRT_ADDR;
 
     __kernel_start = .;
-    __kernel_phys_base = .;
+    __kernel_phys_base = KERNEL_LOAD_ADDR;
 
-    .text : ALIGN(PAGE_SIZE) {
+    .text ALIGN(PAGE_SIZE) : AT(ADDR(.text) - KERNEL_VIRT_OFF) {
         __text_start = .;
         KEEP(*(.text.boot))
         *(.text .text.*)
         __text_end = .;
     } :text
 
-    . = ALIGN(PAGE_SIZE);
-    .rodata : ALIGN(PAGE_SIZE) {
+    .rodata ALIGN(PAGE_SIZE) : AT(ADDR(.rodata) - KERNEL_VIRT_OFF) {
         __rodata_start = .;
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
@@ -45,24 +46,21 @@ SECTIONS
         __rodata_end = .;
     } :rodata
 
-    . = ALIGN(8);
-    .init_array : ALIGN(8) {
+    .init_array ALIGN(8) : AT(ADDR(.init_array) - KERNEL_VIRT_OFF) {
         __init_array_start = .;
         KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
         KEEP(*(.init_array))
         __init_array_end = .;
     } :data
 
-    . = ALIGN(8);
-    .fini_array : ALIGN(8) {
+    .fini_array ALIGN(8) : AT(ADDR(.fini_array) - KERNEL_VIRT_OFF) {
         __fini_array_start = .;
         KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
         KEEP(*(.fini_array))
         __fini_array_end = .;
     } :data
 
-    . = ALIGN(PAGE_SIZE);
-    .data : ALIGN(PAGE_SIZE) {
+    .data ALIGN(PAGE_SIZE) : AT(ADDR(.data) - KERNEL_VIRT_OFF) {
         __data_start = .;
         *(.data .data.*)
         *(.sdata .sdata.*)
@@ -79,7 +77,7 @@ SECTIONS
     __kernel_file_end = .;
     __kernel_file_size = __kernel_file_end - __kernel_start;
 
-    .bss (NOLOAD) : ALIGN(PAGE_SIZE) {
+    .bss ALIGN(PAGE_SIZE) (NOLOAD) : {
         __bss_start = .;
         *(.bss .bss.*)
         *(.sbss .sbss.*)
@@ -107,7 +105,7 @@ SECTIONS
     }
 }
 
-ASSERT(__kernel_start == KERNEL_LOAD_ADDR, "kernel start address mismatch");
+ASSERT(__kernel_start == KERNEL_VIRT_ADDR, "kernel start virtual address mismatch");
 ASSERT((__kernel_start % PAGE_SIZE) == 0, "kernel start must be page-aligned");
 ASSERT(__kernel_end >= __kernel_start, "kernel end before kernel start");
 ASSERT(__bss_end >= __bss_start, "bss end before bss start");

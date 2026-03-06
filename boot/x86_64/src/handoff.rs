@@ -100,6 +100,8 @@ pub unsafe fn handoff_to_kernel(
         cmdline_addr: DIRECT_MAP_OFFSET + buffers.cmdline_phys,
         cmdline_len: stage.cmdline_len,
         _cmdline_reserved: 0,
+        initramfs_phys_addr: stage.initramfs_phys_addr,
+        initramfs_size: stage.initramfs_size,
         root_table_phys_addr: final_root_phys,
     };
 
@@ -118,7 +120,7 @@ pub unsafe fn handoff_to_kernel(
                 paging.fallback_root_phys,
                 kernel_stack_top,
                 boot_info_virt,
-                KERNEL_PHYS_ADDR,
+                KERNEL_VIRT_ADDR,
                 buffers.la57_trampoline_phys,
                 la57_trampoline_stack_top,
             );
@@ -134,7 +136,7 @@ pub unsafe fn handoff_to_kernel(
                 pml4 = in(reg) paging.root_phys_addr,
                 stack = in(reg) kernel_stack_top,
                 boot_info = in(reg) boot_info_virt,
-                entry = in(reg) KERNEL_PHYS_ADDR,
+                entry = in(reg) KERNEL_VIRT_ADDR,
                 options(noreturn)
             );
         }
