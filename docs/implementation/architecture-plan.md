@@ -200,6 +200,7 @@ pub fn handle_page_fault(ctx: &FaultCtx) -> FaultResult;
 - `task/scheduler/` 负责纯运行时调度
 - `task/process/` 负责进程生命周期
 - `task/process/exec.rs` 承载 ELF 加载、用户栈构建、exec 地址空间替换
+- `task/process/fork.rs` / `wait.rs` / `exit.rs` 承载进程生命周期 façade，`syscall` 仅保留 ABI 适配层
 
 核心接口：
 ```rust

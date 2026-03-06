@@ -82,6 +82,7 @@
 - 这两个组件可以协作，但不得彼此吞并职责。
 - `task/process/exec.rs` 属于**进程生命周期组件**，不得继续放回 `task/` 根层或调度器实现中。
 - `task/scheduler/` 不得承载 `fork/exec/wait/exit` 的主实现逻辑。
+- `syscall/handlers/process.rs` 应保持薄适配层：参数解析、errno 映射、调用 `task/process/*` façade；不得长期承载 `fork/wait/exit` 主逻辑。
 
 ## 8. 架构隔离
 

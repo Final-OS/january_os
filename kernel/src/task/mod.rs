@@ -13,6 +13,7 @@ pub use process::exec::{
     rollback_exec_mappings, setup_initial_user_stack, stage_pt_load_mappings, ExecLoadPlan,
     ExecMapPreview, ExecMappedPage, ExecMappedPageKind,
 };
+pub use process::fork::{clone_current, fork_current, vfork_current};
 pub use id::{ProcessId, TaskId};
 pub use manager::current_mm_ptr;
 pub use manager::find_process_by_pid;
@@ -81,32 +82,32 @@ pub fn current_tid() -> Option<TaskId> {
 
 /// 退出当前任务
 pub fn exit_current_task(exit_code: i32) {
-    manager::exit_current_task(exit_code);
+    process::exit::exit_current_task(exit_code);
 }
 
 /// 退出当前进程（退出其所有任务）
 pub fn exit_current_process(exit_code: i32) {
-    manager::exit_current_process(exit_code);
+    process::exit::exit_current_process(exit_code);
 }
 
 /// 等待子进程退出（最小实现：仅回收 Zombie）
 pub fn wait_child(pid: Option<ProcessId>) -> Option<(ProcessId, i32)> {
-    manager::wait_child(pid)
+    process::wait::wait_child(pid)
 }
 
 /// 等待子进程退出（返回详细状态）
 pub fn wait_child_result(pid: Option<ProcessId>) -> WaitChildResult {
-    manager::wait_child_result(pid)
+    process::wait::wait_child_result(pid)
 }
 
 /// 按目标等待子进程退出（返回详细状态）
 pub fn wait_child_result_by_target(target: WaitTarget) -> WaitChildResult {
-    manager::wait_child_result_by_target(target)
+    process::wait::wait_child_result_by_target(target)
 }
 
 /// 仅观测子进程等待状态（不回收）
 pub fn wait_child_observe_by_target(target: WaitTarget) -> WaitChildObserveResult {
-    manager::wait_child_observe_by_target(target)
+    process::wait::observe_by_target(target)
 }
 
 /// 按目标+选项观测子进程等待状态
@@ -114,20 +115,20 @@ pub fn wait_child_observe_by_target_with_options(
     target: WaitTarget,
     options: WaitChildOptions,
 ) -> WaitChildObserveResult {
-    manager::wait_child_observe_by_target_with_options(target, options)
+    process::wait::observe_by_target_with_options(target, options)
 }
 
 /// 回收已观测到的 Zombie 子进程
 pub fn reap_observed_child(child_pid: ProcessId) -> Option<(ProcessId, i32)> {
-    manager::reap_observed_child(child_pid)
+    process::wait::reap_observed(child_pid)
 }
 
 /// 消费已观测到的等待事件（Stopped / Continued）
 pub fn consume_observed_wait_event(child_pid: ProcessId, event: WaitChildConsumeEvent) -> bool {
-    manager::consume_observed_wait_event(child_pid, event)
+    process::wait::consume_observed_event(child_pid, event)
 }
 
 /// 获取已观测子进程的 rusage 快照（仅父进程可见）
 pub fn snapshot_observed_child_rusage(child_pid: ProcessId) -> Option<WaitRusageSnapshot> {
-    manager::snapshot_observed_child_rusage(child_pid)
+    process::wait::snapshot_observed_rusage(child_pid)
 }

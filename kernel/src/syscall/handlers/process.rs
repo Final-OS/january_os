@@ -945,21 +945,21 @@ fn signal_process(pid: task::ProcessId, sig: i32) -> Result<bool, i32> {
 }
 
 pub(crate) fn sys_clone(args: &SyscallArgs) -> SyscallRet {
-    match clone_impl(args.arg0, args.arg1, args.arg2, args.arg3, args.arg4) {
+    match task::process::fork::clone_current(args.arg0, args.arg1, args.arg2, args.arg3, args.arg4) {
         Ok(child_pid) => ok(child_pid.0),
         Err(errno) => err(errno),
     }
 }
 
 pub(crate) fn sys_fork(_args: &SyscallArgs) -> SyscallRet {
-    match clone_impl(SIGCHLD as usize, 0, 0, 0, 0) {
+    match task::process::fork::fork_current() {
         Ok(child_pid) => ok(child_pid.0),
         Err(errno) => err(errno),
     }
 }
 
 pub(crate) fn sys_vfork(_args: &SyscallArgs) -> SyscallRet {
-    match clone_impl((SIGCHLD as usize) | CLONE_VM | CLONE_VFORK, 0, 0, 0, 0) {
+    match task::process::fork::vfork_current() {
         Ok(child_pid) => ok(child_pid.0),
         Err(errno) => err(errno),
     }
@@ -1223,7 +1223,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
     };
 
     loop {
-        match task::wait_child_observe_by_target_with_options(target, wait_options) {
+        match task::process::wait::observe_by_target_with_options(target, wait_options) {
             task::WaitChildObserveResult::Reapable(child_pid, exit_code) => {
                 let rusage = current_wait_rusage(child_pid);
 
@@ -1248,7 +1248,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
                     return err(errno);
                 }
 
-                let Some((reaped_pid, _reaped_exit_code)) = task::reap_observed_child(child_pid)
+                let Some((reaped_pid, _reaped_exit_code)) = task::process::wait::reap_observed(child_pid)
                 else {
                     continue;
                 };
@@ -1289,7 +1289,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
                     return err(errno);
                 }
 
-                if !task::consume_observed_wait_event(
+                if !task::process::wait::consume_observed_event(
                     child_pid,
                     task::WaitChildConsumeEvent::Stopped,
                 ) {
@@ -1332,7 +1332,7 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
                     return err(errno);
                 }
 
-                if !task::consume_observed_wait_event(
+                if !task::process::wait::consume_observed_event(
                     child_pid,
                     task::WaitChildConsumeEvent::Continued,
                 ) {
@@ -1387,14 +1387,14 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
 
 pub(crate) fn sys_exit(args: &SyscallArgs) -> SyscallRet {
     let exit_code = args.arg0 as i32;
-    task::exit_current_task(exit_code);
+    task::process::exit::exit_current_task(exit_code);
     task::scheduler::schedule();
     ok(0)
 }
 
 pub(crate) fn sys_exit_group(args: &SyscallArgs) -> SyscallRet {
     let exit_code = args.arg0 as i32;
-    task::exit_current_process(exit_code);
+    task::process::exit::exit_current_process(exit_code);
     task::scheduler::schedule();
     ok(0)
 }

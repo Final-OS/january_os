@@ -3,6 +3,9 @@
 //! 当前阶段先提供最小进程描述，后续逐步接入地址空间、文件表、信号等。
 
 pub mod exec;
+pub mod exit;
+pub mod fork;
+pub mod wait;
 
 use alloc::string::String;
 use alloc::sync::Arc;
