@@ -1,10 +1,48 @@
-# 指南
+# january_os
 
-欢迎使用 january_os 文档。
+一个以组件化宏内核方式组织的实验性操作系统内核工程，当前以 `x86_64` 为主线推进，并持续向 Linux ABI 兼容靠拢。
+
+## 仓库结构
+
+- `boot/x86_64/`：UEFI bootloader crate
+- `kernel/`：内核主体（`no_std`）
+- `tools/cfg/`：读取 `os_cfg.toml` 并生成配置代码的工具
+- `docs/`：VitePress 文档站点
+- `target/`：构建产物
+
+## 当前内核组织
+
+`kernel/src/` 采用“façade + 子域目录 + 架构子树”的组织方式：
+
+- `task/`
+  - `api/`：公共类型
+  - `thread/` / `proc/` / `sched/` / `ipc/`：线程、进程、调度、IPC 语义
+  - `runtime/`：全局运行时状态
+  - `syscall/`：task 域 ABI 入口
+  - `arch/<isa>/`：架构相关上下文切换与用户态切换
+- `mm/`
+  - `alloc/` / `phys/` / `virt/` / `dma/`：分配、物理内存、虚拟内存、DMA/IOMMU
+  - `boot/`：内存初始化编排
+  - `runtime/` / `diag/` / `api/` / `syscall/`
+  - `arch/<isa>/`：页表/TLB 等架构实现
+- `fs/`
+  - `runtime/` / `fd/` / `pipe/` / `vfs/` / `backing/` / `syscall/`
+  - 顶层 `kernel/src/fs/mod.rs` 作为稳定 façade
+- `interrupt/`
+  - 顶层 `kernel/src/interrupt/mod.rs` 只保留生命周期、通用中断控制与稳定导出
+  - `arch/x86_64/entry/`：GDT/TSS
+  - `arch/x86_64/trap/`：IDT 与异常/IRQ handlers
+  - `arch/x86_64/controller/`：APIC / IOAPIC
+  - `arch/x86_64/timer/`：PIT / TSC
+  - `arch/aarch64/`、`arch/riscv64/`：目录骨架占位
+- `syscall/`
+  - `arch/<isa>/`：按架构 Linux ABI 号表精确分发
+  - 顶层只保留参数结构、返回值编码、号表与分发 façade
+  - 共享用户态访问工具统一收敛到 `kernel/src/common/uaccess.rs`
 
 ## 快速开始
 
-安装 rust 工具链
+先安装 Rust nightly 与基础工具：
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -14,227 +52,82 @@ rustup component add rust-src llvm-tools-preview
 cargo install cargo-binutils
 ```
 
+常用命令：
+
 ```bash
 # 安装依赖
 make install-deps
 
-# 构建
+# 构建 bootloader + kernel
 make build
 
-# 运行
+# 运行（串口）
 make run
 
-# 创建 ISO 镜像
+# 运行（图形）
+make run-gui
+
+# 启动调试
+make debug
+
+# 生成 ISO
 make iso
 
-# 清理
-make clean
-
-# 显示配置
+# 查看配置
 make config
 
-# 显示帮助
+# 清理产物
+make clean
+
+# 查看帮助
 make help
 ```
 
-## 配置说明
+## 配置
 
-january_os 使用 `os_cfg.toml` 集中管理系统配置。
+项目使用 `os_cfg.toml` 作为统一配置入口，典型关注项包括：
 
-### [arch] - 架构配置
+- `arch.target`：目标架构
+- `qemu.*`：QEMU 机器、内存、CPU、IOMMU 配置
+- `memory.*`：页大小、zone、PCP 等内存参数
+- `kernel.*`：物理基址、直接映射、初始堆、栈大小
+- `iommu.*`：IOMMU 模式、翻译模式、SWIOTLB 大小
+- `build.*`：优化级别、调试符号、LTO
 
-```toml
-[arch]
-target = "x86_64"
+查看展开后的实际配置：
+
+```bash
+make config
 ```
 
-| 选项 | 说明 |
-|------|------|
-| `target` | 目标架构，目前仅支持 `x86_64` |
+## 文档
 
----
+开发文档位于 `docs/`，本地预览：
 
-### [qemu] - QEMU 虚拟机配置
-
-```toml
-[qemu]
-memory = "256M"
-smp = 4
-machine = "q35"
-iommu = true
+```bash
+cd docs
+pnpm install
+pnpm dev
 ```
 
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| `memory` | 内存大小，支持 M/G 后缀 | `"256M"` |
-| `smp` | CPU 核心数 | `4` |
-| `machine` | 机器类型（i440fx/q35） | `"q35"` |
-| `iommu` | 启用 IOMMU（需要 q35） | `true` |
+构建静态站点：
 
-> `machine = "q35"` 时才能使用 IOMMU
-
----
-
-### [memory] - 内存管理配置
-
-```toml
-[memory]
-page_size = 4096
-buddy_max_order = 11
+```bash
+cd docs
+pnpm build
 ```
 
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| `page_size` | 页大小（字节） | `4096` |
-| `buddy_max_order` | Buddy 系统最大 order | `11` |
+## 验证建议
 
-**buddy_max_order**：最大分配 = 2^max_order × page_size，`11` = 8MB
+对 `kernel/`、`boot/`、配置或架构路径的改动，至少执行：
 
----
-
-### [memory.zone] - 内存区域配置
-
-```toml
-[memory.zone]
-dma_limit = 16777216        # 16 MB
-dma32_limit = 4294967296    # 4 GB
+```bash
+make build
+timeout 25s make run
 ```
 
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| `dma_limit` | ZONE_DMA 边界 | `16777216` (16MB) |
-| `dma32_limit` | ZONE_DMA32 边界 | `4294967296` (4GB) |
+如果改动涉及文档，同步执行：
 
-**内存区域**：
-- `ZONE_DMA`: 0 ~ dma_limit（传统 ISA DMA）
-- `ZONE_DMA32`: dma_limit ~ dma32_limit（32-bit PCI DMA）
-- `ZONE_NORMAL`: dma32_limit 以上（常规内存）
-
----
-
-### [memory.pcp] - Per-CPU 页缓存配置
-
-```toml
-[memory.pcp]
-high_watermark = 64
-batch_size = 16
+```bash
+cd docs && pnpm build
 ```
-
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| `high_watermark` | 单 CPU 缓存上限（页数） | `64` |
-| `batch_size` | 批量回收/补充页数 | `16` |
-
----
-
-### [kernel] - 内核配置
-
-```toml
-[kernel]
-phys_base = "0x100000"
-direct_map_offset = "0xFFFF880000000000"
-heap_init_size = 16777216   # 16 MB
-stack_size = 32768          # 32 KB
-```
-
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| `phys_base` | 内核物理基址 | `"0x100000"` (1MB) |
-| `direct_map_offset` | 直接映射区偏移 | `"0xFFFF880000000000"` |
-| `heap_init_size` | 初始堆大小 | `16777216` (16MB) |
-| `stack_size` | 每栈大小 | `32768` (32KB) |
-
-**地址布局**：直接映射 = 物理地址 + direct_map_offset
-
----
-
-### [limits] - 系统限制
-
-```toml
-[limits]
-max_cpus = 64
-```
-
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| `max_cpus` | 最大 CPU 数量限制 | `64` |
-
----
-
-### [memory_model] - 内存模型
-
-```toml
-[memory_model]
-type = "uma"
-```
-
-| 选项 | 可选值 |
-|------|--------|
-| `type` | `"uma"` / `"numa"` |
-
-| UMA | NUMA |
-|-----|------|
-| 所有 CPU 访问内存延迟相同 | 不同 CPU 访问不同节点延迟不同 |
-| 单路 CPU、小型系统 | 多路服务器 |
-
----
-
-### [iommu] - IOMMU 配置
-
-```toml
-[iommu]
-mode = "auto"
-translation = "passthrough"
-swiotlb_size = 67108864     # 64 MB
-```
-
-| 选项 | 可选值 |
-|------|--------|
-| `mode` | `"off"` / `"on"` / `"auto"` |
-| `translation` | `"passthrough"` / `"translate"` |
-| `swiotlb_size` | 字节数 |
-
-**mode**：
-- `off`: 禁用 IOMMU，使用 SWIOTLB
-- `on`: 强制启用 IOMMU
-- `auto`: 自动检测
-
-**translation**：
-- `passthrough`: 1:1 映射，低开销
-- `translate`: 完整地址翻译，更安全
-
----
-
-### [debug] - 调试配置
-
-```toml
-[debug]
-serial = true
-mm_debug = true
-page_alloc_trace = true
-```
-
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| `serial` | 串口输出 | `true` |
-| `mm_debug` | 内存管理详细日志 | `true` |
-| `page_alloc_trace` | 页分配追踪 | `true` |
-
----
-
-### [build] - 构建配置
-
-```toml
-[build]
-opt_level = 3
-debug_symbols = true
-lto = "off"
-```
-
-| 选项 | 可选值 |
-|------|--------|
-| `opt_level` | `0-3`, `s`, `z` |
-| `debug_symbols` | `true` / `false` |
-| `lto` | `"off"` / `"thin"` / `"fat"` |
-
----
