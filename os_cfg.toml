@@ -57,6 +57,9 @@ heap_init_size = 16777216   # 16 MB
 # 内核栈大小 (字节/每CPU):
 # 栈过小易溢出，过大则浪费内存。
 stack_size = 32768          # 32 KB
+# initrd 启动命令（通过 boot cmdline 传给内核）:
+# 内核会解析 `initrd=<path>`，默认启动该用户态程序。
+initrd_command = "ksh"
 
 [kernel.layout]
 # 内核虚拟地址布局策略:
@@ -87,7 +90,7 @@ manage_full_phys = true
 # 是否在启动阶段回收低地址 identity-map（0..3GiB）：
 # true  = 启用回收（需确保无低地址直接访问依赖）
 # false = 保持兼容映射，优先稳定性
-teardown_identity_map = false
+teardown_identity_map = true
 
 # ==============================================================================
 # 用户空间布局配置

@@ -3,10 +3,10 @@
 //! 负责按顺序初始化各个子系统。
 
 use crate::arch;
-use crate::boot::{BOOTINFO_MAGIC, BootInfo, MAX_MEMORY_REGIONS};
+use crate::boot::{BootInfo, BOOTINFO_MAGIC, MAX_MEMORY_REGIONS};
 use crate::config;
 use crate::drivers::tty::fbcon;
-use crate::drivers::tty::{SerialWriter, serial, serial_enable_rx_interrupt};
+use crate::drivers::tty::{serial, serial_enable_rx_interrupt, SerialWriter};
 use crate::drivers::{self, acpi};
 use crate::fs;
 use crate::interrupt;
@@ -176,6 +176,9 @@ pub fn init_kernel(info: &BootInfo) {
 
     // 8a. 可选回收启动期低地址 identity-map（0..3GiB）。
     if config::KERNEL_TEARDOWN_IDENTITY_MAP {
+        if config::DEBUG_VERBOSE {
+            kprintln!("\x1b[90m[diag]\x1b[0m[mm] teardown_identity_map begin");
+        }
         let removed_identity = mm::arch::paging::teardown_bootstrap_identity_map(direct_map);
         if config::DEBUG_VERBOSE {
             kprintln!(
@@ -231,7 +234,13 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11a: fs::init begin");
     }
-    fs::init();
+    let initramfs =
+        if info.version >= 5 && info.initramfs_phys_addr != 0 && info.initramfs_size != 0 {
+            Some((info.initramfs_phys_addr, info.initramfs_size))
+        } else {
+            None
+        };
+    fs::init(initramfs);
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11a: fs::init done");
     }
@@ -433,6 +442,11 @@ fn init_memory(info: &BootInfo, direct_map: u64) {
             kernel_end_phys,
         )
         .expect("Memblock init failed");
+
+        if info.version >= 5 && info.initramfs_phys_addr != 0 && info.initramfs_size != 0 {
+            mm::memblock_reserve(info.initramfs_phys_addr, info.initramfs_size)
+                .expect("initramfs memblock reserve failed");
+        }
 
         // Buddy System
         mm::init_buddy_system(&region_infos[..region_info_count], max_pfn, direct_map)
