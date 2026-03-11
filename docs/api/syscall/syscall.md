@@ -63,6 +63,11 @@ pub fn dispatch(
 pub fn syscall_table() -> &'static [SyscallDef];
 ```
 
+补充说明：
+
+- `x86_64` 当前导出的 `syscall_table()` 按 Linux ABI 号位连续覆盖 `0..=461`
+- 其中 `335..=423` 目前是显式 `reserved` 占位项，用于保持号位视图连续；这些号位并不表示 january_os 已实现对应 syscall
+
 ## 组件分工
 
 ### `fs::syscall`

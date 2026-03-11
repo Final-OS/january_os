@@ -255,7 +255,8 @@ fn test_fd_bridge_case() -> Result<(), alloc::string::String> {
         .map_err(|errno| format!("open errno={}", errno))?;
 
     let mut buf = [0u8; 32];
-    let n = fs::runtime::read_for_pid(pid, fd, &mut buf).map_err(|errno| format!("read errno={}", errno))?;
+    let n = fs::runtime::read_for_pid(pid, fd, &mut buf)
+        .map_err(|errno| format!("read errno={}", errno))?;
     if &buf[..n] != MOCK_BRIDGE_DATA {
         let _ = fs::runtime::close_for_pid(pid, fd);
         fs::runtime::drop_process_fds(pid);
@@ -264,7 +265,8 @@ fn test_fd_bridge_case() -> Result<(), alloc::string::String> {
     }
     let _ = fs::runtime::close_for_pid(pid, fd);
 
-    fs::runtime::chdir_for_pid(pid, target.as_str()).map_err(|errno| format!("chdir errno={}", errno))?;
+    fs::runtime::chdir_for_pid(pid, target.as_str())
+        .map_err(|errno| format!("chdir errno={}", errno))?;
     let rel_fd = fs::runtime::open_for_pid(pid, MOCK_BRIDGE_FILE, 0, 0)
         .map_err(|errno| format!("relative open errno={}", errno))?;
     let mut rel = [0u8; 32];

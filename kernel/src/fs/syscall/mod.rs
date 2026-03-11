@@ -155,6 +155,6 @@ pub(crate) use stdin::{
     stdin_has_pending_input, wake_stdin_waiters_if_ready,
 };
 pub(crate) use uaccess::{
-    current_pid_raw, linux_stat_from_fs, read_user_cstring, read_user_struct,
-    validate_user_range, write_user_struct,
+    current_pid_raw, linux_stat_from_fs, read_user_cstring, read_user_struct, validate_user_range,
+    write_user_struct,
 };

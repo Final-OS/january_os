@@ -34,8 +34,7 @@ pub(crate) use exec::sys_execve;
 pub(crate) use exec_args::*;
 pub(crate) use process::{
     sys_clone, sys_exit, sys_exit_group, sys_fork, sys_getpgid, sys_getpgrp, sys_getpid,
-    sys_getppid, sys_gettid, sys_kill, sys_setpgid, sys_setsid, sys_tgkill, sys_tkill,
-    sys_vfork,
+    sys_getppid, sys_gettid, sys_kill, sys_setpgid, sys_setsid, sys_tgkill, sys_tkill, sys_vfork,
 };
 pub(crate) use signal::{sys_rt_sigaction, sys_rt_sigprocmask, sys_rt_sigreturn};
 pub(crate) use wait::sys_wait4;

@@ -212,6 +212,7 @@
 | fork 语义覆盖 | 🟡 | 已支持用户态返回点复制与私有页 COW；仍缺多线程/更完整 clone 共享语义 | v0.4 |
 | clone 标志 | 🟡 | 缺少 CLONE_VM/FILES 等 | v0.4 |
 | execve VFS | 🔴 | 仅静态文件后端 | v0.3 |
+| 用户态 init 监督 | 🟡 | 已引入 `/bin/init` 作为 PID 1 入口；但 `fork/vfork + execve` 组合仍不足以稳定监督并重启 `/bin/sh`，当前仅提供内建最小 PID 1 shell | v0.3.2 |
 | argv/envp/auxv | 🔴 | 栈帧未构建 | v0.3 |
 | TLS | 🔴 | 线程本地存储 | v0.4 |
 | PT_INTERP | 🔴 | 动态链接器 | v0.4 |

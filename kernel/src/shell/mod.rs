@@ -8,10 +8,10 @@ fn should_boot_into_kernel_shell(init_cmd: &str) -> bool {
 }
 
 pub fn run(init_cmd: &str) -> ! {
-    if !should_boot_into_kernel_shell(init_cmd) && bootstrap::try_run_user_init(init_cmd) {
-        bootstrap::run_scheduler_loop();
+    if should_boot_into_kernel_shell(init_cmd) {
+        sh::run();
     }
-    sh::run();
+    bootstrap::run_boot_user_init(init_cmd);
 }
 
 pub fn execute_kernel_command(line: &str) {

@@ -1,9 +1,9 @@
 use super::{fail, mm_step, pass};
-use crate::fs;
 use crate::errno;
+use crate::fs;
 use crate::mm;
-use crate::syscall;
 use crate::mm::syscall::{sys_mmap, sys_mprotect, sys_munmap};
+use crate::syscall;
 use crate::{kprintln, warn};
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -160,7 +160,10 @@ fn run_in_task_context() {
     )
     .is_err()
     {
-        return fail("mmap", "MAP_LOCKED must be rejected until mlock is implemented");
+        return fail(
+            "mmap",
+            "MAP_LOCKED must be rejected until mlock is implemented",
+        );
     }
 
     mm_step("mmap: case=invalid_map_hugetlb_rejected");
@@ -274,7 +277,10 @@ fn run_in_task_context() {
         );
         if ret_is_err(map_ret) {
             let _ = fs::runtime::close_for_pid(pid, fd);
-            return fail("mmap", "file-backed mmap with non-zero page-aligned offset must succeed");
+            return fail(
+                "mmap",
+                "file-backed mmap with non-zero page-aligned offset must succeed",
+            );
         }
 
         let map_addr = map_ret as u64;
@@ -283,7 +289,10 @@ fn run_in_task_context() {
             if bytes.iter().any(|b| *b != b'B') {
                 let _ = do_munmap(map_addr as usize, page);
                 let _ = fs::runtime::close_for_pid(pid, fd);
-                return fail("mmap", "file-backed mmap with offset returned wrong file page");
+                return fail(
+                    "mmap",
+                    "file-backed mmap with offset returned wrong file page",
+                );
             }
         }
 
@@ -321,7 +330,10 @@ fn run_in_task_context() {
             if first != b'A' {
                 let _ = do_munmap(map_addr as usize, page * 2);
                 let _ = fs::runtime::close_for_pid(pid, fd);
-                return fail("mmap", "file-backed base page readback mismatch before split");
+                return fail(
+                    "mmap",
+                    "file-backed base page readback mismatch before split",
+                );
             }
         }
 
@@ -337,7 +349,10 @@ fn run_in_task_context() {
             if bytes.iter().any(|b| *b != b'B') {
                 let _ = do_munmap(map_addr as usize + page, page);
                 let _ = fs::runtime::close_for_pid(pid, fd);
-                return fail("mmap", "munmap split lost right-side file offset after VMA rewrite");
+                return fail(
+                    "mmap",
+                    "munmap split lost right-side file offset after VMA rewrite",
+                );
             }
         }
 
@@ -404,33 +419,43 @@ fn run_in_task_context() {
             return fail("mmap", "mprotect rollback setup second fixed mmap failed");
         }
 
-        let prot_ret = do_mprotect(
-            base as usize,
-            page * 3,
-            crate::mm::prot_flags::PROT_READ,
-        );
+        let prot_ret = do_mprotect(base as usize, page * 3, crate::mm::prot_flags::PROT_READ);
         if !ret_is_err(prot_ret) || ret_errno(prot_ret) != errno::ENOMEM {
             let _ = do_munmap(base as usize, page);
             let _ = do_munmap(second as usize, page);
-            return fail("mmap", "mprotect spanning an unmapped gap must fail with ENOMEM");
+            return fail(
+                "mmap",
+                "mprotect spanning an unmapped gap must fail with ENOMEM",
+            );
         }
 
         let first_vma = unsafe { &*mm_ptr }.find_vma(base);
         let second_vma = unsafe { &*mm_ptr }.find_vma(second);
         let first_ok = first_vma
             .as_ref()
-            .map(|vma| vma.vm_start == base && vma.vm_end == base + mm::PAGE_SIZE && vma.vm_flags.is_write())
+            .map(|vma| {
+                vma.vm_start == base
+                    && vma.vm_end == base + mm::PAGE_SIZE
+                    && vma.vm_flags.is_write()
+            })
             .unwrap_or(false);
         let second_ok = second_vma
             .as_ref()
-            .map(|vma| vma.vm_start == second && vma.vm_end == second + mm::PAGE_SIZE && vma.vm_flags.is_write())
+            .map(|vma| {
+                vma.vm_start == second
+                    && vma.vm_end == second + mm::PAGE_SIZE
+                    && vma.vm_flags.is_write()
+            })
             .unwrap_or(false);
 
         let _ = do_munmap(base as usize, page);
         let _ = do_munmap(second as usize, page);
 
         if !first_ok || !second_ok {
-            return fail("mmap", "failed mprotect must leave surrounding VMAs and flags unchanged");
+            return fail(
+                "mmap",
+                "failed mprotect must leave surrounding VMAs and flags unchanged",
+            );
         }
     }
 

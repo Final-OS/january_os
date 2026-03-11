@@ -450,4 +450,3 @@ pub(crate) fn sys_write(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => err(errno),
     }
 }
-

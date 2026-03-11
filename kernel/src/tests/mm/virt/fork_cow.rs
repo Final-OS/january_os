@@ -34,12 +34,18 @@ pub(super) fn run() {
         flags.set(mm::VmFlags::MAYWRITE);
         flags.set(mm::VmFlags::ANONYMOUS);
 
-        let parent_pt = unsafe { mm::PageTableManager::new((*parent_mm).pgd, mm::direct_map_offset()) };
+        let parent_pt =
+            unsafe { mm::PageTableManager::new((*parent_mm).pgd, mm::direct_map_offset()) };
         if unsafe { !parent_pt.map_page(test_va, phys, flags.to_user_pte_flags()) } {
             return Err("parent map_page failed");
         }
         page.inc_mapcount();
-        if unsafe { &mut *parent_mm }.insert_vma(test_va, test_va + mm::PAGE_SIZE, mm::VmaInfo::new(flags)) == false {
+        if unsafe { &mut *parent_mm }.insert_vma(
+            test_va,
+            test_va + mm::PAGE_SIZE,
+            mm::VmaInfo::new(flags),
+        ) == false
+        {
             return Err("parent insert_vma failed");
         }
 
@@ -49,9 +55,16 @@ pub(super) fn run() {
         }
 
         let result = (|| -> Result<(), &'static str> {
-            let child_pt = unsafe { mm::PageTableManager::new((*child_mm).pgd, mm::direct_map_offset()) };
-            let parent_entry = parent_pt.translate(test_va).ok_or("parent translate missing")?.0;
-            let child_entry = child_pt.translate(test_va).ok_or("child translate missing")?.0;
+            let child_pt =
+                unsafe { mm::PageTableManager::new((*child_mm).pgd, mm::direct_map_offset()) };
+            let parent_entry = parent_pt
+                .translate(test_va)
+                .ok_or("parent translate missing")?
+                .0;
+            let child_entry = child_pt
+                .translate(test_va)
+                .ok_or("child translate missing")?
+                .0;
 
             if parent_entry.phys_addr() != child_entry.phys_addr() {
                 return Err("fork clone should initially share same physical page");
@@ -66,8 +79,14 @@ pub(super) fn run() {
                 return Err("child write fault did not resolve as COW retry");
             }
 
-            let parent_after = parent_pt.translate(test_va).ok_or("parent translate after cow missing")?.0;
-            let child_after = child_pt.translate(test_va).ok_or("child translate after cow missing")?.0;
+            let parent_after = parent_pt
+                .translate(test_va)
+                .ok_or("parent translate after cow missing")?
+                .0;
+            let child_after = child_pt
+                .translate(test_va)
+                .ok_or("child translate after cow missing")?
+                .0;
             if parent_after.phys_addr() == child_after.phys_addr() {
                 return Err("child COW fault did not allocate a new physical page");
             }
@@ -78,8 +97,11 @@ pub(super) fn run() {
                 return Err("parent mapping should remain read-only after child COW");
             }
 
-            let child_value = unsafe { core::ptr::read(mm::phys_to_virt(child_after.phys_addr()) as *const u64) };
-            let parent_value = unsafe { core::ptr::read(mm::phys_to_virt(parent_after.phys_addr()) as *const u64) };
+            let child_value =
+                unsafe { core::ptr::read(mm::phys_to_virt(child_after.phys_addr()) as *const u64) };
+            let parent_value = unsafe {
+                core::ptr::read(mm::phys_to_virt(parent_after.phys_addr()) as *const u64)
+            };
             if child_value != 0x1122_3344_5566_7788 || parent_value != 0x1122_3344_5566_7788 {
                 return Err("COW copy did not preserve original page contents");
             }

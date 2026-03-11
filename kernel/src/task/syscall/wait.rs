@@ -75,7 +75,11 @@ pub(crate) fn sys_wait4(args: &SyscallArgs) -> SyscallRet {
             }
             ok(pid.0)
         }
-        task::WaitEvent::Stopped { pid, signal, rusage } => {
+        task::WaitEvent::Stopped {
+            pid,
+            signal,
+            rusage,
+        } => {
             let rusage = build_wait_rusage(rusage);
             if let Err(errno) = write_wait_status(status_ptr, encode_stopped_status(signal)) {
                 if crate::config::DEBUG_VERBOSE {

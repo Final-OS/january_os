@@ -1,7 +1,7 @@
 use super::{task_step, usermode};
+use crate::errno::{EAGAIN, EBADF, EFAULT, EPIPE};
 use crate::fs;
 use crate::mm;
-use crate::errno::{EAGAIN, EBADF, EFAULT, EPIPE};
 use crate::{error, kprintln, ok};
 
 unsafe extern "C" {
@@ -308,7 +308,8 @@ pub(super) fn run() {
         error!("task: regression FAIL (getcwd mismatch after chdir)");
         return;
     }
-    let fd_rel = match fs::runtime::open_for_pid(REGRESSION_FS_PID, "task/fs_regression.txt", 0, 0) {
+    let fd_rel = match fs::runtime::open_for_pid(REGRESSION_FS_PID, "task/fs_regression.txt", 0, 0)
+    {
         Ok(fd) => fd,
         Err(errno) => {
             error!("task: regression FAIL (relative open errno={})", errno);

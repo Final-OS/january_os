@@ -1,8 +1,8 @@
 //! 系统调用抽象层
 
 pub mod abi;
-pub mod dispatch;
 pub mod arch;
+pub mod dispatch;
 pub mod table;
 
 use alloc::format;
@@ -15,7 +15,7 @@ pub type SyscallHandler = fn(&SyscallArgs) -> SyscallRet;
 
 pub use crate::errno::{
     E2BIG, EAGAIN, EBADF, EBUSY, ECHILD, EFAULT, EINVAL, EISDIR, ENAMETOOLONG, ENOENT, ENOMEM,
-    ENOSYS, ENOTDIR, ENOTTY, EPIPE, EPERM, ERANGE, ESRCH, ESPIPE,
+    ENOSYS, ENOTDIR, ENOTTY, EPERM, EPIPE, ERANGE, ESPIPE, ESRCH,
 };
 
 #[derive(Debug, Clone, Copy)]

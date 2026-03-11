@@ -47,19 +47,58 @@ pub fn run_with_filter(filter: Option<&str>) {
             run_case("run case=pt_reclaim", virt::run_pt_reclaim);
             run_case("run case=vmalloc_heal", alloc::run_vmalloc_heal);
         }
-        Some("swiotlb") => { mm_step("run case=swiotlb"); dma::run_swiotlb(); }
-        Some("slub") => { mm_step("run case=slub"); alloc::run_slub(); }
-        Some("dma_coherent_guard") => { mm_step("run case=dma_coherent_guard"); dma::run_dma_coherent_guard(); }
-        Some("fork_cow") => { mm_step("run case=fork_cow"); virt::run_fork_cow(); }
-        Some("buddy") => { mm_step("run case=buddy"); phys::run_buddy(); }
-        Some("page_counter_guard") => { mm_step("run case=page_counter_guard"); phys::run_page_counter_guard(); }
-        Some("status_readonly") => { mm_step("run case=status_readonly"); phys::run_status_readonly(); }
-        Some("pcp") => { mm_step("run case=pcp"); phys::run_pcp(); }
-        Some("heap") => { mm_step("run case=heap"); alloc::run_heap(); }
-        Some("mmap") => { mm_step("run case=mmap"); virt::run_mmap(); }
-        Some("pt_ownership") => { mm_step("run case=pt_ownership"); virt::run_pt_ownership(); }
-        Some("pt_reclaim") => { mm_step("run case=pt_reclaim"); virt::run_pt_reclaim(); }
-        Some("vmalloc_heal") => { mm_step("run case=vmalloc_heal"); alloc::run_vmalloc_heal(); }
+        Some("swiotlb") => {
+            mm_step("run case=swiotlb");
+            dma::run_swiotlb();
+        }
+        Some("slub") => {
+            mm_step("run case=slub");
+            alloc::run_slub();
+        }
+        Some("dma_coherent_guard") => {
+            mm_step("run case=dma_coherent_guard");
+            dma::run_dma_coherent_guard();
+        }
+        Some("fork_cow") => {
+            mm_step("run case=fork_cow");
+            virt::run_fork_cow();
+        }
+        Some("buddy") => {
+            mm_step("run case=buddy");
+            phys::run_buddy();
+        }
+        Some("page_counter_guard") => {
+            mm_step("run case=page_counter_guard");
+            phys::run_page_counter_guard();
+        }
+        Some("status_readonly") => {
+            mm_step("run case=status_readonly");
+            phys::run_status_readonly();
+        }
+        Some("pcp") => {
+            mm_step("run case=pcp");
+            phys::run_pcp();
+        }
+        Some("heap") => {
+            mm_step("run case=heap");
+            alloc::run_heap();
+        }
+        Some("mmap") => {
+            mm_step("run case=mmap");
+            virt::run_mmap();
+        }
+        Some("pt_ownership") => {
+            mm_step("run case=pt_ownership");
+            virt::run_pt_ownership();
+        }
+        Some("pt_reclaim") => {
+            mm_step("run case=pt_reclaim");
+            virt::run_pt_reclaim();
+        }
+        Some("vmalloc_heal") => {
+            mm_step("run case=vmalloc_heal");
+            alloc::run_vmalloc_heal();
+        }
         Some(name) => {
             error!("Unknown MM test: {}", name);
             kprintln!(

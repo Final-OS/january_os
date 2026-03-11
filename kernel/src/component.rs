@@ -33,6 +33,29 @@ pub enum ComponentState {
     Failed,
 }
 
+impl ComponentState {
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Registered => 0,
+            Self::Initializing => 1,
+            Self::Ready => 2,
+            Self::Unsupported => 3,
+            Self::Failed => 4,
+        }
+    }
+
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Registered,
+            1 => Self::Initializing,
+            2 => Self::Ready,
+            3 => Self::Unsupported,
+            4 => Self::Failed,
+            _ => Self::Failed,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ComponentDescriptor {
     pub id: &'static str,
@@ -72,8 +95,17 @@ impl ComponentStats {
         Self {
             state: ComponentState::Unsupported,
             registrations: 1,
-            init_calls: 0,
+            init_calls: 1,
             failures: 0,
+        }
+    }
+
+    pub const fn failed() -> Self {
+        Self {
+            state: ComponentState::Failed,
+            registrations: 1,
+            init_calls: 1,
+            failures: 1,
         }
     }
 }
@@ -124,7 +156,10 @@ impl ComponentRegistry {
     }
 
     pub fn is_ready(&self, id: &str) -> bool {
-        self.ready[..self.count].iter().flatten().any(|entry| *entry == id)
+        self.ready[..self.count]
+            .iter()
+            .flatten()
+            .any(|entry| *entry == id)
     }
 
     fn validate(&self, component: &ComponentDescriptor) -> Result<(), &'static str> {
@@ -155,8 +190,8 @@ impl ComponentRegistry {
 pub fn run_component<T>(
     registry: &mut ComponentRegistry,
     component: &'static ComponentDescriptor,
-    init: impl FnOnce() -> T,
-) -> T {
+    init: impl FnOnce() -> KernelResult<T>,
+) -> KernelResult<T> {
     if let Err(reason) = registry.validate(component) {
         panic!(
             "component init rejected: id={} stage={} reason={} deps={:?}",
@@ -177,18 +212,40 @@ pub fn run_component<T>(
         );
     }
 
-    let output = init();
-    registry.mark_ready(component);
+    match init() {
+        Ok(output) => {
+            registry.mark_ready(component);
 
-    if config::DEBUG_VERBOSE {
-        kprintln!(
-            "\x1b[90m[diag]\x1b[0m[component] ready id={} stage={}",
-            component.id,
-            component.stage.as_str(),
-        );
+            if config::DEBUG_VERBOSE {
+                kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[component] ready id={} stage={}",
+                    component.id,
+                    component.stage.as_str(),
+                );
+            }
+
+            Ok(output)
+        }
+        Err(err) => {
+            let state = if err == KernelError::NotSupported {
+                ComponentState::Unsupported
+            } else {
+                ComponentState::Failed
+            };
+
+            if config::DEBUG_VERBOSE {
+                kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[component] exit id={} stage={} state={:?} err={}",
+                    component.id,
+                    component.stage.as_str(),
+                    state,
+                    err.as_str(),
+                );
+            }
+
+            Err(err)
+        }
     }
-
-    output
 }
 
 pub fn unsupported_component_dump(descriptor: &ComponentDescriptor) -> String {

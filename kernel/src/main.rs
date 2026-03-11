@@ -69,7 +69,7 @@ extern "C" fn runtime_entry(init_cmd_ptr: *const u8, init_cmd_len: usize) -> ! {
         let bytes = core::slice::from_raw_parts(init_cmd_ptr, init_cmd_len);
         core::str::from_utf8_unchecked(bytes)
     };
-    // 进入用户态 initrd 命令（失败时回退到内核 Shell）
+    // `ksh` 进入内核调试 Shell；其他 init 路径由 supervisor 线程拉起并监管。
     shell::run(init_cmd);
 }
 

@@ -52,7 +52,12 @@ pub(crate) fn mprotect_flags_from_prot(old: mm::VmFlags, prot: u32) -> mm::VmFla
     flags
 }
 
-pub(crate) fn apply_pte_flags_range(pgd: u64, start: u64, end: u64, pte_flags: u64) -> Result<(), i32> {
+pub(crate) fn apply_pte_flags_range(
+    pgd: u64,
+    start: u64,
+    end: u64,
+    pte_flags: u64,
+) -> Result<(), i32> {
     let pt_mgr = unsafe { mm::PageTableManager::new(pgd, mm::direct_map_offset()) };
     let mut cursor = start;
     while cursor < end {
@@ -85,7 +90,10 @@ pub(crate) fn clone_vma_slice(base: &VmaSegment, start: u64, end: u64) -> VmaSeg
 }
 
 #[inline]
-pub(crate) fn backing_adjust_for_segments(base: &VmaSegment, kept_segments: usize) -> Option<BackingAdjust> {
+pub(crate) fn backing_adjust_for_segments(
+    base: &VmaSegment,
+    kept_segments: usize,
+) -> Option<BackingAdjust> {
     let backing_id = vma_backing_id(&base.info)?;
     Some(BackingAdjust {
         backing_id,
@@ -135,7 +143,11 @@ pub(crate) fn mm_insert_vma_locked(mm_state: &mut mm::Mm, segment: &VmaSegment) 
 
     if mm_state
         .vma_tree
-        .insert(segment.start as usize, segment.end as usize, segment.info.clone())
+        .insert(
+            segment.start as usize,
+            segment.end as usize,
+            segment.info.clone(),
+        )
         .is_err()
     {
         return false;
@@ -197,7 +209,15 @@ pub(crate) fn plan_mprotect_updates(
     start: u64,
     end: u64,
     prot: u32,
-) -> Result<(Vec<VmaSegment>, Vec<VmaSegment>, Vec<BackingAdjust>, Vec<PteUpdate>), i32> {
+) -> Result<
+    (
+        Vec<VmaSegment>,
+        Vec<VmaSegment>,
+        Vec<BackingAdjust>,
+        Vec<PteUpdate>,
+    ),
+    i32,
+> {
     let mut cursor = start;
     let mut removed: Vec<VmaSegment> = Vec::new();
     let mut inserted: Vec<VmaSegment> = Vec::new();
@@ -260,14 +280,26 @@ pub(crate) fn plan_unmap_changes(
     mm_state: &mm::Mm,
     addr: u64,
     end: u64,
-) -> Result<(Vec<VmaSegment>, Vec<VmaSegment>, Vec<BackingAdjust>, Vec<(u64, u64)>), i32> {
+) -> Result<
+    (
+        Vec<VmaSegment>,
+        Vec<VmaSegment>,
+        Vec<BackingAdjust>,
+        Vec<(u64, u64)>,
+    ),
+    i32,
+> {
     let mut removed: Vec<VmaSegment> = Vec::new();
     let mut inserted: Vec<VmaSegment> = Vec::new();
     let mut backing_adjusts: Vec<BackingAdjust> = Vec::new();
     let mut unmap_ranges: Vec<(u64, u64)> = Vec::new();
 
     let mut cursor = addr;
-    while let Some((vma_start, vma_end, info)) = mm_state.vma_tree.iter_intersecting(cursor as usize, end as usize).next() {
+    while let Some((vma_start, vma_end, info)) = mm_state
+        .vma_tree
+        .iter_intersecting(cursor as usize, end as usize)
+        .next()
+    {
         let original = VmaSegment {
             start: vma_start as u64,
             end: vma_end as u64,
@@ -337,10 +369,16 @@ pub(crate) fn mprotect_range_for_mm(
 
     let mut applied_updates: Vec<PteUpdate> = Vec::new();
     for update in &pte_updates {
-        if let Err(errno) = apply_pte_flags_range(mm_state.pgd, update.start, update.end, update.new_flags)
+        if let Err(errno) =
+            apply_pte_flags_range(mm_state.pgd, update.start, update.end, update.new_flags)
         {
             for applied in applied_updates.iter().rev() {
-                let _ = apply_pte_flags_range(mm_state.pgd, applied.start, applied.end, applied.old_flags);
+                let _ = apply_pte_flags_range(
+                    mm_state.pgd,
+                    applied.start,
+                    applied.end,
+                    applied.old_flags,
+                );
             }
             let mm_ptr = mm_state as *mut mm::Mm;
             let _guard = unsafe { (*core::ptr::addr_of!((*mm_ptr).lock)).lock() };

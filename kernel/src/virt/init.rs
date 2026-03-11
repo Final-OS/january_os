@@ -1,5 +1,5 @@
 use super::core::state::VirtState;
-use super::error::VirtResult;
+use super::error::{VirtError, VirtResult};
 
 pub fn init_early() -> VirtResult<()> {
     Ok(())
@@ -10,5 +10,5 @@ pub fn init_core() -> VirtResult<()> {
 }
 
 pub fn init_late() -> VirtResult<VirtState> {
-    Ok(VirtState::host_placeholder())
+    Err(VirtError::Unsupported)
 }

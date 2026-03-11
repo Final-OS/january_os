@@ -82,10 +82,8 @@ pub(crate) fn parse_execve_payload(
     envp_ptr: usize,
 ) -> Result<(String, Vec<String>, Vec<String>), i32> {
     let path = read_user_cstring(path_ptr, EXEC_PATH_MAX)?;
-    let (argv, argv_bytes) =
-        read_user_string_array(argv_ptr, EXEC_ARG_LIST_MAX, EXEC_ARG_STR_MAX)?;
-    let (envp, envp_bytes) =
-        read_user_string_array(envp_ptr, EXEC_ENV_LIST_MAX, EXEC_ARG_STR_MAX)?;
+    let (argv, argv_bytes) = read_user_string_array(argv_ptr, EXEC_ARG_LIST_MAX, EXEC_ARG_STR_MAX)?;
+    let (envp, envp_bytes) = read_user_string_array(envp_ptr, EXEC_ENV_LIST_MAX, EXEC_ARG_STR_MAX)?;
 
     let total_bytes = path
         .len()

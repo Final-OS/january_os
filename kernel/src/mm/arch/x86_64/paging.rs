@@ -627,7 +627,8 @@ pub fn handle_tlb_probe_ipi() {
             )
         };
         if let Some(phys) = pt_mgr.translate_addr(addr) {
-            let value = unsafe { core::ptr::read_volatile(crate::mm::phys_to_virt(phys) as *const u64) };
+            let value =
+                unsafe { core::ptr::read_volatile(crate::mm::phys_to_virt(phys) as *const u64) };
             if value == expect {
                 TLB_PROBE_MATCHED.fetch_add(1, Ordering::AcqRel);
             }
@@ -859,7 +860,6 @@ unsafe fn release_table_page_ref(table_phys: u64) {
         free_page(page);
     }
 }
-
 
 pub unsafe fn release_table_page(table_phys: u64) {
     unsafe { release_table_page_ref(table_phys) };

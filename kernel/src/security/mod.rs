@@ -12,8 +12,8 @@ pub mod syscall;
 
 use alloc::string::String;
 
-use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
-use crate::error::KernelResult;
+use crate::component::{ComponentDescriptor, ComponentStage, ComponentState, ComponentStats};
+use crate::error::{KernelError, KernelResult};
 use crate::syscall::ENOSYS;
 
 pub use api::{
@@ -45,11 +45,26 @@ pub fn init_late() -> KernelResult<SecurityState> {
 }
 
 pub fn init() -> KernelResult<SecurityState> {
-    init_late()
+    diag::stats::note_init_attempt();
+    match init_late() {
+        Ok(state) => {
+            diag::stats::set_component_state(ComponentState::Ready);
+            Ok(state)
+        }
+        Err(err) => {
+            let state = if err == KernelError::NotSupported {
+                ComponentState::Unsupported
+            } else {
+                ComponentState::Failed
+            };
+            diag::stats::set_component_state(state);
+            Err(err)
+        }
+    }
 }
 
 pub fn stats() -> ComponentStats {
-    ComponentStats::unsupported()
+    diag::stats::component_runtime_stats()
 }
 
 pub fn component_stats() -> SecurityStats {

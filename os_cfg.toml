@@ -58,8 +58,9 @@ heap_init_size = 16777216   # 16 MB
 # 栈过小易溢出，过大则浪费内存。
 stack_size = 32768          # 32 KB
 # initrd 启动命令（通过 boot cmdline 传给内核）:
-# 内核会解析 `initrd=<path>`，默认启动该用户态程序。
-initrd_command = "ksh"
+# - "/bin/init": Linux 风格用户态入口，负责拉起 shell/服务
+# - "ksh": 直接进入内核调试 shell
+initrd_command = "/bin/init"
 
 [kernel.layout]
 # 内核虚拟地址布局策略:

@@ -2,10 +2,9 @@
 //!
 //! Runtime file semantics are provided by VFS in `fs/vfs`.
 
-
-use alloc::format;
 use crate::fs::syscall;
 use crate::fs::vfs;
+use alloc::format;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
@@ -13,9 +12,9 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::sync::Mutex;
-use crate::errno::{E2BIG, EAGAIN, EBADF, EINVAL, EISDIR, ENOENT, ENOTDIR, EPIPE, ESPIPE};
 use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
+use crate::errno::{E2BIG, EAGAIN, EBADF, EINVAL, EISDIR, ENOENT, ENOTDIR, EPIPE, ESPIPE};
+use crate::sync::Mutex;
 
 const FIRST_USER_FD: i32 = 3;
 const O_CLOEXEC: u32 = 0o2000000;

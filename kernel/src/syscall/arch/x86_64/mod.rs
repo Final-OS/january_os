@@ -2,8 +2,8 @@
 
 mod table;
 
-use crate::{fs, mm, task};
 use crate::syscall::{SyscallArch, SyscallArgs, SyscallDef, SyscallRet};
+use crate::{fs, mm, task};
 
 pub use table::SYSCALL_TABLE;
 

@@ -20,8 +20,8 @@ pub mod vm;
 use alloc::format;
 use alloc::string::String;
 
-use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
-use crate::error::KernelResult;
+use crate::component::{ComponentDescriptor, ComponentStage, ComponentState, ComponentStats};
+use crate::error::{KernelError, KernelResult};
 use crate::syscall::SyscallArgs;
 
 pub use core::capability::VirtCapability;
@@ -50,6 +50,25 @@ pub fn init_late() -> KernelResult<VirtState> {
     init::init_late().map_err(|err| err.into_kernel_error())
 }
 
+pub fn init() -> KernelResult<VirtState> {
+    stats::note_init_attempt();
+    match init_late() {
+        Ok(state) => {
+            stats::set_component_state(ComponentState::Ready);
+            Ok(state)
+        }
+        Err(err) => {
+            let state = if err == KernelError::NotSupported {
+                ComponentState::Unsupported
+            } else {
+                ComponentState::Failed
+            };
+            stats::set_component_state(state);
+            Err(err)
+        }
+    }
+}
+
 pub fn detect() -> VirtInfo {
     facade::detect()
 }
@@ -71,15 +90,11 @@ pub fn inject_irq(vector: u8) -> error::VirtResult<()> {
 }
 
 pub fn stats() -> ComponentStats {
-    ComponentStats::ready()
-}
-
-fn runtime_component_state() -> crate::component::ComponentState {
-    stats().state
+    stats::component_runtime_stats()
 }
 
 pub fn component_stats() -> VirtStats {
-    VirtStats::placeholder()
+    stats::component_stats()
 }
 
 pub fn dump_state() -> String {
@@ -88,7 +103,7 @@ pub fn dump_state() -> String {
     format!(
         "component={} state={:?} virtualized={} hypervisor={} init_attempts={} vm_creates={} vcpu_runs={} irq_injections={} mmio_regions={} memslots={}",
         COMPONENT.id,
-        runtime_component_state(),
+        stats::runtime_component_state(),
         info.is_virtualized,
         info.vendor_str(),
         runtime_stats.init_attempts,

@@ -1,7 +1,8 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `boot/x86_64/`: UEFI bootloader crate (workspace member).
+- `boot/x86_64/`: UEFI bootloader crate for the active runtime path.
+- `boot/aarch64/`, `boot/riscv64/`: scaffold bootloader crates kept to preserve multi-arch layout; they are not bootable yet.
 - `kernel/`: standalone `no_std` kernel crate; core areas include `arch/`, `drivers/`, `interrupt/`, `mm/`, `task/`, and `sync/`.
 - `tools/cfg/`: configuration tool that reads `os_cfg.toml` and generates Rust config code.
 - `docs/`: VitePress documentation site; `target/` stores build outputs.
@@ -19,9 +20,9 @@
 ## Coding Style & Naming Conventions
 - Follow idiomatic Rust style with `rustfmt` defaults (4-space indentation, trailing commas where useful).
 - Use `snake_case` for modules/functions, `CamelCase` for types/traits, and `SCREAMING_SNAKE_CASE` for constants.
-- Keep architecture-specific code under `kernel/src/arch/x86_64/`; avoid mixing generic and arch code.
+- Keep architecture-specific code under `boot/<arch>/`, `kernel/src/**/arch/<arch>/`, or `kernel/src/virt/platform/<isa>/` for virtualization backends; avoid mixing generic and arch code.
 - Keep test/demo-only logic out of runtime kernel paths (`kernel/src/**` except `kernel/src/tests/**`).
-- Avoid `demo` / `test` wording in runtime kernel command names, paths, constants, and logs.
+- Avoid `demo` / `test` wording in default runtime kernel command names, paths, constants, and logs.
 - Keep changes minimal and localized; prefer extending existing modules over creating parallel patterns.
 
 ## Testing Guidelines

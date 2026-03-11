@@ -4,32 +4,32 @@
 
 use crate::arch;
 use crate::boot::{BootInfo, BOOTINFO_MAGIC, MAX_MEMORY_REGIONS};
+use crate::component::{
+    run_component, ComponentDescriptor as KernelComponentDescriptor,
+    ComponentRegistry as KernelComponentRegistry, ComponentStage as KernelComponentStage,
+};
 use crate::config;
 use crate::drivers::tty::{self, SerialWriter};
 use crate::drivers::{self, acpi};
 use crate::fs;
 use crate::interrupt;
-use crate::mm::MemoryRegion;
+#[cfg(target_arch = "x86_64")]
+use crate::interrupt::arch::x86_64::{InterruptInitInfo, IrqRouteOverride};
 use crate::mm::arch as mm_arch;
 use crate::mm::iommu as mm_iommu;
 use crate::mm::page::numa as mm_numa;
+use crate::mm::setup as mm_setup;
 use crate::mm::vm::layout as mm_layout;
 use crate::mm::vm::layout_runtime as mm_runtime;
 use crate::mm::vm::paging as mm_paging;
 use crate::mm::vm::vma as mm_vma;
+use crate::mm::MemoryRegion;
 use crate::mm::{self, component_report};
-use crate::mm::setup as mm_setup;
 use crate::net;
 use crate::security;
 use crate::smp;
 use crate::virt;
-#[cfg(target_arch = "x86_64")]
-use crate::interrupt::arch::x86_64::{InterruptInitInfo, IrqRouteOverride};
 use crate::{error, info, kprint, kprintln, ok, warn};
-use crate::component::{
-    run_component, ComponentDescriptor as KernelComponentDescriptor,
-    ComponentRegistry as KernelComponentRegistry, ComponentStage as KernelComponentStage,
-};
 use core::fmt::Write;
 
 const COMPONENT_SERIAL: KernelComponentDescriptor = KernelComponentDescriptor {
@@ -81,6 +81,22 @@ const COMPONENT_TIMER: KernelComponentDescriptor = KernelComponentDescriptor {
     summary: "tsc and local apic timer enablement",
 };
 
+fn run_required_component<T>(
+    registry: &mut KernelComponentRegistry,
+    component: &'static KernelComponentDescriptor,
+    init: impl FnOnce() -> T,
+) -> T {
+    match run_component(registry, component, || Ok(init())) {
+        Ok(output) => output,
+        Err(err) => panic!(
+            "required component failed: id={} stage={} err={}",
+            component.id,
+            component.stage.as_str(),
+            err.as_str(),
+        ),
+    }
+}
+
 unsafe extern "C" {
     static __kernel_file_size: u8;
     static __kernel_mem_size: u8;
@@ -115,7 +131,7 @@ pub fn init_kernel(info: &BootInfo) {
     let mut components = KernelComponentRegistry::new();
 
     // 1. 串口初始化 (最早进行，以便输出调试信息)
-    run_component(&mut components, &COMPONENT_SERIAL, tty::init_early_serial);
+    run_required_component(&mut components, &COMPONENT_SERIAL, tty::init_early_serial);
 
     // 2. 验证 BootInfo
     if info.magic != BOOTINFO_MAGIC {
@@ -125,7 +141,7 @@ pub fn init_kernel(info: &BootInfo) {
         panic!("BootInfo version {} is too old, need >= 3", info.version);
     }
 
-    run_component(&mut components, &COMPONENT_MM_LAYOUT, || {
+    run_required_component(&mut components, &COMPONENT_MM_LAYOUT, || {
         if !mm_runtime::init_from_boot_info(info) {
             panic!("Invalid kernel layout in BootInfo");
         }
@@ -174,7 +190,7 @@ pub fn init_kernel(info: &BootInfo) {
     info!("[BOOT] Booting kernel...");
 
     // 早期 ACPI 初始化 (为了获取 SRAT 表进行 NUMA 初始化)
-    run_component(&mut components, &COMPONENT_ACPI_PROBE, || {
+    run_required_component(&mut components, &COMPONENT_ACPI_PROBE, || {
         if info.acpi_rsdp_addr != 0 {
             let _ = drivers::acpi::init(info.acpi_rsdp_addr);
         }
@@ -184,7 +200,9 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step4: init_memory begin");
     }
-    run_component(&mut components, &COMPONENT_MEMORY, || init_memory(info, direct_map));
+    run_required_component(&mut components, &COMPONENT_MEMORY, || {
+        init_memory(info, direct_map)
+    });
     let mm_report = component_report();
     if config::DEBUG_VERBOSE {
         kprintln!(
@@ -213,7 +231,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step5: init_acpi begin");
     }
-    let acpi_config = run_component(&mut components, &COMPONENT_ACPI, || init_acpi(info));
+    let acpi_config = run_required_component(&mut components, &COMPONENT_ACPI, || init_acpi(info));
     let cpu_count = acpi_config.cpu_count;
     if config::DEBUG_VERBOSE {
         kprintln!(
@@ -231,13 +249,15 @@ pub fn init_kernel(info: &BootInfo) {
             cpu_count
         );
     }
-    run_component(&mut components, &COMPONENT_PCP, || mm::pcp::init_pcp(cpu_count as u32));
+    run_required_component(&mut components, &COMPONENT_PCP, || {
+        mm::pcp::init_pcp(cpu_count as u32)
+    });
 
     // 7. 中断控制器初始化
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step7: init_interrupts begin");
     }
-    run_component(&mut components, &interrupt::COMPONENT, || {
+    run_required_component(&mut components, &interrupt::COMPONENT, || {
         init_interrupts(&acpi_config, kernel_stack_top, direct_map)
     });
     if config::DEBUG_VERBOSE {
@@ -251,7 +271,7 @@ pub fn init_kernel(info: &BootInfo) {
             cpu_count
         );
     }
-    run_component(&mut components, &smp::COMPONENT, || {
+    run_required_component(&mut components, &smp::COMPONENT, || {
         smp::init(direct_map, cpu_count as usize)
     });
     if config::DEBUG_VERBOSE {
@@ -281,7 +301,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9: init_iommu begin");
     }
-    run_component(&mut components, &COMPONENT_IOMMU, init_iommu);
+    run_required_component(&mut components, &COMPONENT_IOMMU, init_iommu);
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9: init_iommu done");
     }
@@ -290,7 +310,15 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9a: detect_virtualization begin");
     }
-    run_component(&mut components, &virt::COMPONENT, detect_virtualization);
+    match run_component(&mut components, &virt::COMPONENT, detect_virtualization) {
+        Ok(()) => {}
+        Err(error::KernelError::NotSupported) => {
+            warn!("[VIRT] detect-only scaffold active; VMM control plane remains unsupported");
+        }
+        Err(err) => {
+            warn!("[VIRT] virtualization probe failed: {}", err.as_str());
+        }
+    }
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step9a: detect_virtualization done");
     }
@@ -299,7 +327,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step10: init_drivers begin");
     }
-    run_component(&mut components, &drivers::COMPONENT, init_drivers);
+    run_required_component(&mut components, &drivers::COMPONENT, init_drivers);
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step10: init_drivers done");
     }
@@ -308,7 +336,11 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step11: init_timer_and_enable_interrupts begin");
     }
-    run_component(&mut components, &COMPONENT_TIMER, init_timer_and_enable_interrupts);
+    run_required_component(
+        &mut components,
+        &COMPONENT_TIMER,
+        init_timer_and_enable_interrupts,
+    );
     let if_after_step11 = interrupt::interrupts_enabled();
     if config::DEBUG_VERBOSE {
         kprintln!(
@@ -327,7 +359,7 @@ pub fn init_kernel(info: &BootInfo) {
         } else {
             None
         };
-    run_component(&mut components, &fs::COMPONENT, || {
+    run_required_component(&mut components, &fs::COMPONENT, || {
         let report = fs::init_runtime(initramfs);
         if config::DEBUG_VERBOSE {
             kprintln!(
@@ -345,7 +377,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step12: task::init begin");
     }
-    run_component(&mut components, &crate::task::COMPONENT, || {
+    run_required_component(&mut components, &crate::task::COMPONENT, || {
         let report = crate::task::init_runtime();
         if config::DEBUG_VERBOSE {
             kprintln!(
@@ -362,7 +394,7 @@ pub fn init_kernel(info: &BootInfo) {
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step13: net::init begin");
     }
-    run_component(&mut components, &net::COMPONENT, || match net::init() {
+    match run_component(&mut components, &net::COMPONENT, net::init) {
         Ok(report) => {
             if config::DEBUG_VERBOSE {
                 kprintln!(
@@ -373,33 +405,35 @@ pub fn init_kernel(info: &BootInfo) {
                 );
             }
         }
-        Err(err) => {
-            warn!("[NET] skeleton active but runtime unavailable: {}", err.as_str());
+        Err(error::KernelError::NotSupported) => {
+            warn!("[NET] scaffold active but runtime remains unsupported");
         }
-    });
+        Err(err) => {
+            warn!("[NET] runtime initialization failed: {}", err.as_str());
+        }
+    }
 
     if config::DEBUG_VERBOSE {
         kprintln!("\x1b[90m[diag]\x1b[0m[boot] step14: security::init begin");
     }
-    run_component(
-        &mut components,
-        &security::COMPONENT,
-        || match security::init() {
-            Ok(report) => {
-                if config::DEBUG_VERBOSE {
-                    kprintln!(
-                        "\x1b[90m[diag]\x1b[0m[security] component report cred_ready={} hooks_ready={} audit_ready={}",
-                        report.cred_ready,
-                        report.hooks_ready,
-                        report.audit_ready,
-                    );
-                }
+    match run_component(&mut components, &security::COMPONENT, security::init) {
+        Ok(report) => {
+            if config::DEBUG_VERBOSE {
+                kprintln!(
+                    "\x1b[90m[diag]\x1b[0m[security] component report cred_ready={} hooks_ready={} audit_ready={}",
+                    report.cred_ready,
+                    report.hooks_ready,
+                    report.audit_ready,
+                );
             }
-            Err(err) => {
-                warn!("[SEC] skeleton active but runtime unavailable: {}", err.as_str());
-            }
-        },
-    );
+        }
+        Err(error::KernelError::NotSupported) => {
+            warn!("[SEC] scaffold active but runtime remains unsupported");
+        }
+        Err(err) => {
+            warn!("[SEC] runtime initialization failed: {}", err.as_str());
+        }
+    }
 
     kprintln!();
     ok!("[BOOT] Kernel initialization complete.");
@@ -746,11 +780,13 @@ fn init_iommu() {
     ok!("[IOMMU] {} | Mode: {}", iommu_type, trans_mode);
 }
 
-fn detect_virtualization() {
+fn detect_virtualization() -> error::KernelResult<()> {
+    virt::stats::note_init_attempt();
     let virt = virt::detect();
     if !virt.is_virtualized {
         info!("[Virtualization] Bare metal");
-        return;
+        virt::stats::set_component_state(crate::component::ComponentState::Unsupported);
+        return Err(error::KernelError::NotSupported);
     }
 
     let hv = match virt.hypervisor {
@@ -769,6 +805,8 @@ fn detect_virtualization() {
         virt.vendor_str(),
         virt.nested_supported
     );
+    virt::stats::set_component_state(crate::component::ComponentState::Unsupported);
+    Err(error::KernelError::NotSupported)
 }
 
 fn init_drivers() {
@@ -879,6 +917,6 @@ fn print_system_summary(info: &BootInfo, acpi_config: &acpi::AcpiConfig) {
     );
     kprintln!();
 
-    // Timer 测试 (已移至 shell 'test timer' 命令)
+    // 保留一个空行，避免系统摘要和后续 shell 提示粘连。
     kprintln!();
 }

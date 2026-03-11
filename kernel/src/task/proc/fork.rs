@@ -86,7 +86,10 @@ fn wait_for_vfork_release(child_pid: task::ProcessId) {
 
     let mut logged_wait = false;
     loop {
-        match task::wait_child_observe_by_target_with_options(task::WaitTarget::Pid(child_pid), options) {
+        match task::wait_child_observe_by_target_with_options(
+            task::WaitTarget::Pid(child_pid),
+            options,
+        ) {
             task::WaitChildObserveResult::Reapable(_, _)
             | task::WaitChildObserveResult::NoMatchedChild => {
                 break;

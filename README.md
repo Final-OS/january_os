@@ -1,10 +1,11 @@
 # january_os
 
-一个以组件化宏内核方式组织的实验性操作系统内核工程，当前以 `x86_64` 为主线推进，并持续向 Linux ABI 兼容靠拢。
+一个以组件化宏内核方式组织的实验性操作系统内核工程，当前以 `x86_64` 为唯一可运行主线推进，并持续向 Linux ABI 兼容靠拢。`aarch64` 与 `riscv64` 目录当前保留为接口/布局骨架，而不是可启动实现。
 
 ## 仓库结构
 
-- `boot/x86_64/`：UEFI bootloader crate
+- `boot/x86_64/`：UEFI bootloader crate（当前唯一可运行）
+- `boot/aarch64/`、`boot/riscv64/`：多架构目录骨架（当前返回 `UNSUPPORTED`）
 - `kernel/`：内核主体（`no_std`）
 - `tools/cfg/`：读取 `os_cfg.toml` 并生成配置代码的工具
 - `docs/`：VitePress 文档站点
@@ -39,6 +40,12 @@
   - `arch/<isa>/`：按架构 Linux ABI 号表精确分发
   - 顶层只保留参数结构、返回值编码、号表与分发 façade
   - 共享用户态访问工具统一收敛到 `kernel/src/common/uaccess.rs`
+
+## 当前支持矩阵
+
+- `x86_64`：构建、启动、运行主线
+- `aarch64`：目录/接口骨架，暂不可启动
+- `riscv64`：目录/接口骨架，暂不可启动
 
 ## 快速开始
 

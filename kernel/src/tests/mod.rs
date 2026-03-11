@@ -4,8 +4,8 @@
 
 mod arch;
 mod block;
-mod fs;
 mod drivers;
+mod fs;
 mod interrupt;
 mod libs;
 mod mm;
@@ -15,8 +15,8 @@ mod smp;
 mod sync;
 mod syscall;
 mod task;
-mod virt;
 mod vfs;
+mod virt;
 
 use crate::kprintln;
 use alloc::vec::Vec;

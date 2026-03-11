@@ -119,7 +119,7 @@ fn default_vmalloc_end() -> String {
 }
 
 fn default_initrd_command() -> String {
-    "/bin/sh".to_string()
+    "/bin/init".to_string()
 }
 
 fn default_layout_profile() -> String {

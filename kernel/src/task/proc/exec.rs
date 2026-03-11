@@ -10,8 +10,8 @@ use alloc::vec::Vec;
 use core::cmp;
 use core::mem::size_of;
 
-use crate::mm;
 use crate::errno::{E2BIG, EBUSY, EFAULT, EINVAL, ENOENT, ENOMEM, ESRCH};
+use crate::mm;
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const ELF_CLASS_64: u8 = 2;
@@ -409,12 +409,11 @@ pub fn install_current_exec_vmas(plan: &ExecLoadPlan) -> Result<(), i32> {
             .filter_map(|(start, end, info)| {
                 let start = start as u64;
                 let end = end as u64;
-                (end > mm::USER_SPACE_START && start < mm::USER_SPACE_END)
-                    .then_some(ExecVmaPlan {
-                        start,
-                        end,
-                        info: info.clone(),
-                    })
+                (end > mm::USER_SPACE_START && start < mm::USER_SPACE_END).then_some(ExecVmaPlan {
+                    start,
+                    end,
+                    info: info.clone(),
+                })
             })
             .collect::<Vec<_>>()
     };

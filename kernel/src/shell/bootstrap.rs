@@ -1,13 +1,20 @@
 use crate::{drivers, fs, interrupt, task, warn};
 use alloc::string::String;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
-const INIT_STATE_PENDING: u8 = 0;
-const INIT_STATE_RUNNING: u8 = 1;
-const INIT_STATE_FAILED: u8 = 2;
+const SESSION_STATE_IDLE: u8 = 0;
+const SESSION_STATE_STARTING: u8 = 1;
+const SESSION_STATE_RUNNING: u8 = 2;
+const SESSION_STATE_COMPLETED: u8 = 3;
+const SESSION_STATE_FAILED: u8 = 4;
 
-static INIT_BOOT_STATE: AtomicU8 = AtomicU8::new(INIT_STATE_PENDING);
-static INIT_BOOT_CMD: crate::sync::Mutex<Option<String>> = crate::sync::Mutex::new(None);
+const SESSION_MODE_RETURN_TO_KERNEL_SHELL: u8 = 1;
+const SESSION_MODE_FATAL_IF_EXITED: u8 = 2;
+
+static USER_SESSION_STATE: AtomicU8 = AtomicU8::new(SESSION_STATE_IDLE);
+static USER_SESSION_MODE: AtomicU8 = AtomicU8::new(SESSION_MODE_RETURN_TO_KERNEL_SHELL);
+static USER_SESSION_EXIT_CODE: AtomicI32 = AtomicI32::new(0);
+static USER_SESSION_CMD: crate::sync::Mutex<Option<String>> = crate::sync::Mutex::new(None);
 
 fn exec_current_user_program(path: &str) -> Result<(), i32> {
     crate::info!("[initrd] launching {}", path);
@@ -30,21 +37,40 @@ fn exec_current_user_program(path: &str) -> Result<(), i32> {
     let stack_rsp =
         task::setup_initial_user_stack(load_plan.stack_top, load_plan.stack_pages, &[path], &[])?;
     let frame = task::arch::build_user_enter_frame(load_plan.entry, stack_rsp);
-    INIT_BOOT_STATE.store(INIT_STATE_RUNNING, Ordering::Release);
-
     unsafe {
         task::arch::enter_user_mode_iret(&frame);
     }
 }
 
-extern "C" fn user_init_entry() {
-    let path = INIT_BOOT_CMD
+fn session_path() -> String {
+    USER_SESSION_CMD
         .lock()
         .clone()
-        .unwrap_or_else(|| String::from("/bin/sh"));
+        .unwrap_or_else(|| String::from("/bin/sh"))
+}
+
+fn finish_supervisor(state: u8, exit_code: i32) -> ! {
+    USER_SESSION_EXIT_CODE.store(exit_code, Ordering::Release);
+    USER_SESSION_STATE.store(state, Ordering::Release);
+    task::exit_current_task(0);
+    loop {
+        task::sched::schedule();
+    }
+}
+
+fn fatal_boot_init_exit(path: &str, exit_code: i32) -> ! {
+    USER_SESSION_EXIT_CODE.store(exit_code, Ordering::Release);
+    USER_SESSION_STATE.store(SESSION_STATE_COMPLETED, Ordering::Release);
+    panic!(
+        "Attempted to kill init! path={} exit_code={}",
+        path, exit_code
+    );
+}
+
+extern "C" fn user_program_entry() {
+    let path = session_path();
 
     if let Err(errno) = exec_current_user_program(path.as_str()) {
-        INIT_BOOT_STATE.store(INIT_STATE_FAILED, Ordering::Release);
         warn!("[initrd] exec {} failed errno={}", path, errno);
         task::exit_current_task(127);
         loop {
@@ -53,26 +79,101 @@ extern "C" fn user_init_entry() {
     }
 }
 
-pub(super) fn try_run_user_init(path: &str) -> bool {
-    INIT_BOOT_STATE.store(INIT_STATE_PENDING, Ordering::Release);
-    *INIT_BOOT_CMD.lock() = Some(String::from(path));
+extern "C" fn user_session_supervisor_entry() {
+    let path = session_path();
+    let mode = USER_SESSION_MODE.load(Ordering::Acquire);
+
+    let user_task = match task::spawn_kernel_thread_with_mm_mode_checked(
+        "user-init",
+        user_program_entry,
+        task::SpawnMmMode::InheritPrivate,
+    ) {
+        Some(task_ref) => task_ref,
+        None => {
+            warn!("[initrd] failed to spawn user task for {}", path);
+            if mode == SESSION_MODE_FATAL_IF_EXITED {
+                USER_SESSION_STATE.store(SESSION_STATE_FAILED, Ordering::Release);
+                panic!("failed to launch init {}", path);
+            }
+            finish_supervisor(SESSION_STATE_FAILED, 127);
+        }
+    };
+
+    let user_pid = {
+        let task = user_task.lock();
+        task.pid
+    };
+    USER_SESSION_STATE.store(SESSION_STATE_RUNNING, Ordering::Release);
+
+    match task::wait_event_by_target(
+        task::WaitTarget::Pid(user_pid),
+        task::WaitChildOptions::default(),
+        false,
+    ) {
+        task::WaitEvent::Exited { exit_code, .. } => {
+            crate::info!(
+                "[initrd] user process exited: path={} pid={} code={}",
+                path,
+                user_pid.0,
+                exit_code
+            );
+            if mode == SESSION_MODE_FATAL_IF_EXITED {
+                fatal_boot_init_exit(path.as_str(), exit_code);
+            }
+            finish_supervisor(SESSION_STATE_COMPLETED, exit_code);
+        }
+        other => {
+            warn!(
+                "[initrd] unexpected wait result for {} pid={} => {:?}",
+                path, user_pid.0, other
+            );
+            if mode == SESSION_MODE_FATAL_IF_EXITED {
+                USER_SESSION_STATE.store(SESSION_STATE_FAILED, Ordering::Release);
+                panic!("init supervisor lost child {} pid={}", path, user_pid.0);
+            }
+            finish_supervisor(SESSION_STATE_FAILED, 127);
+        }
+    }
+}
+
+fn drive_runtime_once() {
+    drivers::input::poll();
+    let _ = fs::wake_stdin_waiters_if_ready();
+    task::sched::schedule();
+    interrupt::halt_with_interrupts();
+}
+
+fn launch_user_session(path: &str, mode: u8) -> bool {
+    match USER_SESSION_STATE.load(Ordering::Acquire) {
+        SESSION_STATE_STARTING | SESSION_STATE_RUNNING => {
+            warn!("[initrd] user session already active");
+            return false;
+        }
+        _ => {}
+    }
+
+    USER_SESSION_EXIT_CODE.store(0, Ordering::Release);
+    USER_SESSION_MODE.store(mode, Ordering::Release);
+    USER_SESSION_STATE.store(SESSION_STATE_STARTING, Ordering::Release);
+    *USER_SESSION_CMD.lock() = Some(String::from(path));
 
     if task::spawn_kernel_thread_with_mm_mode_checked(
-        "initrd",
-        user_init_entry,
-        task::SpawnMmMode::InheritPrivate,
+        "init-supervisor",
+        user_session_supervisor_entry,
+        task::SpawnMmMode::InheritInitPrivate,
     )
     .is_none()
     {
-        warn!("[initrd] spawn failed for {}", path);
+        USER_SESSION_STATE.store(SESSION_STATE_FAILED, Ordering::Release);
+        warn!("[initrd] failed to spawn supervisor for {}", path);
         return false;
     }
 
-    for _ in 0..2048 {
-        task::sched::schedule();
-        match INIT_BOOT_STATE.load(Ordering::Acquire) {
-            INIT_STATE_RUNNING => return true,
-            INIT_STATE_FAILED => return false,
+    for _ in 0..4096 {
+        drive_runtime_once();
+        match USER_SESSION_STATE.load(Ordering::Acquire) {
+            SESSION_STATE_RUNNING | SESSION_STATE_COMPLETED => return true,
+            SESSION_STATE_FAILED => return false,
             _ => {}
         }
     }
@@ -81,11 +182,39 @@ pub(super) fn try_run_user_init(path: &str) -> bool {
     false
 }
 
+pub(super) fn run_boot_user_init(path: &str) -> ! {
+    if !launch_user_session(path, SESSION_MODE_FATAL_IF_EXITED) {
+        panic!("failed to launch init {}", path);
+    }
+    run_scheduler_loop();
+}
+
+pub(super) fn run_user_session_until_exit(path: &str) -> Option<i32> {
+    if !launch_user_session(path, SESSION_MODE_RETURN_TO_KERNEL_SHELL) {
+        return None;
+    }
+
+    loop {
+        match USER_SESSION_STATE.load(Ordering::Acquire) {
+            SESSION_STATE_COMPLETED => {
+                let exit_code = USER_SESSION_EXIT_CODE.load(Ordering::Acquire);
+                *USER_SESSION_CMD.lock() = None;
+                USER_SESSION_STATE.store(SESSION_STATE_IDLE, Ordering::Release);
+                return Some(exit_code);
+            }
+            SESSION_STATE_FAILED => {
+                *USER_SESSION_CMD.lock() = None;
+                USER_SESSION_STATE.store(SESSION_STATE_IDLE, Ordering::Release);
+                return None;
+            }
+            SESSION_STATE_IDLE => return None,
+            _ => drive_runtime_once(),
+        }
+    }
+}
+
 pub(super) fn run_scheduler_loop() -> ! {
     loop {
-        drivers::input::poll();
-        let _ = crate::fs::wake_stdin_waiters_if_ready();
-        task::sched::schedule();
-        interrupt::halt_with_interrupts();
+        drive_runtime_once();
     }
 }

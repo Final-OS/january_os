@@ -26,8 +26,8 @@ pub use runtime::manager::{
     lookup_current_exec_mapping, record_current_exec_request, set_current_exec_mappings,
     spawn_kernel_thread, spawn_kernel_thread_with_mm_mode,
     spawn_kernel_thread_with_mm_mode_checked, SpawnMmMode, WaitChildConsumeEvent,
-    WaitChildObserveResult, WaitChildOptions, WaitChildResult, WaitCloneFilter,
-    WaitRusageSnapshot, WaitTarget,
+    WaitChildObserveResult, WaitChildOptions, WaitChildResult, WaitCloneFilter, WaitRusageSnapshot,
+    WaitTarget,
 };
 pub use sched::snapshot_stats as scheduler_snapshot_stats;
 pub use sched::SchedulerStats;

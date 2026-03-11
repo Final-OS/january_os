@@ -13,11 +13,13 @@ pub mod types;
 
 use alloc::string::String;
 
-use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
+use crate::component::{ComponentDescriptor, ComponentStage, ComponentState, ComponentStats};
 use crate::error::{KernelError, KernelResult};
 use crate::syscall::ENOSYS;
 
-pub use api::{DeviceHandle, NetCapability, RecvRequest, SendRequest, SocketCreateRequest, SocketHandle};
+pub use api::{
+    DeviceHandle, NetCapability, RecvRequest, SendRequest, SocketCreateRequest, SocketHandle,
+};
 pub use device::NetDevice;
 pub use runtime::NetManager;
 pub use socket::SocketOps;
@@ -47,15 +49,26 @@ pub fn init_late() -> KernelResult<NetState> {
 }
 
 pub fn init() -> KernelResult<NetState> {
-    init_late()
+    diag::stats::note_init_attempt();
+    match init_late() {
+        Ok(state) => {
+            diag::stats::set_component_state(ComponentState::Ready);
+            Ok(state)
+        }
+        Err(err) => {
+            let state = if err == KernelError::NotSupported {
+                ComponentState::Unsupported
+            } else {
+                ComponentState::Failed
+            };
+            diag::stats::set_component_state(state);
+            Err(err)
+        }
+    }
 }
 
 pub fn stats() -> ComponentStats {
-    ComponentStats::unsupported()
-}
-
-fn runtime_component_state() -> crate::component::ComponentState {
-    diag::stats::runtime_component_state()
+    diag::stats::component_runtime_stats()
 }
 
 pub fn component_stats() -> NetStats {

@@ -13,7 +13,7 @@ fn classify_vendor(vendor: &[u8; 12]) -> HypervisorType {
 }
 
 pub fn detect() -> VirtInfo {
-    use ::core::arch::x86_64::__cpuid;
+    use core::arch::x86_64::__cpuid;
 
     let leaf1 = unsafe { __cpuid(1) };
     let hypervisor_present = ((leaf1.ecx >> 31) & 1) == 1;

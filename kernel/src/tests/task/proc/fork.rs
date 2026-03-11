@@ -101,16 +101,22 @@ pub(super) fn run() {
         if reaped_code != usize::MAX {
             let reaped_pid = FORK_REAPED_PID.load(Ordering::SeqCst);
             if reaped_code == FORK_WAIT_TIMEOUT {
-                error!("task: usermode fork/cow FAIL (timeout waiting pid={})", reaped_pid);
+                error!(
+                    "task: usermode fork/cow FAIL (timeout waiting pid={})",
+                    reaped_pid
+                );
                 return;
             } else if reaped_code == 0 {
-                ok!("task: usermode fork/cow OK (pid={}, code={})", reaped_pid, reaped_code);
+                ok!(
+                    "task: usermode fork/cow OK (pid={}, code={})",
+                    reaped_pid,
+                    reaped_code
+                );
                 return;
             } else {
                 error!(
                     "task: usermode fork/cow FAIL (pid={}, code={}, expected code=0)",
-                    reaped_pid,
-                    reaped_code
+                    reaped_pid, reaped_code
                 );
                 return;
             }

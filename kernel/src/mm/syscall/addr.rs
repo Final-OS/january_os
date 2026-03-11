@@ -101,7 +101,11 @@ pub(crate) fn mmap_select_addr(
     Err(ENOMEM)
 }
 
-pub(crate) fn range_unmapped_in_page_table(pt_mgr: &mm::PageTableManager, start: u64, end: u64) -> bool {
+pub(crate) fn range_unmapped_in_page_table(
+    pt_mgr: &mm::PageTableManager,
+    start: u64,
+    end: u64,
+) -> bool {
     let mut cursor = start;
     while cursor < end {
         if pt_mgr.translate_addr(cursor).is_some() {

@@ -27,8 +27,8 @@ use alloc::vec::Vec;
 const CMD_BUF_SIZE: usize = 256;
 const HISTORY_SIZE: usize = 16;
 const SHELL_COMMANDS: [&str; 16] = [
-    "cat", "cd", "shutdown", "poweroff", "reboot", "status", "mm", "drivers", "pci", "usb", "test",
-    "hotkey", "help", "ls", "pwd", "/bin/sh",
+    "cat", "cd", "shutdown", "poweroff", "reboot", "status", "mm", "drivers", "pci", "usb",
+    "hotkey", "help", "ls", "pwd", "ktu", "test",
 ];
 
 #[derive(Clone, Copy)]
@@ -315,7 +315,7 @@ fn complete_command(state: &mut ShellState) {
 
 /// 进入 Shell 主循环
 pub fn run() -> ! {
-    kprintln!("Commands: shutdown, status, test, hotkey, help, /bin/sh");
+    kprintln!("Commands: shutdown, status, hotkey, ktu, test, help");
     kprintln!("Shortcuts: Tab=complete, Up/Down=history");
     kprintln!();
     print_prompt();
@@ -465,11 +465,14 @@ fn execute_command(cmd: &[u8]) {
         "pwd" => {
             coreutils::execute_pwd_command();
         }
-        "/bin/sh" => {
-            if super::bootstrap::try_run_user_init("/bin/sh") {
-                super::bootstrap::run_scheduler_loop();
+        "ktu" => match super::bootstrap::run_user_session_until_exit("/bin/sh") {
+            Some(exit_code) => {
+                kprintln!("ktu: user shell exited with code {}", exit_code);
             }
-        }
+            None => {
+                kprintln!("ktu: failed to launch user shell");
+            }
+        },
         "cat" => {
             coreutils::execute_cat_command(args);
         }
@@ -500,12 +503,12 @@ fn execute_command(cmd: &[u8]) {
             kprintln!("  cd <path>  - Change shell working directory");
             kprintln!("  pwd        - Print shell working directory");
             kprintln!("  cat <file> - Print file content");
-            kprintln!("  /bin/sh    - Enter user shell");
+            kprintln!("  ktu        - Run user-space shell and wait for exit");
             kprintln!("  drivers    - Driver management commands");
             kprintln!("  mm         - Memory management commands");
             kprintln!("  pci        - Show PCI devices");
             kprintln!("  usb        - Show USB devices");
-            kprintln!("  test       - Run system tests");
+            kprintln!("  test       - Run kernel test suites");
             kprintln!("  hotkey     - ACPI hotkey debug commands");
             kprintln!("  help       - Show this help message");
             kprintln!("Shortcuts: Tab=complete command, Up/Down=browse command history");
@@ -905,7 +908,7 @@ fn execute_drivers_command(args: &[&str]) {
         }
         "mouse" => {
             kprintln!(
-                "Mouse Test Mode (ID: {:#x}) (Press any key to exit)",
+                "Mouse Monitor Mode (ID: {:#x}) (Press any key to exit)",
                 drivers::input::mouse_device_id()
             );
             let mut last_count = drivers::input::mouse_event_count();
@@ -933,7 +936,7 @@ fn execute_drivers_command(args: &[&str]) {
                     core::hint::spin_loop();
                 }
             }
-            kprintln!("Exited mouse test mode.");
+            kprintln!("Exited mouse monitor mode.");
         }
         "interrupt" => {
             let int_enabled = interrupt::interrupts_enabled();
@@ -958,7 +961,7 @@ fn execute_drivers_command(args: &[&str]) {
             kprintln!("  cpu       - Show CPU information");
             kprintln!("  video     - Show video status");
             kprintln!("  input     - Show input devices status");
-            kprintln!("  mouse     - Mouse test mode");
+            kprintln!("  mouse     - Mouse monitor mode");
             kprintln!("  interrupt - Show interrupt status");
         }
     }
@@ -1012,7 +1015,7 @@ fn execute_hotkey_command(args: &[&str]) {
             kprintln!("Subcommands:");
             kprintln!("  status              - Show ACPI hotkey queue status");
             kprintln!("  read                - Drain and print queued hotkey events");
-            kprintln!("  inject <event>      - Inject a test hotkey event");
+            kprintln!("  inject <event>      - Inject a synthetic hotkey event");
             kprintln!("Events: power, sleep, hibernate, volup, voldown, mute, briup, bridown");
         }
     }

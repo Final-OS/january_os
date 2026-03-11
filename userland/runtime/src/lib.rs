@@ -109,14 +109,7 @@ pub fn close(fd: i32) -> isize {
 }
 
 #[inline]
-pub fn mmap(
-    addr: usize,
-    len: usize,
-    prot: u32,
-    flags: u32,
-    fd: usize,
-    offset: usize,
-) -> isize {
+pub fn mmap(addr: usize, len: usize, prot: u32, flags: u32, fd: usize, offset: usize) -> isize {
     syscall6(
         SYS_MMAP,
         addr,

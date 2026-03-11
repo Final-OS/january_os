@@ -64,12 +64,12 @@ static PIT_TICKS: AtomicU64 = AtomicU64::new(0);
 pub fn pit_set_frequency(freq: u32) {
     let divisor = PIT_FREQUENCY / freq;
     let divisor = divisor.max(1).min(65535) as u16;
-    
+
     unsafe {
         // 设置命令: 通道 0, lo/hi, 方波模式
         outb(PIT_COMMAND, PIT_CMD_CHANNEL0_SQUARE);
         io_delay();
-        
+
         // 写入分频值 (低字节先)
         outb(PIT_CHANNEL0_DATA, (divisor & 0xFF) as u8);
         io_delay();
@@ -83,11 +83,11 @@ pub fn pit_read_count() -> u16 {
         // 锁存计数器值
         outb(PIT_COMMAND, 0x00); // 锁存通道 0
         io_delay();
-        
+
         // 读取 lo/hi
         let lo = inb(PIT_CHANNEL0_DATA) as u16;
         let hi = inb(PIT_CHANNEL0_DATA) as u16;
-        
+
         (hi << 8) | lo
     }
 }
@@ -103,13 +103,13 @@ pub fn pit_get_ticks() -> u64 {
 }
 
 /// 使用 PIT 忙等待指定微秒
-/// 
+///
 /// 注意：这是一个粗略的延迟，用于校准
 pub fn pit_wait_us(us: u32) {
     // 计算需要等待的 PIT 周期数
     // PIT 频率 = 1193182 Hz，即每周期约 0.838 微秒
     let cycles = (us as u64 * PIT_FREQUENCY as u64) / 1_000_000;
-    
+
     unsafe {
         // 启用 Channel 2 (Gate 2 = 1, Speaker = 0)
         let port_b = inb(0x61);
@@ -118,13 +118,13 @@ pub fn pit_wait_us(us: u32) {
         // 设置通道 2 为单次模式
         outb(PIT_COMMAND, PIT_CMD_CHANNEL2_ONESHOT);
         io_delay();
-        
+
         // 写入计数值
         let count = cycles.min(65535) as u16;
         outb(PIT_CHANNEL2_DATA, (count & 0xFF) as u8);
         io_delay();
         outb(PIT_CHANNEL2_DATA, ((count >> 8) & 0xFF) as u8);
-        
+
         // 等待计数器到达 0
         // 读取通道 2 状态
         loop {
@@ -136,7 +136,7 @@ pub fn pit_wait_us(us: u32) {
                 break;
             }
         }
-        
+
         // 恢复 Port B (关闭 Gate 2)
         outb(0x61, port_b & !1);
     }
@@ -154,37 +154,37 @@ pub fn pit_wait_ms(ms: u32) {
 // ============================================================================
 
 /// 校准 APIC Timer，返回每秒的 tick 数
-/// 
+///
 /// 使用 PIT 作为参考时钟
 pub fn calibrate_apic_timer() -> u64 {
     use crate::interrupt::arch::x86_64::controller::apic;
-    
+
     // 设置 APIC Timer 为最大计数，分频 = 16
     const APIC_TIMER_DIV: u32 = 0x03; // 除以 16
-    const CALIBRATE_MS: u32 = 10;     // 校准时间 (毫秒)
-    
+    const CALIBRATE_MS: u32 = 10; // 校准时间 (毫秒)
+
     unsafe {
         // 设置分频
         apic::lapic_write(apic::LAPIC_TIMER_DCR, APIC_TIMER_DIV);
-        
+
         // 设置初始计数为最大值
         apic::lapic_write(apic::LAPIC_TIMER_ICR, 0xFFFFFFFF);
-        
+
         // 使用 PIT 等待指定时间
         pit_wait_ms(CALIBRATE_MS);
-        
+
         // 读取当前计数
         let current_count = apic::lapic_read(apic::LAPIC_TIMER_CCR);
         let elapsed = 0xFFFFFFFF - current_count;
-        
+
         // 停止 Timer
         apic::lapic_write(apic::LAPIC_TIMER_ICR, 0);
-        
+
         // 计算每秒 tick 数
         // elapsed 是 CALIBRATE_MS 毫秒内的 tick 数
         // 频率 = elapsed * 1000 / CALIBRATE_MS * 16 (分频因子)
         let ticks_per_sec = (elapsed as u64 * 1000 / CALIBRATE_MS as u64) * 16;
-        
+
         ticks_per_sec
     }
 }

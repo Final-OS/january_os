@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "runtime",
     "coreutils",
+    "init",
     "sh",
     "ls",
     "cat",

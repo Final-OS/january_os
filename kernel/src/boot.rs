@@ -86,7 +86,7 @@ pub struct BootInfo {
 pub const BOOTINFO_MAGIC: u64 = 0x4A414E5F4F530000;
 /// 与 bootloader `boot/x86_64/src/bootinfo.rs::MAX_MEMORY_REGIONS` 保持一致。
 pub const MAX_MEMORY_REGIONS: usize = 256;
-pub const DEFAULT_INITRD_COMMAND: &str = "/bin/sh";
+pub const DEFAULT_INITRD_COMMAND: &str = "/bin/init";
 
 impl BootInfo {
     #[inline]
