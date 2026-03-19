@@ -5,8 +5,6 @@ use uefi::boot::{self, MemoryType};
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
 use uefi::proto::media::block::BlockIO;
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode};
-use uefi::proto::media::fs::SimpleFileSystem;
-
 use crate::bootinfo::{
     DiskInfo, DiskType, FramebufferInfo, KERNEL_PHYS_ADDR, MAX_DISKS, PixelFormatType,
 };
@@ -19,8 +17,10 @@ fn load_file_to_pages(
     fixed_phys: Option<u64>,
     memory_type: MemoryType,
 ) -> Option<(u64, usize)> {
-    let fs_handle = boot::get_handle_for_protocol::<SimpleFileSystem>().ok()?;
-    let mut fs = boot::open_protocol_exclusive::<SimpleFileSystem>(fs_handle).ok()?;
+    // Always resolve files from the device that the current EFI image was
+    // loaded from. Once multiple FAT volumes are present, a generic
+    // get_handle_for_protocol::<SimpleFileSystem>() is no longer stable.
+    let mut fs = boot::get_image_file_system(boot::image_handle()).ok()?;
     let mut root = fs.open_volume().ok()?;
 
     let file_handle = root

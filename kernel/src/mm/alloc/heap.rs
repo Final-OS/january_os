@@ -277,8 +277,8 @@ unsafe impl GlobalAlloc for SimpleHeap {
 /// 使用头部记录原始 kmalloc 指针，以支持任意对齐请求。
 struct KernelGlobalAllocator;
 
-const GLOBAL_ALLOC_MAGIC: usize = 0x4A4F_5348_4541_5031; // "JOSHEAP1"
-const GLOBAL_ALLOC_HEADER_WORDS: usize = 2;
+const GLOBAL_ALLOC_MAGIC: usize = 0x4A4F_5348_4541_5032; // "JOSHEAP2"
+const GLOBAL_ALLOC_HEADER_WORDS: usize = 3;
 
 #[inline]
 unsafe fn kmalloc_aligned(layout: Layout) -> *mut u8 {
@@ -302,16 +302,18 @@ unsafe fn kmalloc_aligned(layout: Layout) -> *mut u8 {
     let user_addr = align_up(raw_addr.saturating_add(header_size), layout.align());
     let header_addr = user_addr.saturating_sub(header_size);
     let header_ptr = header_addr as *mut usize;
+    let checksum = raw_addr ^ user_addr ^ GLOBAL_ALLOC_MAGIC;
 
     // 使用非对齐写，避免对头部地址做额外对齐约束。
     core::ptr::write_unaligned(header_ptr, GLOBAL_ALLOC_MAGIC);
     core::ptr::write_unaligned(header_ptr.add(1), raw_addr);
+    core::ptr::write_unaligned(header_ptr.add(2), checksum);
 
     user_addr as *mut u8
 }
 
 #[inline]
-unsafe fn kfree_aligned(ptr: *mut u8) -> bool {
+unsafe fn kfree_aligned(ptr: *mut u8, layout: Layout) -> bool {
     let header_size = core::mem::size_of::<usize>() * GLOBAL_ALLOC_HEADER_WORDS;
     let user_addr = ptr as usize;
     if user_addr < header_size {
@@ -326,7 +328,20 @@ unsafe fn kfree_aligned(ptr: *mut u8) -> bool {
     }
 
     let raw_addr = core::ptr::read_unaligned(header_ptr.add(1));
-    if raw_addr == 0 || raw_addr > user_addr || !is_direct_map_ptr(raw_addr) {
+    let checksum = core::ptr::read_unaligned(header_ptr.add(2));
+    if raw_addr == 0
+        || raw_addr > user_addr
+        || !is_direct_map_ptr(raw_addr)
+        || checksum != (raw_addr ^ user_addr ^ GLOBAL_ALLOC_MAGIC)
+    {
+        return false;
+    }
+
+    let expected_user = align_up(
+        raw_addr.saturating_add(header_size),
+        layout.align(),
+    );
+    if expected_user != user_addr {
         return false;
     }
 
@@ -366,7 +381,7 @@ unsafe impl GlobalAlloc for KernelGlobalAllocator {
             return;
         }
 
-        if unsafe { kfree_aligned(ptr) } {
+        if unsafe { kfree_aligned(ptr, layout) } {
             return;
         }
 

@@ -153,7 +153,7 @@ pub fn init_kernel(info: &BootInfo) {
 
     // 清屏并打印 Banner
     kprint!("\x1b[2J\x1b[1;1H"); // Clear screen, move cursor to 1,1
-    kprintln!("\n\x1b[36;1m   January OS \x1b[0;36mv0.1.0\x1b[0m");
+    kprintln!("\n\x1b[36;1m   January OS \x1b[0;36mv0.2.0\x1b[0m");
     kprintln!("\x1b[90m   --------------------------------\x1b[0m\n");
     let runtime_layout = mm_runtime::snapshot();
     let boot_levels = mm_runtime::boot_reported_page_levels();
@@ -363,9 +363,10 @@ pub fn init_kernel(info: &BootInfo) {
         let report = fs::init_runtime(initramfs);
         if config::DEBUG_VERBOSE {
             kprintln!(
-                "\x1b[90m[diag]\x1b[0m[fs] component report rootfs={} initramfs_present={}",
+                "\x1b[90m[diag]\x1b[0m[fs] component report rootfs={} initramfs_present={} disk_mount={}",
                 report.rootfs,
                 report.initramfs_present,
+                report.disk_mount.unwrap_or("none"),
             );
         }
     });

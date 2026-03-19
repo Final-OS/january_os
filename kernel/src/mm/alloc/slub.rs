@@ -246,12 +246,14 @@ impl KmemCache {
                 prev = obj;
             }
 
-            // 设置页标志
-            page.set_flag(PageFlags::SLAB);
-            page.set_owner(PageOwner::Slab);
-
-            // 将 cache 指针存入 page.private，用于 kfree 时定位正确的 cache
-            page.set_private(self as *const KmemCache as *mut u8);
+            // 多页 slab 的每一页都要带上 SLAB 元数据，
+            // 这样对象落在 tail page 时也能正确回收到同一个 cache。
+            for idx in 0..(1usize << self.order) {
+                let slab_page = &mut *pfn_to_page(pfn + idx as u64);
+                slab_page.set_flag(PageFlags::SLAB);
+                slab_page.set_owner(PageOwner::Slab);
+                slab_page.set_private(self as *const KmemCache as *mut u8);
+            }
 
             // 取出第一个对象
             let first_obj = prev;
@@ -343,7 +345,9 @@ impl KmemCache {
             None => return,
         };
         let pfn = phys / PAGE_SIZE;
-        let page = pfn_to_page(pfn);
+        let slab_pages = 1u64 << self.order;
+        let slab_head_pfn = pfn & !(slab_pages - 1);
+        let page = pfn_to_page(slab_head_pfn);
 
         let mut release_slab = false;
         {
@@ -364,9 +368,12 @@ impl KmemCache {
                 && self.remove_from_partial(page)
             {
                 (*page).lru.prev = core::ptr::null_mut();
-                (*page).clear_flag(PageFlags::SLAB);
-                (*page).set_owner(PageOwner::Allocated);
-                (*page).set_private(core::ptr::null_mut());
+                for idx in 0..slab_pages {
+                    let slab_page = &mut *pfn_to_page(slab_head_pfn + idx);
+                    slab_page.clear_flag(PageFlags::SLAB);
+                    slab_page.set_owner(PageOwner::Allocated);
+                    slab_page.set_private(core::ptr::null_mut());
+                }
                 atomic_saturating_sub(&self.slabs, 1);
                 release_slab = true;
             }
