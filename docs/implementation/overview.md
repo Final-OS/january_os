@@ -29,6 +29,18 @@ ACPI → IOMMU → 设备驱动
 
 ### 4. 设备与子系统
 - [TTY 子系统](./tty.md) - 串口、帧缓冲控制台、伪终端
+- [文件系统](./fs.md) - VFS、FAT32、ext4、手工挂载与 ELF 执行链路
+
+### 5. v0.3 运行时主线
+```
+virtio-blk / image-file → MBR/GPT / direct mount → initramfs(/) + manual mount → VFS path/execve
+```
+- 当前默认仍以 `initramfs` 作为 `/`
+- `/mnt` 是 `initramfs` 内的普通目录，默认放置 `fat32.img` / `ext4.img` 样例镜像和空挂载点目录
+- 启动阶段会扫描 `virtio-blk` 分区并登记可挂载 source，但不会自动挂载任何 FAT32/ext4 文件系统
+- `execve` 已经从 VFS 路径读取 ELF，并构建最小 `argv/envp/auxv` 用户栈
+- `ksh` 现在提供最小 `mount/umount/remount`，可手工把已探测分区或 `/mnt/*.img` 样例镜像挂到指定目录，再显式执行其中的 ELF
+- 仍待补齐：procfs/sysfs、动态链接与更完整 ABI
 
 ## 开发工具
 

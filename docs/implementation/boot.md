@@ -184,7 +184,7 @@ unsafe {
 
 - `kernel/src/main.rs::_start` 仅负责内核通用引导顺序：清零 BSS、校验 `BootInfo`、调用 `init::init_kernel()`，然后把控制权交给 `arch::switch_to_runtime_boot_stack()`。
 - `kernel/src/arch/x86_64/boot.rs` 持有 `x86_64` 专属的栈分配和 `rsp/rbp/rdi/rsi` 切换逻辑，避免在通用入口中直接保留 `asm!`。
-- `runtime_entry()` 仍在 `kernel/src/main.rs`，因为它承接的是架构无关的运行时行为：`initrd=ksh` 进入内核调试 Shell；默认 `initrd=/bin/init` 走用户态 init 路径，由内核 supervisor 线程启动并等待。用户态 init 退出会被视为致命事件，不再回退到内核 Shell。
+- `runtime_entry()` 仍在 `kernel/src/main.rs`，因为它承接的是架构无关的运行时行为：`initrd=ksh` 进入内核调试 Shell；默认 `initrd=/bin/init` 走用户态 init 路径。启动不会再因为磁盘样例 ELF 改写默认 PID 1 入口。用户态 init 退出会被视为致命事件，不再回退到内核 Shell。
 
 ```rust
 pub unsafe extern "C" fn _start(boot_info_ptr: *const BootInfo) -> ! {
@@ -215,9 +215,11 @@ pub unsafe fn switch_to_runtime_boot_stack(
 #### `ksh` 与用户态 init 的责任边界
 
 - `ksh` 是显式调试/恢复入口，属于内核内建 shell。
-- `/bin/init` 属于用户态 init 路径，由 supervisor 线程拉起，并通过 wait/reap 跟踪退出；当前实现是一个最小 PID 1 用户态 shell，用来承接默认启动链路，直到 `fork/vfork + execve` 能稳定支持真正的用户态 init/supervisor。
+- 开发/测试时可直接使用 `make run-ksh`、`make run-gui-ksh` 或 `make debug-ksh` 生成临时 `ksh` 配置并启动，无需手改 `os_cfg.toml` 默认值。
+- 默认启动固定执行 `initramfs` 内的 `/bin/init`。`/mnt` 仍属于 `initramfs` 根文件系统；其中预置的 `fat32.img` / `ext4.img` 只是样例镜像文件，`HELLO.ELF` 由 `userland/hello` 构建，执行后打印一行 `HELLO` 并退出，不会作为自动启动入口；如需验证磁盘或镜像中的 ELF，应先在 `ksh` 中手工 `mount -t <fat32|ext4> <source> <target>`，再用 `exec <path>` 显式运行。
 - 用户态 init 若退出，系统会直接触发 fatal 路径，行为上对齐 Linux 的 “PID 1 退出是致命事件”，而不是回退到内核态交互 shell。
-- `ktu` 命令是例外：它是从 `ksh` 明确发起的调试桥接，会启动一个用户态 shell，并在该 shell 退出后返回 `ksh`。
+- `/bin/init` 现在允许执行 `exit [code]` 与 `exec <path> [args...]`；若当前 shell 就是 PID 1，`exit` 会触发上述 fatal 路径，而 `exec` 会直接以当前 PID 1 身份替换成目标 ELF。
+- `ksh` 可通过 `mount/umount/remount` 管理已探测到的 FAT32/ext4 分区或 `/mnt/*.img` 样例镜像，并通过 `exec <path>` 启动任意用户态 ELF；`exec` 支持绝对路径，也会按当前 shell cwd 解析相对路径。`ktu` 只是固定执行 `/bin/sh` 的便捷别名。
 
 #### 1. 清零 BSS
 

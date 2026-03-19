@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "cat"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "january_user_coreutils",
  "january_user_runtime",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "echo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "january_user_coreutils",
  "january_user_runtime",
@@ -20,14 +20,21 @@ dependencies = [
 
 [[package]]
 name = "forktest"
-version = "0.1.0"
+version = "0.2.0"
+dependencies = [
+ "january_user_runtime",
+]
+
+[[package]]
+name = "hello"
+version = "0.2.0"
 dependencies = [
  "january_user_runtime",
 ]
 
 [[package]]
 name = "init"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "january_user_coreutils",
  "january_user_runtime",
@@ -35,18 +42,18 @@ dependencies = [
 
 [[package]]
 name = "january_user_coreutils"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "january_user_runtime",
 ]
 
 [[package]]
 name = "january_user_runtime"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "ls"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "january_user_coreutils",
  "january_user_runtime",
@@ -54,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "pwd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "january_user_coreutils",
  "january_user_runtime",
@@ -62,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "sh"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "january_user_coreutils",
  "january_user_runtime",

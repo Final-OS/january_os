@@ -211,9 +211,10 @@
 |------|------|------|----------|
 | fork 语义覆盖 | 🟡 | 已支持用户态返回点复制与私有页 COW；仍缺多线程/更完整 clone 共享语义 | v0.4 |
 | clone 标志 | 🟡 | 缺少 CLONE_VM/FILES 等 | v0.4 |
-| execve VFS | 🔴 | 仅静态文件后端 | v0.3 |
+| execve VFS | 🟡 | 已切换到 VFS 路径读取镜像，当前可通过手工挂载 FAT32 数据盘后执行其中 ELF；仍缺错误语义收口、动态链接与更完整 ABI | v0.3.0/v0.4 |
+| mount 生命周期 | 🟡 | 当前已支持 `ksh` 内建 `mount/umount/remount`，可挂载已探测分区和只读镜像文件；仍缺通用 mount syscall、用户态 `mount(8)`、可写 loop 设备、挂载标志与命名空间语义 | v0.3.1/v0.4 |
 | 用户态 init 监督 | 🟡 | 已引入 `/bin/init` 作为 PID 1 入口；但 `fork/vfork + execve` 组合仍不足以稳定监督并重启 `/bin/sh`，当前仅提供内建最小 PID 1 shell | v0.3.2 |
-| argv/envp/auxv | 🔴 | 栈帧未构建 | v0.3 |
+| argv/envp/auxv | 🟡 | 已构建最小 `argc/argv/envp/auxv` 栈帧；仍缺 `AT_RANDOM/AT_EXECFN` 等扩展项与更完整 ABI 兼容 | v0.3.0/v0.4 |
 | TLS | 🔴 | 线程本地存储 | v0.4 |
 | PT_INTERP | 🔴 | 动态链接器 | v0.4 |
 | shebang | 🔴 | 脚本解释器 | v0.4 |
@@ -367,18 +368,19 @@
 | pipe fd | 管道 fd |
 | stat | 文件元数据 |
 | poll/select | 事件等待 |
+| initramfs rootfs | 最小启动根文件系统 |
 
 ### 技术债务
 
 | 组件 | 状态 | 说明 | 归属版本 |
 |------|------|------|----------|
-| VFS 核心 | 🔴 | 虚拟文件系统抽象 | v0.3 |
-| 块设备抽象 | 🟡 | trait 已落地，缺分区/请求层统一管理 | v0.3.1/v0.4 |
-| FAT32 | 🔴 | 只读挂载与读取主链路 | v0.3 |
-| ext4 | 🔴 | 只读挂载与读取主链路（v0.3 必选） | v0.3 |
+| VFS 核心 | 🟡 | 单命名空间 `mount/path` 与 `initramfs` rootfs 已落地，缺完整 dentry/mount 生命周期、缓存与多后端收口 | v0.3.2/v0.4 |
+| 块设备抽象 | 🟡 | trait、`virtio-blk`、MBR/GPT 已落地，缺统一注册/请求层/恢复与多控制器收口 | v0.3.1/v0.4 |
+| FAT32 | 🟡 | 只读挂载与读取主链路已落地，LFN 已补齐；仍缺写路径、一致性校验与更多镜像覆盖 | v0.3.1/v0.4 |
+| ext4 | 🟡 | 只读挂载与读取主链路已落地，depth>0 与基础 htree-root 兼容已补齐；仍缺更多特性、完整 htree 语义与稳健性完善 | v0.3.2/v0.4 |
 | procfs | 🔴 | 最小 `/proc` 能力（下放子版本） | v0.3.1 |
 | 可写文件系统 | 🔴 | 文件创建/删除/修改 | v0.4 |
-| initramfs | 🔴 | 初始 ramfs | v0.4 |
+| initramfs 完善 | 🟡 | 基础启动 rootfs 已落地，缺切换/挂载策略与后续与磁盘 rootfs 的收口 | v0.4 |
 | page cache | 🔴 | 页缓存 | v0.4 |
 | sysfs | 🔴 | 系统文件系统 | v0.3.2/v0.5 |
 
@@ -472,10 +474,10 @@
 | VMware PVSCSI | 未接入 | VMware 环境最小主链路（识别 + 读写 + 分区接入）并通过回归 | v0.3.2 |
 | NVMe/AHCI | 未接入 | QEMU 环境最小主链路（识别 + 读写 + 分区接入）并通过回归 | v0.3.2/v0.4 |
 | 分区解析 | MBR/GPT 基础解析 | GPT 健壮性、边界与异常恢复完整 | v0.3.2 |
-| VFS | 单命名空间最小抽象 | 完整 dentry/mount 生命周期与缓存策略 | v0.3.2/v0.4 |
-| FAT32 | 只读最小链路 | LFN/一致性校验/写路径完整 | v0.3.1/v0.4 |
-| ext4 | 只读最小链路（v0.3 必选） | htree/更多特性覆盖与稳定性完善 | v0.3.2/v0.4 |
-| execve | VFS 加载 + 最小栈帧 | auxv 完整、动态链接与 ABI 兼容完善 | v0.3.2/v0.4 |
+| VFS | 单命名空间 `mount/path` + `initramfs` rootfs 最小抽象 | 完整 dentry/mount 生命周期与缓存策略 | v0.3.2/v0.4 |
+| FAT32 | 已落地只读主链路，当前支持短文件名 + LFN 与基础目录/文件读取 | FAT32 只读能力补齐一致性校验，并规划写路径 | v0.3.1/v0.4 |
+| ext4 | 已落地只读主链路，当前支持 4KiB block、extent tree 读取与基础 htree-root 兼容目录遍历 | ext4 只读能力补齐更多特性、完整 htree 语义与稳健性完善 | v0.3.2/v0.4 |
+| execve | 已切到 VFS 路径并构建最小 auxv；默认构建已可通过 FAT32 数据盘手工挂载后完成端到端执行 | auxv 完整、动态链接、错误语义与 ABI 兼容完善 | v0.3.0/v0.4 |
 | Syscall 文件子集 | `lseek/getdents64/dup/dup2/fcntl/chdir/getcwd` 最小子集 | `dup3/fchdir/statfs/fstatfs/open flags/access` 与语义收口 | v0.3.1 |
 | procfs | 最小节点（`/proc/self/cpuinfo/meminfo`） | `/proc/[pid]/*` 进程视图完善 | v0.3.1/v0.4 |
 | sysfs | 未实现 | 设备模型与属性导出 | v0.3.2 |
@@ -494,9 +496,9 @@
 |------|------|--------|
 | **块设备** | virtio-blk + 分区（MBR/GPT）主链路 | 🔴 阻塞 |
 | **VFS** | FileSystem/Inode/File trait, mount, 路径解析 | 🔴 阻塞 |
-| **文件系统** | FAT32 只读 + ext4 只读（必选） | 🔴 阻塞 |
+| **文件系统** | FAT32 只读 + ext4 只读（必选） | 🟡 最小主链路已落地，待增强只读能力、写路径与兼容性 |
 | **Syscall** | lseek/getdents64/dup/dup2/fcntl/chdir/getcwd（最小子集） | 🔴 阻塞 |
-| **ELF** | argv/envp/auxv 栈帧 + VFS 加载 | 🔴 阻塞 |
+| **ELF** | argv/envp/auxv 栈帧 + VFS 加载 | 🟡 最小主链路已落地，待真实磁盘镜像和 ABI 扩展 |
 
 #### v0.3.x 继续偿还（最小集补全）
 

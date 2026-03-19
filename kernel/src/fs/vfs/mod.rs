@@ -13,7 +13,10 @@ pub use crate::fs::api::{DirEntry, FileType, FsError, Metadata, SeekWhence};
 pub use crate::fs::fd::file::File;
 pub use filesystem::FileSystem;
 pub use inode::Inode;
-pub use mount::{mount_fs, mount_root, mount_snapshot, resolve_mount, umount_fs, MountEntry};
+pub use mount::{
+    mount_fs, mount_fs_with_source, mount_root, mount_snapshot, resolve_mount, umount_fs,
+    MountEntry,
+};
 pub use path::{normalize_path, split_parent};
 
 pub fn lookup_path(path: &str) -> Result<Arc<dyn Inode>, FsError> {

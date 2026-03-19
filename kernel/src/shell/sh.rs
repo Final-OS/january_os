@@ -26,9 +26,9 @@ use alloc::vec::Vec;
 
 const CMD_BUF_SIZE: usize = 256;
 const HISTORY_SIZE: usize = 16;
-const SHELL_COMMANDS: [&str; 16] = [
+const SHELL_COMMANDS: [&str; 20] = [
     "cat", "cd", "shutdown", "poweroff", "reboot", "status", "mm", "drivers", "pci", "usb",
-    "hotkey", "help", "ls", "pwd", "ktu", "test",
+    "hotkey", "help", "ls", "pwd", "exec", "ktu", "mount", "umount", "remount", "test",
 ];
 
 #[derive(Clone, Copy)]
@@ -315,7 +315,7 @@ fn complete_command(state: &mut ShellState) {
 
 /// 进入 Shell 主循环
 pub fn run() -> ! {
-    kprintln!("Commands: shutdown, status, hotkey, ktu, test, help");
+    kprintln!("Commands: shutdown, status, hotkey, exec, mount, umount, remount, test, help");
     kprintln!("Shortcuts: Tab=complete, Up/Down=history");
     kprintln!();
     print_prompt();
@@ -465,6 +465,36 @@ fn execute_command(cmd: &[u8]) {
         "pwd" => {
             coreutils::execute_pwd_command();
         }
+        "exec" => {
+            let Some(path_input) = args.first().copied() else {
+                kprintln!("usage: exec <path>");
+                return;
+            };
+            let path = match crate::fs::resolve_path_for_pid(super::coreutils::SHELL_FS_PID, path_input) {
+                Ok(path) => path,
+                Err(errno) => {
+                    kprintln!("exec: {} (errno={})", path_input, errno);
+                    return;
+                }
+            };
+            match super::bootstrap::run_user_session_until_exit(path.as_str()) {
+                Some(exit_code) => {
+                    kprintln!("exec: {} exited with code {}", path, exit_code);
+                }
+                None => {
+                    kprintln!("exec: failed to launch {}", path);
+                }
+            }
+        }
+        "mount" => {
+            execute_mount_command(args);
+        }
+        "umount" => {
+            execute_umount_command(args);
+        }
+        "remount" => {
+            execute_remount_command(args);
+        }
         "ktu" => match super::bootstrap::run_user_session_until_exit("/bin/sh") {
             Some(exit_code) => {
                 kprintln!("ktu: user shell exited with code {}", exit_code);
@@ -503,7 +533,11 @@ fn execute_command(cmd: &[u8]) {
             kprintln!("  cd <path>  - Change shell working directory");
             kprintln!("  pwd        - Print shell working directory");
             kprintln!("  cat <file> - Print file content");
+            kprintln!("  exec <elf> - Run user ELF from cwd or absolute path and wait for exit");
             kprintln!("  ktu        - Run user-space shell and wait for exit");
+            kprintln!("  mount      - List mounts or mount a filesystem");
+            kprintln!("  umount     - Unmount a filesystem");
+            kprintln!("  remount    - Unmount and mount again using saved source");
             kprintln!("  drivers    - Driver management commands");
             kprintln!("  mm         - Memory management commands");
             kprintln!("  pci        - Show PCI devices");
@@ -520,6 +554,93 @@ fn execute_command(cmd: &[u8]) {
                 command
             );
         }
+    }
+}
+
+fn print_mount_usage() {
+    kprintln!("usage: mount");
+    kprintln!("usage: mount -t <fat32|ext4> <source> <target>");
+    kprintln!("source can be a discovered block partition or an image path like /mnt/fat32.img");
+}
+
+fn execute_mount_command(args: &[&str]) {
+    if args.is_empty() {
+        kprintln!("Mounted filesystems:");
+        for entry in crate::fs::list_mounts() {
+            match entry.source {
+                Some(source) => {
+                    kprintln!("  {} on {} type {}", source, entry.target, entry.fs_type);
+                }
+                None => {
+                    kprintln!("  {} on {} type {}", "rootfs", entry.target, entry.fs_type);
+                }
+            }
+        }
+        kprintln!("Available mount sources:");
+        for source in crate::fs::list_available_mount_sources() {
+            kprintln!(
+                "  {} type {} start_lba={} blocks={}",
+                source.source, source.fs_type, source.start_lba, source.block_count
+            );
+        }
+        return;
+    }
+
+    if args.len() != 4 || args[0] != "-t" {
+        print_mount_usage();
+        return;
+    }
+
+    let fs_type = args[1];
+    let source = args[2];
+    let target_input = args[3];
+    let target = match crate::fs::resolve_path_for_pid(super::coreutils::SHELL_FS_PID, target_input) {
+        Ok(path) => path,
+        Err(errno) => {
+            kprintln!("mount: {} (errno={})", target_input, errno);
+            return;
+        }
+    };
+    match crate::fs::stat_path(target.as_str()) {
+        Ok(stat) => {
+            if (stat.mode & 0o170000) != 0o040000 {
+                kprintln!("mount: {} is not a directory", target);
+                return;
+            }
+        }
+        Err(errno) => {
+            kprintln!("mount: {} (errno={})", target, errno);
+            return;
+        }
+    }
+
+    match crate::fs::mount_source_for_pid(super::coreutils::SHELL_FS_PID, source, target.as_str(), fs_type) {
+        Ok(()) => kprintln!("mount: {} mounted on {}", source, target),
+        Err(errno) => kprintln!("mount: failed (errno={})", errno),
+    }
+}
+
+fn execute_umount_command(args: &[&str]) {
+    let Some(target) = args.first().copied() else {
+        kprintln!("usage: umount <target>");
+        return;
+    };
+
+    match crate::fs::umount_target(target) {
+        Ok(()) => kprintln!("umount: {}", target),
+        Err(errno) => kprintln!("umount: {} (errno={})", target, errno),
+    }
+}
+
+fn execute_remount_command(args: &[&str]) {
+    let Some(target) = args.first().copied() else {
+        kprintln!("usage: remount <target>");
+        return;
+    };
+
+    match crate::fs::remount_target(target) {
+        Ok(()) => kprintln!("remount: {}", target),
+        Err(errno) => kprintln!("remount: {} (errno={})", target, errno),
     }
 }
 

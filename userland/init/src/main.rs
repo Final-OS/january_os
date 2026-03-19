@@ -6,7 +6,11 @@ use january_user_runtime as rt;
 
 const MAX_LINE: usize = 256;
 const MAX_TOKENS: usize = 16;
+const MAX_PATH: usize = 256;
+const MAX_ARG_BYTES: usize = 96;
 const ROOT_PATH: &[u8] = b"/\0";
+const DEFAULT_PATH: &str = "/bin:/usr/bin";
+const PATH_DIRS: [&str; 2] = ["/bin", "/usr/bin"];
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -66,12 +70,98 @@ fn parse_tokens<'a>(line: &'a str, out: &mut [&'a str; MAX_TOKENS]) -> usize {
     count
 }
 
+fn parse_exit_code(arg: Option<&str>) -> Result<i32, ()> {
+    let Some(raw) = arg else {
+        return Ok(0);
+    };
+    raw.parse::<i32>().map_err(|_| ())
+}
+
+fn exec_external(tokens: &[&str]) -> i32 {
+    if tokens.is_empty() {
+        return 0;
+    }
+
+    let mut arg_bytes = [[0u8; MAX_ARG_BYTES]; MAX_TOKENS];
+    let mut argv_ptrs: [*const u8; MAX_TOKENS + 1] = [core::ptr::null(); MAX_TOKENS + 1];
+    let argc = tokens.len().min(MAX_TOKENS);
+    for idx in 0..argc {
+        let bytes = tokens[idx].as_bytes();
+        if bytes.len().saturating_add(1) > arg_bytes[idx].len() {
+            rt::write_line("init: argument too long");
+            return 1;
+        }
+        arg_bytes[idx][..bytes.len()].copy_from_slice(bytes);
+        arg_bytes[idx][bytes.len()] = 0;
+        argv_ptrs[idx] = arg_bytes[idx].as_ptr();
+    }
+    argv_ptrs[argc] = core::ptr::null();
+    let path_env = b"PATH=/bin:/usr/bin\0";
+    let envp: [*const u8; 2] = [path_env.as_ptr(), core::ptr::null()];
+    let mut path_cstr = [0u8; MAX_PATH];
+
+    if tokens[0].as_bytes().contains(&b'/') {
+        if tokens[0].len().saturating_add(1) > path_cstr.len() {
+            rt::write_line("init: command path too long");
+            return 1;
+        }
+        path_cstr[..tokens[0].len()].copy_from_slice(tokens[0].as_bytes());
+        path_cstr[tokens[0].len()] = 0;
+        let ret = rt::execve(path_cstr.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
+        if ret >= 0 {
+            return 0;
+        }
+
+        rt::write_str("init: exec error errno=");
+        rt::write_u64(rt::errno_from_ret(ret) as u64);
+        rt::write_str("\n");
+        return 126;
+    }
+
+    for dir in PATH_DIRS.iter() {
+        let need = dir
+            .len()
+            .saturating_add(1)
+            .saturating_add(tokens[0].len())
+            .saturating_add(1);
+        if need > path_cstr.len() {
+            continue;
+        }
+
+        let mut offset = 0usize;
+        path_cstr[..dir.len()].copy_from_slice(dir.as_bytes());
+        offset += dir.len();
+        path_cstr[offset] = b'/';
+        offset += 1;
+        path_cstr[offset..offset + tokens[0].len()].copy_from_slice(tokens[0].as_bytes());
+        offset += tokens[0].len();
+        path_cstr[offset] = 0;
+
+        let ret = rt::execve(path_cstr.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
+        if ret >= 0 {
+            return 0;
+        }
+        if rt::errno_from_ret(ret) != 2 {
+            rt::write_str("init: exec error errno=");
+            rt::write_u64(rt::errno_from_ret(ret) as u64);
+            rt::write_str("\n");
+            return 126;
+        }
+    }
+
+    rt::write_str("init: command not found: ");
+    rt::write_line(tokens[0]);
+    127
+}
+
 fn main() -> i32 {
     let _ = rt::chdir(ROOT_PATH.as_ptr());
 
     rt::write_line("january init");
     rt::write_line("PID 1 user-space shell");
-    rt::write_line("commands: help, ls, cat, pwd, cd, echo, exit");
+    rt::write_line("commands: help, ls, cat, pwd, cd, echo, exec, exit");
+    rt::write_str("PATH=");
+    rt::write_line(DEFAULT_PATH);
 
     let mut line = [0u8; MAX_LINE];
     loop {
@@ -104,7 +194,8 @@ fn main() -> i32 {
                 rt::write_line("pwd                 show cwd");
                 rt::write_line("cd <path>           change cwd");
                 rt::write_line("echo <text...>      print text");
-                rt::write_line("exit                exit PID 1 shell");
+                rt::write_line("exec <path> [...]   replace shell with program");
+                rt::write_line("exit [code]         exit PID 1 shell");
             }
             "ls" => {
                 let _ = coreutils::cmd_ls(args.first().copied());
@@ -125,7 +216,17 @@ fn main() -> i32 {
             "echo" => {
                 let _ = coreutils::cmd_echo(args);
             }
-            "exit" => return 0,
+            "exec" => {
+                if args.is_empty() {
+                    rt::write_line("usage: exec <path> [args...]");
+                } else {
+                    let _ = exec_external(args);
+                }
+            }
+            "exit" => match parse_exit_code(args.first().copied()) {
+                Ok(code) => return code,
+                Err(()) => rt::write_line("usage: exit [code]"),
+            },
             _ => {
                 rt::write_str("init: unknown command: ");
                 rt::write_line(cmd);

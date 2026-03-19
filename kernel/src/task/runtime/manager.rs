@@ -324,6 +324,18 @@ pub fn set_current_exec_mappings(mappings: Vec<ExecMappedPage>) -> Option<usize>
     Some(replaced_count)
 }
 
+pub fn take_current_exec_mappings() -> Option<Vec<ExecMappedPage>> {
+    let current_task = crate::task::thread::current_task()?;
+    let pid = {
+        let task = current_task.lock();
+        task.pid
+    };
+
+    let process_ref = find_process_by_pid(pid)?;
+    let mut process = process_ref.lock();
+    Some(process.take_exec_mappings())
+}
+
 pub fn lookup_current_exec_mapping(virt: u64) -> Option<ExecMappedPage> {
     let current_task = crate::task::thread::current_task()?;
     let pid = {

@@ -2,6 +2,9 @@
 //!
 //! Runtime file semantics are provided by VFS in `fs/vfs`.
 
+use crate::drivers::block::{
+    self, BlockDevice, Partition, ReadonlyFileBlockDevice, StaticBlockDeviceRef,
+};
 use crate::fs::syscall;
 use crate::fs::vfs;
 use alloc::format;
@@ -107,6 +110,13 @@ struct MmapBacking {
     refs: usize,
 }
 
+#[derive(Clone)]
+struct MountSourceRecord {
+    source: String,
+    fs_type: &'static str,
+    partition: Partition,
+}
+
 struct FsState {
     open_files: BTreeMap<usize, BTreeMap<i32, OpenFile>>,
     next_fd: BTreeMap<usize, i32>,
@@ -115,6 +125,7 @@ struct FsState {
     pipes: BTreeMap<u64, PipeState>,
     next_mmap_backing_id: u64,
     mmap_backings: BTreeMap<u64, MmapBacking>,
+    mount_sources: Vec<MountSourceRecord>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -146,6 +157,7 @@ impl FsState {
             pipes: BTreeMap::new(),
             next_mmap_backing_id: 1,
             mmap_backings: BTreeMap::new(),
+            mount_sources: Vec::new(),
         }
     }
 
@@ -1012,15 +1024,14 @@ impl FsState {
             .map_err(|e| e.errno())
     }
 
-    fn read_all_for_pid(&mut self, pid: usize, path: &str) -> Result<Vec<u8>, i32> {
-        let resolved = self.resolve_path_for_pid(pid, path)?;
-        let inode = vfs::lookup_path(resolved.as_str()).map_err(|e| e.errno())?;
+    fn read_all_path(&self, path: &str) -> Result<Vec<u8>, i32> {
+        let inode = vfs::lookup_path(path).map_err(|e| e.errno())?;
         let meta = inode.metadata().map_err(|e| e.errno())?;
         if meta.file_type != vfs::FileType::Regular {
             return Err(ENOENT);
         }
 
-        if let Some(data) = vfs::initramfs::read_file(resolved.as_str()) {
+        if let Some(data) = vfs::initramfs::read_file(path) {
             return Ok(data.to_vec());
         }
 
@@ -1043,14 +1054,35 @@ impl FsState {
         out.truncate(offset);
         Ok(out)
     }
+
+    fn read_all_for_pid(&mut self, pid: usize, path: &str) -> Result<Vec<u8>, i32> {
+        let resolved = self.resolve_path_for_pid(pid, path)?;
+        self.read_all_path(resolved.as_str())
+    }
 }
 
 static FS_STATE: Mutex<FsState> = Mutex::new(FsState::new());
+
+#[derive(Clone)]
+pub struct FsMountSource {
+    pub source: String,
+    pub fs_type: &'static str,
+    pub start_lba: u64,
+    pub block_count: u64,
+}
+
+#[derive(Clone)]
+pub struct FsMountEntry {
+    pub target: String,
+    pub fs_type: String,
+    pub source: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct FsInitReport {
     pub initramfs_present: bool,
     pub rootfs: &'static str,
+    pub disk_mount: Option<&'static str>,
 }
 
 pub fn init(initramfs: Option<(u64, u64)>) {
@@ -1074,10 +1106,200 @@ pub fn init_runtime(initramfs: Option<(u64, u64)>) -> FsInitReport {
         }
     }
     vfs::mount_root(Arc::new(vfs::initramfs::InitramfsFileSystem::new()));
+    discover_disk_mount_sources();
 
     FsInitReport {
         initramfs_present,
         rootfs: "initramfs",
+        disk_mount: None,
+    }
+}
+
+fn discover_disk_mount_sources() {
+    let Some(dev) = block::virtio_blk::get_device() else {
+        FS_STATE.lock().mount_sources.clear();
+        return;
+    };
+    let block_dev: Arc<dyn BlockDevice> =
+        Arc::new(StaticBlockDeviceRef::new(dev as &'static dyn BlockDevice));
+    let partitioned = match block::discover_partitions(block_dev) {
+        Ok(parts) => parts,
+        Err(err) => {
+            if crate::config::DEBUG_VERBOSE {
+                crate::kprintln!("\x1b[90m[diag]\x1b[0m[fs] disk discovery skipped: {}", err);
+            }
+            FS_STATE.lock().mount_sources.clear();
+            return;
+        }
+    };
+
+    let mut sources = Vec::new();
+
+    for part in partitioned.partitions() {
+        let Ok(part_dev) = partitioned.open_partition(part.index) else {
+            continue;
+        };
+
+        let source = format!("{}p{}", partitioned.device().name(), part.index);
+        if crate::fs::backing::Fat32FileSystem::mount(part_dev.clone()).is_ok() {
+            sources.push(MountSourceRecord {
+                source: source.clone(),
+                fs_type: "fat32",
+                partition: *part,
+            });
+        }
+
+        if crate::fs::backing::Ext4FileSystem::mount(part_dev).is_ok() {
+            sources.push(MountSourceRecord {
+                source,
+                fs_type: "ext4",
+                partition: *part,
+            });
+        }
+    }
+
+    if crate::config::DEBUG_VERBOSE {
+        crate::kprintln!(
+            "\x1b[90m[diag]\x1b[0m[fs] discovered mount sources={}",
+            sources.len()
+        );
+    }
+    FS_STATE.lock().mount_sources = sources;
+}
+
+pub fn list_available_mount_sources() -> Vec<FsMountSource> {
+    FS_STATE
+        .lock()
+        .mount_sources
+        .iter()
+        .map(|entry| FsMountSource {
+            source: entry.source.clone(),
+            fs_type: entry.fs_type,
+            start_lba: entry.partition.start_lba,
+            block_count: entry.partition.block_count,
+        })
+        .collect()
+}
+
+pub fn list_mounts() -> Vec<FsMountEntry> {
+    vfs::mount_snapshot()
+        .into_iter()
+        .map(|entry| FsMountEntry {
+            target: entry.target,
+            fs_type: entry.fs_name,
+            source: entry.source,
+        })
+        .collect()
+}
+
+fn mount_partition_source(
+    source: &str,
+    target: &str,
+    fs_type: &str,
+) -> Result<(), crate::fs::api::FsError> {
+    let record = FS_STATE
+        .lock()
+        .mount_sources
+        .iter()
+        .find(|entry| entry.source == source && entry.fs_type == fs_type)
+        .cloned()
+        .ok_or(crate::fs::api::FsError::NotFound)?;
+
+    let target_inode = vfs::lookup_path(target)?;
+    let target_meta = target_inode.metadata()?;
+    if target_meta.file_type != vfs::FileType::Directory {
+        return Err(crate::fs::api::FsError::NotDirectory);
+    }
+
+    let dev = block::virtio_blk::get_device().ok_or(crate::fs::api::FsError::NotFound)?;
+    let block_dev: Arc<dyn BlockDevice> =
+        Arc::new(StaticBlockDeviceRef::new(dev as &'static dyn BlockDevice));
+    let partitioned = block::discover_partitions(block_dev).map_err(|_| crate::fs::api::FsError::Io)?;
+    let part_dev = partitioned
+        .open_partition(record.partition.index)
+        .map_err(|_| crate::fs::api::FsError::NotFound)?;
+
+    let fs_obj: Arc<dyn vfs::FileSystem> = match fs_type {
+        "fat32" => crate::fs::backing::Fat32FileSystem::mount(part_dev)
+            .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
+        "ext4" => crate::fs::backing::Ext4FileSystem::mount(part_dev)
+            .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
+        _ => return Err(crate::fs::api::FsError::NotSupported),
+    };
+
+    vfs::mount_fs_with_source(target, source, fs_obj)
+}
+
+fn mount_file_source(
+    source: &str,
+    target: &str,
+    fs_type: &str,
+) -> Result<(), crate::fs::api::FsError> {
+    let source_inode = vfs::lookup_path(source)?;
+    let source_meta = source_inode.metadata()?;
+    if source_meta.file_type != vfs::FileType::Regular {
+        return Err(crate::fs::api::FsError::NotFound);
+    }
+
+    let source_size =
+        usize::try_from(source_meta.size).map_err(|_| crate::fs::api::FsError::InvalidInput)?;
+    let block_dev: Arc<dyn BlockDevice> =
+        if let Some(data) = vfs::initramfs::read_file(source) {
+            Arc::new(
+                ReadonlyFileBlockDevice::from_initramfs(source, data, 512)
+                    .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
+            )
+        } else {
+            Arc::new(
+                ReadonlyFileBlockDevice::from_inode(source, source_inode, source_size, 512)
+                    .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
+            )
+        };
+
+    let target_inode = vfs::lookup_path(target)?;
+    let target_meta = target_inode.metadata()?;
+    if target_meta.file_type != vfs::FileType::Directory {
+        return Err(crate::fs::api::FsError::NotDirectory);
+    }
+
+    let fs_obj: Arc<dyn vfs::FileSystem> = match fs_type {
+        "fat32" => crate::fs::backing::Fat32FileSystem::mount(block_dev)
+            .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
+        "ext4" => crate::fs::backing::Ext4FileSystem::mount(block_dev)
+            .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
+        _ => return Err(crate::fs::api::FsError::NotSupported),
+    };
+
+    vfs::mount_fs_with_source(target, source, fs_obj)
+}
+
+pub fn mount_source_for_pid(pid: usize, source: &str, target: &str, fs_type: &str) -> Result<(), i32> {
+    if source.contains('/') {
+        let resolved = resolve_path_for_pid(pid, source)?;
+        mount_file_source(resolved.as_str(), target, fs_type).map_err(|e| e.errno())
+    } else {
+        mount_partition_source(source, target, fs_type).map_err(|e| e.errno())
+    }
+}
+
+pub fn umount_target(target: &str) -> Result<(), i32> {
+    vfs::umount_fs(target).map_err(|e| e.errno())
+}
+
+pub fn remount_target(target: &str) -> Result<(), i32> {
+    let target_norm = vfs::normalize_path("/", target).map_err(|e| e.errno())?;
+    let entry = list_mounts()
+        .into_iter()
+        .find(|entry| entry.target == target_norm)
+        .ok_or(ENOENT)?;
+    let source = entry.source.ok_or(EINVAL)?;
+    vfs::umount_fs(target_norm.as_str()).map_err(|e| e.errno())?;
+    if source.contains('/') {
+        mount_file_source(source.as_str(), target_norm.as_str(), entry.fs_type.as_str())
+            .map_err(|e| e.errno())
+    } else {
+        mount_partition_source(source.as_str(), target_norm.as_str(), entry.fs_type.as_str())
+            .map_err(|e| e.errno())
     }
 }
 
@@ -1177,11 +1399,13 @@ pub fn stat_path(path: &str) -> Result<FsStat, i32> {
 }
 
 pub fn stat_path_for_pid(pid: usize, path: &str) -> Result<FsStat, i32> {
-    let resolved = {
-        let mut state = FS_STATE.lock();
-        state.resolve_path_for_pid(pid, path)?
-    };
+    let resolved = resolve_path_for_pid(pid, path)?;
     stat_path(resolved.as_str())
+}
+
+pub fn resolve_path_for_pid(pid: usize, path: &str) -> Result<String, i32> {
+    let mut state = FS_STATE.lock();
+    state.resolve_path_for_pid(pid, path)
 }
 
 pub fn stat_fd(pid: usize, fd: i32) -> Result<FsStat, i32> {
@@ -1198,6 +1422,10 @@ pub fn drop_process_fds(pid: usize) {
 
 pub fn read_all_for_pid(pid: usize, path: &str) -> Result<Vec<u8>, i32> {
     FS_STATE.lock().read_all_for_pid(pid, path)
+}
+
+pub fn read_all_path(path: &str) -> Result<Vec<u8>, i32> {
+    FS_STATE.lock().read_all_path(path)
 }
 
 pub fn mmap_create_backing_for_pid(pid: usize, fd: i32) -> Result<u64, i32> {

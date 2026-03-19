@@ -60,6 +60,14 @@ pub(crate) fn sys_rt_sigreturn(args: &SyscallArgs) -> SyscallRet;
 - `kernel/src/task/proc/*`：真实进程语义与地址空间协作
 - `kernel/src/task/runtime/manager.rs`：运行态全局表与 wait/spawn 共享路径
 
+## 当前 `execve` 状态
+
+- `sys_execve()` 已通过 `fs::runtime::read_all_for_pid()` 从 VFS 路径读取镜像，不再依赖内置静态镜像表
+- `execve` 可直接执行手工挂载后的 FAT32/ext4 路径；`ksh exec` 对相对路径会先按 shell cwd 归一化
+- 初始用户栈已构建 `argc/argv/envp/auxv` 最小布局，并维护 `mm.arg_*` / `mm.env_*` 区间
+- 当前 auxv 仅提供 `AT_PAGESZ/AT_PHDR/AT_PHENT/AT_PHNUM/AT_ENTRY`
+- 仍缺 `PT_INTERP`、动态链接器、TLS、shebang 与更完整 ABI 兼容性
+
 ## 相关文档
 
 - [Task API](./task.md)

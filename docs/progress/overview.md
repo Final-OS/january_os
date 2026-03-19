@@ -8,6 +8,38 @@ january_os 当前开发状态与功能完成情况。
 
 ## 最近更新 🆕
 
+**2026-03-18 - 挂载语义收口**
+- ✅ 默认启动回退为固定 `/bin/init`，不再自动执行磁盘上的样例 ELF
+- ✅ 启动阶段只探测可挂载分区 source，不再自动把 FAT32/ext4 挂到 `/mnt`
+- ✅ `ksh` 新增 `mount/umount/remount`，可手工挂载 `virtio-blk` 分区或 `/mnt/fat32.img`、`/mnt/ext4.img` 等镜像文件，并显式执行其中 ELF
+- ⚠️ 当前 mount 生命周期仍是 `ksh` 内建最小子集，尚无通用 mount syscall、用户态 `mount(8)`、可写 loop 设备或完整挂载标志语义
+
+**2026-03-18 - FAT32/ext4 只读能力补强**
+- ✅ FAT32 已补齐 LFN 长文件名读取，样例镜像增加 `LONG-FILE.TXT`
+- ✅ ext4 已补齐 extent depth > 0 读取回归，覆盖跨块大文件
+- ✅ ext4 目录遍历已兼容 htree-root block 前缀，基础 indexed directory 读取不再在首块元数据处提前终止
+- ⚠️ ext4 更多特性、完整 htree 语义与写路径仍留在 `v0.3.2/v0.4`
+
+**2026-03-18 - 默认数据盘镜像接入**
+- ✅ `make run` / `make run-gui` / `make debug` 现在会生成 `target/virtio-blk.img`，默认包含 MBR + FAT32 数据分区
+- ✅ 默认数据盘预置 `HELLO.ELF` / `HELLO.TXT` / `LONG-FILE.TXT` / `README.TXT`，作为手工挂载后的样例内容
+- ✅ `make build` 还会把 `fat32.img` / `ext4.img` 样例镜像复制进 initramfs `/mnt`，用于手工挂载验证
+- ⚠️ 默认镜像当前仍是只读验证口径，更完整 ABI/写路径仍在 `v0.3.x/v0.4`
+
+**2026-03-17 - v0.3.0 主链路推进**
+- ✅ FAT32 只读后端已接入，支持目录遍历、文件读取与 `test fs fat32`
+- ✅ ext4 只读后端已接入，支持基础 extent 文件读取与 `test fs ext4`
+- ✅ 启动阶段会自动扫描 `virtio-blk` 分区，并记录可挂载 source
+- ✅ `execve`/bootstrap 已通过 VFS 路径读取 ELF，初始用户栈补齐最小 `argv/envp/auxv`
+- ⚠️ 当时默认运行盘仍为空白镜像，当前该口径已被“手工 mount 样例镜像”取代
+- ⚠️ FAT32/ext4 与 auxv 仍是最小实现，完整能力继续留在 `v0.3.1/v0.3.2/v0.4`
+
+**2026-03-16 - 状态口径校正**
+- ✅ 启动横幅版本号与当前发布口径对齐为 `v0.2.0`
+- ✅ 明确 `v0.3` 当前仅完成前置 bring-up：`virtio-blk`、`MBR/GPT` 基础解析、最小 `VFS mount/path`、`initramfs` rootfs、以及最小文件/目录 syscall 子集
+- ⚠️ `FAT32/ext4` 只读主链路、磁盘/VFS 主链路 `execve`、`argv/envp/auxv` 仍未完成，继续作为 `v0.3.0` 阻塞项
+- ⚠️ `net/security/virt` 当前仍以 skeleton/`NotSupported` 占位为主，不计入运行时完成功能
+
 **2026-03-02 - v0.2.0 正式发布**
 - ✅ 全量回归测试通过（44 项 [OK]）
 - ✅ 所有 Batch 1-9 验收条件满足
@@ -145,6 +177,12 @@ january_os 当前开发状态与功能完成情况。
 > 当前运行时支持口径：
 > - `x86_64` 是唯一可构建并验证的启动主线。
 > - `aarch64` / `riscv64` 目前保留目录与接口骨架，用于后续移植，不应视为已支持运行时。
+>
+> 当前功能成熟度口径：
+> - 已落地的 `v0.3` 主链路能力：`virtio-blk` 基础读写、`MBR/GPT` 基础解析、单命名空间 `VFS mount/path`、`initramfs` rootfs、FAT32/ext4 只读后端、`lseek/getdents64/dup/dup2/fcntl/chdir/getcwd` 最小子集、以及基于 VFS 的 `execve` + 最小 `argv/envp/auxv`。
+> - 默认构建产物现在已包含非空 FAT32 数据盘镜像，并在 initramfs `/mnt` 预置 `fat32.img` / `ext4.img` 样例镜像，可通过 `ksh` 手工 `mount` 后验证“镜像/磁盘 → 文件系统 → ELF 执行”链路。
+> - 余下 `statfs/fstatfs/procfs`、更完整 auxv/ABI、以及更完整挂载/loop 写路径仍作为 `v0.3.x/v0.4` 偿债项继续推进。
+> - `net/security/virt` 目录已完成骨架收敛，但默认不代表运行能力已完成。
 
 ---
 
@@ -281,14 +319,14 @@ january_os 当前开发状态与功能完成情况。
 ## 计划中 📋
 
 ### 文件系统 (v0.3.0)
-- VFS 虚拟文件系统
-- ext4 / FAT32 支持
+- VFS 虚拟文件系统（已最小落地）
+- ext4 / FAT32 支持（已只读落地，待增强与真实磁盘镜像接入）
 - procfs / sysfs
-- 文件描述符管理
-- 目录操作
+- 文件描述符管理（已最小落地）
+- 目录操作（已最小落地）
 
 ### 用户空间基础 (v0.3.0)
-- **ELF 加载器** - 加载和执行 ELF 二进制文件
+- **ELF 加载器** - 已支持从 VFS 路径加载 ELF，待补动态链接与完整 ABI
 - **动态链接器** - 共享库支持 (.so)
 - **C 库移植** - musl libc 或 glibc 子集
 - **用户程序** - 基础 shell 和工具

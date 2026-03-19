@@ -2,6 +2,7 @@ use crate::{drivers, fs, interrupt, task, warn};
 use alloc::string::String;
 use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
+const DEFAULT_BOOT_INIT_PATH: &str = crate::boot::DEFAULT_INITRD_COMMAND;
 const SESSION_STATE_IDLE: u8 = 0;
 const SESSION_STATE_STARTING: u8 = 1;
 const SESSION_STATE_RUNNING: u8 = 2;
@@ -34,8 +35,15 @@ fn exec_current_user_program(path: &str) -> Result<(), i32> {
         return Err(crate::errno::ESRCH);
     }
 
+    let auxv = task::proc::exec::minimal_auxv(&load_plan);
     let stack_rsp =
-        task::setup_initial_user_stack(load_plan.stack_top, load_plan.stack_pages, &[path], &[])?;
+        task::setup_initial_user_stack(
+            load_plan.stack_top,
+            load_plan.stack_pages,
+            &[path],
+            &[],
+            auxv.as_slice(),
+        )?;
     let frame = task::arch::build_user_enter_frame(load_plan.entry, stack_rsp);
     unsafe {
         task::arch::enter_user_mode_iret(&frame);
@@ -47,6 +55,14 @@ fn session_path() -> String {
         .lock()
         .clone()
         .unwrap_or_else(|| String::from("/bin/sh"))
+}
+
+fn resolve_boot_user_program(path: &str) -> String {
+    let requested = path.trim();
+    if requested.is_empty() {
+        return String::from(DEFAULT_BOOT_INIT_PATH);
+    }
+    String::from(requested)
 }
 
 fn finish_supervisor(state: u8, exit_code: i32) -> ! {
@@ -183,8 +199,9 @@ fn launch_user_session(path: &str, mode: u8) -> bool {
 }
 
 pub(super) fn run_boot_user_init(path: &str) -> ! {
-    if !launch_user_session(path, SESSION_MODE_FATAL_IF_EXITED) {
-        panic!("failed to launch init {}", path);
+    let resolved = resolve_boot_user_program(path);
+    if !launch_user_session(resolved.as_str(), SESSION_MODE_FATAL_IF_EXITED) {
+        panic!("failed to launch init {}", resolved);
     }
     run_scheduler_loop();
 }

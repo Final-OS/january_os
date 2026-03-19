@@ -79,6 +79,12 @@ pub fn syscall_table() -> &'static [SyscallDef];
 - `kernel/src/fs/syscall/pipe.rs`：pipe、pipe2、ioctl ABI
 - `kernel/src/fs/syscall/poll.rs`：poll、select ABI
 
+补充口径：
+
+- 当前还没有通用 `mount(2)` / `umount(2)` syscall
+- 文件系统挂载生命周期目前仍由 `ksh` 内建 `mount/umount/remount` 承接
+- `open/read/getdents64/chdir/getcwd` 已可透过 VFS 访问手工挂载的 FAT32/ext4 后端
+
 ### `mm::syscall`
 
 负责：`mmap/munmap/mprotect/brk`。共享用户缓冲区/用户结构体/用户 C 字符串读写校验统一由 `kernel/src/uaccess.rs` 提供。
@@ -93,6 +99,11 @@ pub fn syscall_table() -> &'static [SyscallDef];
 - `kernel/src/task/proc/`：真实进程语义与地址空间/调度协作
 - `kernel/src/task/syscall/wait.rs`：`wait4` ABI 解码与结果写回
 - `kernel/src/task/syscall/signal.rs`：`rt_sig*` ABI 入口
+
+`execve` 当前补充口径：
+
+- 镜像读取来源已切换到 VFS 路径，而不是旧的静态文件注册表
+- 用户栈已写入最小 `argv/envp/auxv`，但 `AT_RANDOM`、`AT_EXECFN` 等扩展项仍未提供
 
 ## 当前边界原则
 

@@ -13,10 +13,16 @@ use crate::fs::api::FsError;
 pub struct MountEntry {
     pub target: String,
     pub fs_name: String,
+    pub source: Option<String>,
+}
+
+struct MountRecord {
+    fs: Arc<dyn FileSystem>,
+    source: Option<String>,
 }
 
 struct MountTable {
-    mounts: BTreeMap<String, Arc<dyn FileSystem>>,
+    mounts: BTreeMap<String, MountRecord>,
 }
 
 impl MountTable {
@@ -27,10 +33,18 @@ impl MountTable {
     }
 
     fn mount_root(&mut self, fs: Arc<dyn FileSystem>) {
-        self.mounts.insert(String::from("/"), fs);
+        self.mounts.insert(
+            String::from("/"),
+            MountRecord { fs, source: None },
+        );
     }
 
-    fn mount(&mut self, target: &str, fs: Arc<dyn FileSystem>) -> Result<(), FsError> {
+    fn mount(
+        &mut self,
+        target: &str,
+        fs: Arc<dyn FileSystem>,
+        source: Option<&str>,
+    ) -> Result<(), FsError> {
         let normalized = normalize_path("/", target)?;
         if normalized == "/" {
             self.mount_root(fs);
@@ -39,7 +53,13 @@ impl MountTable {
         if self.mounts.contains_key(&normalized) {
             return Err(FsError::Busy);
         }
-        self.mounts.insert(normalized, fs);
+        self.mounts.insert(
+            normalized,
+            MountRecord {
+                fs,
+                source: source.map(String::from),
+            },
+        );
         Ok(())
     }
 
@@ -57,7 +77,7 @@ impl MountTable {
     fn resolve(&self, path: &str) -> Option<(String, Arc<dyn FileSystem>)> {
         let normalized = normalize_path("/", path).ok()?;
         let mut best: Option<(&str, Arc<dyn FileSystem>)> = None;
-        for (target, fs) in self.mounts.iter() {
+        for (target, record) in self.mounts.iter() {
             if target == "/"
                 || normalized == *target
                 || (normalized.starts_with(target.as_str())
@@ -69,7 +89,7 @@ impl MountTable {
             {
                 match best {
                     Some((old, _)) if old.len() >= target.len() => {}
-                    _ => best = Some((target.as_str(), fs.clone())),
+                    _ => best = Some((target.as_str(), record.fs.clone())),
                 }
             }
         }
@@ -78,10 +98,11 @@ impl MountTable {
 
     fn snapshot(&self) -> Vec<MountEntry> {
         let mut out = Vec::new();
-        for (target, fs) in self.mounts.iter() {
+        for (target, record) in self.mounts.iter() {
             out.push(MountEntry {
                 target: target.clone(),
-                fs_name: String::from(fs.name()),
+                fs_name: String::from(record.fs.name()),
+                source: record.source.clone(),
             });
         }
         out
@@ -95,7 +116,15 @@ pub fn mount_root(fs: Arc<dyn FileSystem>) {
 }
 
 pub fn mount_fs(target: &str, fs: Arc<dyn FileSystem>) -> Result<(), FsError> {
-    MOUNT_TABLE.lock().mount(target, fs)
+    MOUNT_TABLE.lock().mount(target, fs, None)
+}
+
+pub fn mount_fs_with_source(
+    target: &str,
+    source: &str,
+    fs: Arc<dyn FileSystem>,
+) -> Result<(), FsError> {
+    MOUNT_TABLE.lock().mount(target, fs, Some(source))
 }
 
 pub fn umount_fs(target: &str) -> Result<(), FsError> {

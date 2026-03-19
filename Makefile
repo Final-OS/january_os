@@ -2,13 +2,14 @@
 # Configuration: os_cfg.toml + vm_cfg.toml
 # Tools: tools/cfg + tools/vmcfg
 
-.PHONY: all build build-boot build-kernel build-userland build-tools run run-gui debug prepare-virtio-blk prepare-initramfs clean config vm-config help iso install-deps
+.PHONY: all build build-boot build-kernel build-userland build-tools run run-gui run-ksh run-gui-ksh debug debug-ksh prepare-virtio-blk prepare-initramfs clean config vm-config help iso install-deps
 
 # ==============================================================================
 # 工具路径
 # ==============================================================================
 ROOT_DIR     := $(shell pwd)
 OS_CFG_PATH ?= $(ROOT_DIR)/os_cfg.toml
+BASE_OS_CFG_PATH ?= $(ROOT_DIR)/os_cfg.toml
 VM_CFG_PATH ?= $(ROOT_DIR)/vm_cfg.toml
 BUILD_DIR    := $(ROOT_DIR)/target
 KERNEL_DIR   := $(ROOT_DIR)/kernel
@@ -102,6 +103,13 @@ USERLAND_BINS = init sh ls cat pwd echo forktest
 USERLAND_STAMP = $(USERLAND_TARGET_DIR)/.$(KERNEL_TARGET)-release.stamp
 VIRTIO_BLK_IMG = $(BUILD_DIR)/virtio-blk.img
 VIRTIO_BLK_SIZE = 64M
+VIRTIO_BLK_STAGE = $(BUILD_DIR)/virtio-blk-root
+VIRTIO_BLK_PART_START = 2048
+VIRTIO_BLK_PART_OFFSET = 1048576
+SAMPLE_FS_DIR = $(BUILD_DIR)/sample-fs
+SAMPLE_FAT32_IMG = $(SAMPLE_FS_DIR)/fat32.img
+SAMPLE_EXT4_IMG = $(SAMPLE_FS_DIR)/ext4.img
+KSH_OS_CFG = $(BUILD_DIR)/os_cfg.ksh.toml
 BOOT_SOURCES := $(shell find $(BOOT_DIR) -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'build.rs' \))
 KERNEL_SOURCES := $(shell find $(KERNEL_DIR)/src $(KERNEL_DIR)/arch/$(ARCH) -type f ! -path '$(GENERATED_DIR)/*' ! -name 'trampoline.bin')
 USERLAND_SOURCES := $(shell find $(USERLAND_DIR) -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name '*.ld' \))
@@ -173,7 +181,7 @@ $(USERLAND_STAMP): $(USERLAND_SOURCES)
 	@mkdir -p $(dir $@)
 	@touch $@
 
-$(INITRAMFS_CPIO): $(MKINITRAMFS) $(USERLAND_STAMP) $(INITRAMFS_SOURCES)
+$(INITRAMFS_CPIO): Makefile $(MKINITRAMFS) $(USERLAND_STAMP) $(INITRAMFS_SOURCES)
 	@mkdir -p $(BUILD_DIR)
 	@rm -rf $(INITRAMFS_STAGE)
 	@mkdir -p $(INITRAMFS_STAGE)
@@ -184,13 +192,33 @@ $(INITRAMFS_CPIO): $(MKINITRAMFS) $(USERLAND_STAMP) $(INITRAMFS_SOURCES)
 			cp $(USERLAND_TARGET_DIR)/$(KERNEL_TARGET)/release/$$bin $(INITRAMFS_STAGE)/bin/$$bin; \
 		done; \
 	fi
+	@mkdir -p $(SAMPLE_FS_DIR) $(INITRAMFS_STAGE)/mnt
+	@printf 'january_os sample filesystem image\nmanual mount required\n' > $(SAMPLE_FS_DIR)/README.TXT
+	@printf 'hello from sample filesystem image\n' > $(SAMPLE_FS_DIR)/HELLO.TXT
+	@printf 'long filename sample\n' > $(SAMPLE_FS_DIR)/LONG-FILE.TXT
+	@rm -f $(SAMPLE_FAT32_IMG)
+	@truncate -s 16M $(SAMPLE_FAT32_IMG)
+	@mkfs.fat -F 32 $(SAMPLE_FAT32_IMG) >/dev/null
+	@mcopy -i $(SAMPLE_FAT32_IMG) $(USERLAND_TARGET_DIR)/$(KERNEL_TARGET)/release/hello ::/HELLO.ELF >/dev/null
+	@mcopy -i $(SAMPLE_FAT32_IMG) $(SAMPLE_FS_DIR)/README.TXT ::/README.TXT >/dev/null
+	@mcopy -i $(SAMPLE_FAT32_IMG) $(SAMPLE_FS_DIR)/HELLO.TXT ::/HELLO.TXT >/dev/null
+	@mcopy -i $(SAMPLE_FAT32_IMG) $(SAMPLE_FS_DIR)/LONG-FILE.TXT ::/LONG-FILE.TXT >/dev/null
+	@rm -f $(SAMPLE_EXT4_IMG)
+	@truncate -s 32M $(SAMPLE_EXT4_IMG)
+	@mkfs.ext4 -q -F -b 4096 $(SAMPLE_EXT4_IMG) >/dev/null
+	@printf 'write %s /HELLO.ELF\nwrite %s /README.TXT\nwrite %s /HELLO.TXT\nwrite %s /LONG-FILE.TXT\n' \
+		'$(USERLAND_TARGET_DIR)/$(KERNEL_TARGET)/release/hello' \
+		'$(SAMPLE_FS_DIR)/README.TXT' \
+		'$(SAMPLE_FS_DIR)/HELLO.TXT' \
+		'$(SAMPLE_FS_DIR)/LONG-FILE.TXT' > $(SAMPLE_FS_DIR)/ext4.debugfs
+	@debugfs -w -f $(SAMPLE_FS_DIR)/ext4.debugfs $(SAMPLE_EXT4_IMG) >/dev/null 2>&1
+	@cp $(SAMPLE_FAT32_IMG) $(INITRAMFS_STAGE)/mnt/fat32.img
+	@cp $(SAMPLE_EXT4_IMG) $(INITRAMFS_STAGE)/mnt/ext4.img
 	@$(MKINITRAMFS) $(INITRAMFS_CPIO) --root $(INITRAMFS_STAGE)
 
-build-boot: $(BOOT_EFI)
-
-$(BOOT_EFI): $(CFG) $(ROOT_DIR)/Cargo.toml $(ROOT_DIR)/Cargo.lock $(OS_CFG_PATH) $(BOOT_SOURCES)
+build-boot: $(CFG) $(ROOT_DIR)/Cargo.toml $(ROOT_DIR)/Cargo.lock $(OS_CFG_PATH) $(BOOT_SOURCES)
 	@echo "==> Building bootloader ($(BOOT_TARGET))..."
-	@CARGO_TARGET_DIR=$(BUILD_DIR) cargo build --release --target $(BOOT_TARGET) -p january_os-boot-$(ARCH)
+	@OS_CFG_PATH=$(OS_CFG_PATH) CARGO_TARGET_DIR=$(BUILD_DIR) cargo build --release --target $(BOOT_TARGET) -p january_os-boot-$(ARCH)
 
 build-kernel: $(KERNEL_BIN)
 
@@ -231,25 +259,54 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 # ============================================================================== 
 # 运行目标 (纯串口模式)
 # ============================================================================== 
-prepare-virtio-blk:
+prepare-virtio-blk: Makefile $(USERLAND_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	@rm -f $(VIRTIO_BLK_IMG)
 	@truncate -s $(VIRTIO_BLK_SIZE) $(VIRTIO_BLK_IMG)
-	@echo "==> Created virtio-blk image: $(VIRTIO_BLK_IMG) ($(VIRTIO_BLK_SIZE))"
+	@if [ "$(ARCH)" != "x86_64" ]; then \
+		echo "==> Created blank virtio-blk image for ARCH=$(ARCH): $(VIRTIO_BLK_IMG) ($(VIRTIO_BLK_SIZE))"; \
+		exit 0; \
+	fi
+	@rm -rf $(VIRTIO_BLK_STAGE)
+	@mkdir -p $(VIRTIO_BLK_STAGE)
+	@printf 'january_os default data disk\nmanual mount required\nsample ELF: HELLO.ELF = userland/hello\n' > $(VIRTIO_BLK_STAGE)/README.TXT
+	@printf 'hello from default FAT32 data disk\n' > $(VIRTIO_BLK_STAGE)/HELLO.TXT
+	@printf 'long filename sample\n' > $(VIRTIO_BLK_STAGE)/LONG-FILE.TXT
+	@cp $(USERLAND_TARGET_DIR)/$(KERNEL_TARGET)/release/hello $(VIRTIO_BLK_STAGE)/HELLO.ELF
+	@printf 'label: dos\nunit: sectors\n\n$(VIRTIO_BLK_PART_START),,c,*\n' | sfdisk $(VIRTIO_BLK_IMG) >/dev/null
+	@mkfs.fat -F 32 --offset=$(VIRTIO_BLK_PART_START) $(VIRTIO_BLK_IMG) >/dev/null
+	@for file in $(VIRTIO_BLK_STAGE)/*; do \
+		name=$$(basename $$file); \
+		mcopy -i $(VIRTIO_BLK_IMG)@@$(VIRTIO_BLK_PART_OFFSET) $$file ::/$$name >/dev/null; \
+	done
+	@echo "==> Created virtio-blk image: $(VIRTIO_BLK_IMG) ($(VIRTIO_BLK_SIZE), MBR + FAT32 sample data image)"
+
+$(KSH_OS_CFG): $(BASE_OS_CFG_PATH)
+	@mkdir -p $(BUILD_DIR)
+	@sed 's#^initrd_command = .*#initrd_command = "ksh"#' $(BASE_OS_CFG_PATH) > $@
 
 run: $(VMCFG) build prepare-virtio-blk
 	@echo "==> $(QEMU_CMD): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, CPU='$(QEMU_CPU)', KVM=$(if $(USE_KVM),on,off), NUMA=$(if $(strip $(QEMU_NUMA_ARGS)),on,off)"
 	@echo "==> Serial console (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -nographic
 
+run-ksh: $(KSH_OS_CFG)
+	@$(MAKE) BASE_OS_CFG_PATH=$(BASE_OS_CFG_PATH) OS_CFG_PATH=$(KSH_OS_CFG) run
+
 run-gui: $(VMCFG) build prepare-virtio-blk
 	@echo "==> $(QEMU_CMD): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, CPU='$(QEMU_CPU)', KVM=$(if $(USE_KVM),on,off), NUMA=$(if $(strip $(QEMU_NUMA_ARGS)),on,off)"
 	@echo "==> GUI console (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -serial stdio
 
+run-gui-ksh: $(KSH_OS_CFG)
+	@$(MAKE) BASE_OS_CFG_PATH=$(BASE_OS_CFG_PATH) OS_CFG_PATH=$(KSH_OS_CFG) run-gui
+
 debug: $(VMCFG) build prepare-virtio-blk
 	@echo "==> GDB server on :1234 (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -nographic -s -S
+
+debug-ksh: $(KSH_OS_CFG)
+	@$(MAKE) BASE_OS_CFG_PATH=$(BASE_OS_CFG_PATH) OS_CFG_PATH=$(KSH_OS_CFG) debug
 
 # ==============================================================================
 # 清理
@@ -259,6 +316,9 @@ clean:
 	@rm -rf $(ESP_DIR) $(KERNEL_BIN) $(KERNEL_DIR)/src/generated
 	@rm -f $(INITRAMFS_CPIO)
 	@rm -rf $(INITRAMFS_STAGE)
+	@rm -rf $(VIRTIO_BLK_STAGE)
+	@rm -f $(VIRTIO_BLK_IMG)
+	@rm -f $(KSH_OS_CFG)
 	@rm -f $(KERNEL_DIR)/src/smp/arch/x86_64/trampoline.bin
 	@rm -rf $(TOOLS_BIN) /tmp/january_os_tools
 
@@ -355,10 +415,13 @@ help:
 	@echo "Run:"
 	@echo "  make run           - Run in QEMU (serial console)"
 	@echo "  make run-gui       - Run in QEMU (GUI console)"
+	@echo "  make run-ksh       - Run in QEMU and boot directly into kernel shell"
+	@echo "  make run-gui-ksh   - GUI run and boot directly into kernel shell"
 	@echo "  edit vm_cfg.toml   - Set qemu.cpu / qemu.numa_args / qemu.extra_args"
 	@echo ""
 	@echo "Debug:"
 	@echo "  make debug         - Run with GDB server (:1234)"
+	@echo "  make debug-ksh     - Debug boot directly into kernel shell"
 	@echo ""
 	@echo "Utility:"
 	@echo "  make config        - Show current kernel configuration (os_cfg.toml)"

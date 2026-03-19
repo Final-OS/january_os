@@ -80,10 +80,19 @@ pub struct ExecLoadSegmentPlan {
 pub struct ExecLoadPlan {
     pub entry: u64,
     pub image_len: usize,
+    pub phdr_addr: u64,
+    pub phentsize: u16,
+    pub phnum: u16,
     pub segments: Vec<ExecLoadSegmentPlan>,
     pub segment_pages: u64,
     pub stack_top: u64,
     pub stack_pages: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExecAuxEntry {
+    pub key: usize,
+    pub value: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -134,6 +143,11 @@ struct ExecMmLayoutSnapshot {
     mmap_legacy_base: u64,
 }
 
+pub struct ExecVmaRestorePoint {
+    layout: ExecMmLayoutSnapshot,
+    user_vmas: Vec<ExecVmaPlan>,
+}
+
 #[inline]
 unsafe fn write_user_bytes(dst: u64, src: &[u8]) -> Result<(), i32> {
     if src.is_empty() {
@@ -167,6 +181,7 @@ pub fn setup_initial_user_stack(
     stack_pages: u64,
     argv: &[&str],
     envp: &[&str],
+    auxv: &[ExecAuxEntry],
 ) -> Result<u64, i32> {
     if stack_pages == 0 {
         return Err(EINVAL);
@@ -210,11 +225,24 @@ pub fn setup_initial_user_stack(
 
     sp &= !0xFu64;
     let word = core::mem::size_of::<usize>() as u64;
-    let planned_pushes = argv_ptrs
-        .len()
-        .saturating_add(envp_ptrs.len())
-        .saturating_add(3);
-    if planned_pushes % 2 == 0 {
+    let mut words: Vec<usize> = Vec::new();
+    words.push(argv.len());
+    for ptr in argv_ptrs.iter().copied() {
+        words.push(ptr as usize);
+    }
+    words.push(0);
+    for ptr in envp_ptrs.iter().copied() {
+        words.push(ptr as usize);
+    }
+    words.push(0);
+    for entry in auxv.iter().copied() {
+        words.push(entry.key);
+        words.push(entry.value);
+    }
+    words.push(0);
+    words.push(0);
+
+    if words.len() % 2 == 0 {
         sp = sp.checked_sub(word).ok_or(E2BIG)?;
         if sp < stack_bottom {
             return Err(E2BIG);
@@ -227,11 +255,6 @@ pub fn setup_initial_user_stack(
         }
         unsafe { write_user_usize(sp, value) }
     };
-
-    push(0)?;
-    for ptr in envp_ptrs.iter().rev() {
-        push(*ptr as usize)?;
-    }
     let env_start = envp_ptrs.first().copied().unwrap_or(0);
     let env_end = envp_ptrs
         .iter()
@@ -239,11 +262,6 @@ pub fn setup_initial_user_stack(
         .last()
         .map(|(ptr, text)| ptr.saturating_add(text.len() as u64 + 1))
         .unwrap_or(0);
-
-    push(0)?;
-    for ptr in argv_ptrs.iter().rev() {
-        push(*ptr as usize)?;
-    }
     let arg_start = argv_ptrs.first().copied().unwrap_or(0);
     let arg_end = argv_ptrs
         .iter()
@@ -251,8 +269,9 @@ pub fn setup_initial_user_stack(
         .last()
         .map(|(ptr, text)| ptr.saturating_add(text.len() as u64 + 1))
         .unwrap_or(0);
-
-    push(argv.len())?;
+    for value in words.iter().rev().copied() {
+        push(value)?;
+    }
 
     let mm_ptr = crate::task::current_mm_ptr();
     if !mm_ptr.is_null() {
@@ -265,6 +284,37 @@ pub fn setup_initial_user_stack(
     }
 
     Ok(sp)
+}
+
+pub fn minimal_auxv(plan: &ExecLoadPlan) -> [ExecAuxEntry; 5] {
+    const AT_PHDR: usize = 3;
+    const AT_PHENT: usize = 4;
+    const AT_PHNUM: usize = 5;
+    const AT_PAGESZ: usize = 6;
+    const AT_ENTRY: usize = 9;
+
+    [
+        ExecAuxEntry {
+            key: AT_PAGESZ,
+            value: mm::PAGE_SIZE as usize,
+        },
+        ExecAuxEntry {
+            key: AT_PHDR,
+            value: plan.phdr_addr as usize,
+        },
+        ExecAuxEntry {
+            key: AT_PHENT,
+            value: plan.phentsize as usize,
+        },
+        ExecAuxEntry {
+            key: AT_PHNUM,
+            value: plan.phnum as usize,
+        },
+        ExecAuxEntry {
+            key: AT_ENTRY,
+            value: plan.entry as usize,
+        },
+    ]
 }
 
 #[inline]
@@ -392,7 +442,7 @@ fn restore_mm_layout(mm_state: &mut mm::Mm, snapshot: ExecMmLayoutSnapshot) {
     mm_state.mmap_legacy_base = snapshot.mmap_legacy_base;
 }
 
-pub fn install_current_exec_vmas(plan: &ExecLoadPlan) -> Result<(), i32> {
+pub fn install_current_exec_vmas(plan: &ExecLoadPlan) -> Result<ExecVmaRestorePoint, i32> {
     let mm_ptr = crate::task::current_mm_ptr();
     if mm_ptr.is_null() {
         return Err(ESRCH);
@@ -472,7 +522,45 @@ pub fn install_current_exec_vmas(plan: &ExecLoadPlan) -> Result<(), i32> {
     mm_state.mmap_base = mm::USER_MMAP_BASE;
     mm_state.mmap_legacy_base = mm::USER_MMAP_BASE;
 
-    Ok(())
+    Ok(ExecVmaRestorePoint {
+        layout: old_layout,
+        user_vmas: old_user_vmas,
+    })
+}
+
+pub fn restore_current_exec_vmas(restore: ExecVmaRestorePoint) {
+    let mm_ptr = crate::task::current_mm_ptr();
+    if mm_ptr.is_null() {
+        return;
+    }
+
+    let mm_state = unsafe { &mut *mm_ptr };
+    let current_user_vmas = {
+        let _guard = mm_state.lock.lock();
+        mm_state
+            .vma_tree
+            .iter()
+            .filter_map(|(start, end, info)| {
+                let start = start as u64;
+                let end = end as u64;
+                (end > mm::USER_SPACE_START && start < mm::USER_SPACE_END).then_some(ExecVmaPlan {
+                    start,
+                    end,
+                    info: info.clone(),
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for vma in current_user_vmas.iter() {
+        let _ = mm_state.remove_vma(vma.start);
+    }
+
+    for vma in restore.user_vmas.iter() {
+        let _ = mm_state.insert_vma(vma.start, vma.end, vma.info.clone());
+    }
+
+    restore_mm_layout(mm_state, restore.layout);
 }
 
 #[inline]
@@ -729,6 +817,7 @@ pub fn build_elf_load_plan(image: &[u8]) -> Result<ExecLoadPlan, i32> {
 
     let mut segments: Vec<ExecLoadSegmentPlan> = Vec::new();
     let mut segment_pages = 0u64;
+    let mut phdr_addr = None;
 
     for index in 0..phnum {
         let ph_offset = phoff
@@ -773,6 +862,11 @@ pub fn build_elf_load_plan(image: &[u8]) -> Result<ExecLoadPlan, i32> {
         let page_start = mm::page_align_down(seg_start);
         let page_end = mm::page_align_up(seg_end);
         let page_count = (page_end - page_start) / mm::PAGE_SIZE;
+
+        if header.e_phoff >= ph.p_offset && header.e_phoff < file_end {
+            let rel = header.e_phoff - ph.p_offset;
+            phdr_addr = ph.p_vaddr.checked_add(rel);
+        }
 
         let mut map_flags = mm::PTE_PRESENT | mm::PTE_USER;
         let writable = (ph.p_flags & PF_W) != 0;
@@ -826,10 +920,12 @@ pub fn build_elf_load_plan(image: &[u8]) -> Result<ExecLoadPlan, i32> {
     {
         return Err(EINVAL);
     }
-
     Ok(ExecLoadPlan {
         entry,
         image_len: image.len(),
+        phdr_addr: phdr_addr.unwrap_or(0),
+        phentsize: header.e_phentsize,
+        phnum: header.e_phnum,
         segments,
         segment_pages,
         stack_top: mm::USER_STACK_TOP,
@@ -976,4 +1072,40 @@ pub fn rollback_exec_mappings(mapped_pages: &[ExecMappedPage]) {
         }
         release_mapped_phys_page(page.phys);
     }
+}
+
+pub fn unmap_exec_mappings(mapped_pages: &[ExecMappedPage]) {
+    if mapped_pages.is_empty() {
+        return;
+    }
+
+    let pt_mgr = current_page_table_manager();
+    for page in mapped_pages.iter().rev() {
+        unsafe {
+            let _ = pt_mgr.unmap_page(page.virt);
+        }
+    }
+}
+
+pub fn remap_exec_mappings(mapped_pages: &[ExecMappedPage]) -> Result<(), i32> {
+    if mapped_pages.is_empty() {
+        return Ok(());
+    }
+
+    let pt_mgr = current_page_table_manager();
+    let mut remapped = 0usize;
+    for page in mapped_pages.iter() {
+        let mapped_ok = unsafe { pt_mgr.map_page(page.virt, page.phys, page.flags) };
+        if !mapped_ok {
+            for restored in mapped_pages[..remapped].iter().rev() {
+                unsafe {
+                    let _ = pt_mgr.unmap_page(restored.virt);
+                }
+            }
+            return Err(ENOMEM);
+        }
+        remapped += 1;
+    }
+
+    Ok(())
 }

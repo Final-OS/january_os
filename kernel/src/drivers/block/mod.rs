@@ -3,10 +3,12 @@
 use alloc::sync::Arc;
 use core::fmt;
 
+pub mod file_backed;
 pub mod gpt;
 pub mod mbr;
 pub mod partition;
 pub mod virtio_blk;
+pub use file_backed::ReadonlyFileBlockDevice;
 pub use partition::{
     discover_partitions, Partition, PartitionBlockDevice, PartitionError, PartitionTableKind,
     PartitionType, PartitionedDevice,
@@ -59,6 +61,50 @@ pub trait BlockDevice: Send + Sync {
 /// Block device manager
 pub struct BlockManager {
     devices: alloc::vec::Vec<Arc<dyn BlockDevice>>,
+}
+
+pub struct StaticBlockDeviceRef {
+    inner: &'static dyn BlockDevice,
+}
+
+impl StaticBlockDeviceRef {
+    pub fn new(inner: &'static dyn BlockDevice) -> Self {
+        Self { inner }
+    }
+}
+
+impl BlockDevice for StaticBlockDeviceRef {
+    fn block_size(&self) -> u32 {
+        self.inner.block_size()
+    }
+
+    fn block_count(&self) -> u64 {
+        self.inner.block_count()
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn read_block(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        self.inner.read_block(lba, buf)
+    }
+
+    fn write_block(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
+        self.inner.write_block(lba, buf)
+    }
+
+    fn flush(&self) -> Result<(), BlockError> {
+        self.inner.flush()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
+
+    fn is_removable(&self) -> bool {
+        self.inner.is_removable()
+    }
 }
 
 impl BlockManager {

@@ -1,7 +1,7 @@
 use crate::fs;
 use crate::{kprint, kprintln};
 
-const SHELL_FS_PID: usize = 0x5348_454c;
+pub(super) const SHELL_FS_PID: usize = 0x5348_454c;
 const O_RDONLY: u32 = 0;
 const DT_DIR: u8 = 4;
 const DT_REG: u8 = 8;

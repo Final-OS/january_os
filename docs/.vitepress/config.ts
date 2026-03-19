@@ -73,6 +73,14 @@ export default defineConfig({
                     ],
                 },
                 {
+                    text: "文件与进程 API",
+                    items: [
+                        { text: "fs/file", link: "/api/fs/file" },
+                        { text: "task/process", link: "/api/task/process" },
+                        { text: "syscall", link: "/api/syscall/syscall" },
+                    ],
+                },
+                {
                     text: "同步原语",
                     items: [
                         { text: "SpinLock", link: "/api/sync/spinlock" },
@@ -107,6 +115,10 @@ export default defineConfig({
                             text: "内存初始化",
                             link: "/implementation/memory-init",
                         },
+                        {
+                            text: "文件系统",
+                            link: "/implementation/fs",
+                        },
                         { text: "GDT/TSS", link: "/implementation/gdt" },
                         { text: "IDT/异常处理", link: "/implementation/idt" },
                         { text: "APIC", link: "/implementation/apic" },
@@ -127,6 +139,9 @@ export default defineConfig({
                     items: [
                         { text: "总体进度", link: "/progress/overview" },
                         { text: "v0.2 实施计划", link: "/progress/v0.2-plan" },
+                        { text: "v0.3 实施计划", link: "/progress/v0.3-plan" },
+                        { text: "路线图", link: "/progress/roadmap" },
+                        { text: "技术债务", link: "/progress/tech-debt" },
                     ],
                 },
             ],

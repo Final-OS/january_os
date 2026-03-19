@@ -1,5 +1,20 @@
 use super::*;
 
+fn restore_previous_exec_state(
+    previous_mappings: Vec<task::ExecMappedPage>,
+    vma_restore: Option<task::ExecVmaRestorePoint>,
+) -> Result<(), i32> {
+    if let Some(vma_restore) = vma_restore {
+        task::restore_current_exec_vmas(vma_restore);
+    }
+
+    task::remap_exec_mappings(&previous_mappings)?;
+    if task::set_current_exec_mappings(previous_mappings).is_none() {
+        return Err(ESRCH);
+    }
+    Ok(())
+}
+
 pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
     let path_ptr = args.arg0;
     let argv_ptr = args.arg1;
@@ -55,6 +70,11 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
     };
 
     let map_preview = task::preview_pt_load_mapping(&load_plan);
+    let previous_mappings = match task::take_current_exec_mappings() {
+        Some(mappings) => mappings,
+        None => return err(ESRCH),
+    };
+    task::unmap_exec_mappings(&previous_mappings);
 
     let staged_mappings = match task::stage_pt_load_mappings(image.as_slice(), &load_plan) {
         Ok(mapped) => mapped,
@@ -68,22 +88,12 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
                     map_preview.total_pages,
                 );
             }
+            if let Err(restore_errno) = restore_previous_exec_state(previous_mappings, None) {
+                return err(restore_errno);
+            }
             return err(errno);
         }
     };
-
-    if task::record_current_exec_request(path.as_str(), argv.len(), envp.len()).is_none() {
-        if crate::config::DEBUG_VERBOSE {
-            crate::kprintln!(
-                "\x1b[90m[diag]\x1b[0m[execve] current process missing while path={} argc={} envc={}",
-                path,
-                argv.len(),
-                envp.len()
-            );
-        }
-        task::rollback_exec_mappings(&staged_mappings);
-        return err(ESRCH);
-    }
 
     let argv0 = argv.first().map(|arg| arg.as_str()).unwrap_or("");
     let mapped_segment_pages = staged_mappings
@@ -129,10 +139,16 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
     }
 
     let staged_count = staged_mappings.len();
-    if let Err(errno) = task::install_current_exec_vmas(&load_plan) {
-        task::rollback_exec_mappings(&staged_mappings);
-        return err(errno);
-    }
+    let vma_restore = match task::install_current_exec_vmas(&load_plan) {
+        Ok(restore) => restore,
+        Err(errno) => {
+            task::rollback_exec_mappings(&staged_mappings);
+            if let Err(restore_errno) = restore_previous_exec_state(previous_mappings, None) {
+                return err(restore_errno);
+            }
+            return err(errno);
+        }
+    };
     let replaced_pages = match task::set_current_exec_mappings(staged_mappings) {
         Some(replaced) => replaced,
         None => {
@@ -142,6 +158,10 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
                     path,
                     staged_count,
                 );
+            }
+            if let Err(restore_errno) = restore_previous_exec_state(previous_mappings, Some(vma_restore))
+            {
+                return err(restore_errno);
             }
             return err(ESRCH);
         }
@@ -153,16 +173,37 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
         argv.iter().map(|arg| arg.as_str()).collect()
     };
     let envp_refs: Vec<&str> = envp.iter().map(|arg| arg.as_str()).collect();
+    let auxv = task::proc::exec::minimal_auxv(&load_plan);
 
     let user_rsp = match task::setup_initial_user_stack(
         load_plan.stack_top,
         load_plan.stack_pages,
         argv_refs.as_slice(),
         envp_refs.as_slice(),
+        auxv.as_slice(),
     ) {
         Ok(rsp) => rsp,
-        Err(errno) => return err(errno),
+        Err(errno) => {
+            let installed_mappings = task::take_current_exec_mappings().unwrap_or_default();
+            task::rollback_exec_mappings(&installed_mappings);
+            if let Err(restore_errno) =
+                restore_previous_exec_state(previous_mappings, Some(vma_restore))
+            {
+                return err(restore_errno);
+            }
+            return err(errno);
+        }
     };
+
+    if task::record_current_exec_request(path.as_str(), argv.len(), envp.len()).is_none() {
+        let installed_mappings = task::take_current_exec_mappings().unwrap_or_default();
+        task::rollback_exec_mappings(&installed_mappings);
+        if let Err(restore_errno) = restore_previous_exec_state(previous_mappings, Some(vma_restore))
+        {
+            return err(restore_errno);
+        }
+        return err(ESRCH);
+    }
     let user_frame = task::arch::build_user_enter_frame(load_plan.entry, user_rsp);
 
     if crate::config::DEBUG_VERBOSE {
