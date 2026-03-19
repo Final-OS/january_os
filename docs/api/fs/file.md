@@ -64,6 +64,21 @@ pub(crate) fn sys_select(args: &SyscallArgs) -> SyscallRet;
 - `fs::runtime::read_all_for_pid()` 已走 VFS 路径，`execve`/bootstrap 可直接从挂载文件系统读取 ELF
 - `fs::runtime::*` 与 `fs::backing::*` 兼容入口仍保留，供 `task/mm/shell/tests` 调用
 
+## v0.3.0 严格边界
+
+- `v0.3.0` 已完成的是最小主链路：`virtio-blk` 分区探测、只读 FAT32/ext4 挂载、VFS 路径解析、最小文件 syscall、以及从挂载文件系统读取 ELF
+- `v0.3.0` 未完成的是更完整生命周期与 ABI：通用 `mount(2)` / `umount(2)` syscall、用户态 `mount(8)`、可写 loop、完整挂载标志、`statfs/fstatfs/dup3`、更完整 `auxv`
+- 当前 `/` 仍固定为 `initramfs`；磁盘文件系统不是默认 rootfs，而是人工验证路径
+
+## 推荐验证方式
+
+- `make build`
+- `make run`
+- 在 shell 中执行 `mount`，确认可挂载 source 与 `/mnt/fat32.img`、`/mnt/ext4.img`
+- `mount -t fat32 <source-or-image> <target>` 后验证 `ls`、`cat`、`exec`
+- `mount -t ext4 <source-or-image> <target>` 后验证文件读取和 `exec`
+- 运行 `test vfs`、`test fs fat32`、`test fs ext4`
+
 ## 相关文档
 
 - [Syscall API](../syscall/syscall.md)

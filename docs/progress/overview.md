@@ -8,6 +8,13 @@ january_os 当前开发状态与功能完成情况。
 
 ## 最近更新 🆕
 
+**2026-03-19 - v0.3.0 严格口径审计**
+- ✅ 按冻结范围核对后，`v0.3.0` 主链路已经具备“块设备/分区 -> VFS -> FAT32/ext4 只读 -> ELF 执行”的最小可运行闭环
+- ✅ 代码与文档现在统一采用严格口径：`v0.3.0` 接近收口，但整个 `v0.3.x` 系列尚未完成
+- ⚠️ 当前 rootfs 仍固定为 `initramfs`，磁盘文件系统只作为手工 `mount` 验证路径，不应表述为“磁盘 rootfs 已完成”
+- ⚠️ `procfs/statfs/fstatfs/dup3/virtio-scsi` 以及更完整 mount/ABI 语义仍留在 `v0.3.1+`
+- 📋 `docs/progress/v0.3-plan.md` 新增发布阻塞项清单，作为 `v0.3.0` 收口验收基线
+
 **2026-03-18 - 挂载语义收口**
 - ✅ 默认启动回退为固定 `/bin/init`，不再自动执行磁盘上的样例 ELF
 - ✅ 启动阶段只探测可挂载分区 source，不再自动把 FAT32/ext4 挂到 `/mnt`
@@ -165,7 +172,7 @@ january_os 当前开发状态与功能完成情况。
 |------|------|----------|----------|
 | v0.1.0 | ✅ 已完成 | 内核基础、内存管理、中断、基础驱动 | 2026-Q1 |
 | v0.2.0 | ✅ 已完成 | 进程管理、调度器、系统调用、IPC/Sync | 2026-Q2 |
-| v0.3.0 | 🚧 进行中 | 块设备、VFS、FAT32/ext4、用户空间基础 | 2026-Q3 |
+| v0.3.0 | 🚧 收口中 | 块设备、VFS、FAT32/ext4、用户空间基础 | 2026-Q3 |
 | v0.4.0 | 📋 计划中 | 可写文件系统、syscall 150+、initramfs | 2026-Q4 |
 | v0.5.0 | 📋 计划中 | 网络栈基础、virtio-net、Socket API | 2027-Q1 |
 | v0.6.0 | 📋 计划中 | 网络栈完善、epoll、syscall 200+ | 2027-Q2 |
@@ -183,6 +190,7 @@ january_os 当前开发状态与功能完成情况。
 > - 默认构建产物现在已包含非空 FAT32 数据盘镜像，并在 initramfs `/mnt` 预置 `fat32.img` / `ext4.img` 样例镜像，可通过 `ksh` 手工 `mount` 后验证“镜像/磁盘 → 文件系统 → ELF 执行”链路。
 > - 余下 `statfs/fstatfs/procfs`、更完整 auxv/ABI、以及更完整挂载/loop 写路径仍作为 `v0.3.x/v0.4` 偿债项继续推进。
 > - `net/security/virt` 目录已完成骨架收敛，但默认不代表运行能力已完成。
+> - 严格表述应为：“`v0.3.0` 主链路已基本完成并进入收口；`v0.3.x` 未完成。”
 
 ---
 
@@ -280,12 +288,12 @@ january_os 当前开发状态与功能完成情况。
 - **系统调用表** - Linux ABI 兼容（300+ 系统调用定义）
 - **参数传递** - SyscallArgs 结构体
 - **已实现的系统调用**:
-  - read/open/close - 最小只读文件 I/O（静态后端）
-  - mmap/munmap - 匿名 + file-backed 最小路径（静态后端）
+  - open/read/close/lseek/getdents64/chdir/getcwd/dup/dup2/fcntl - 基于 VFS 的最小文件/目录 syscall 子集
+  - mmap/munmap - 匿名 + file-backed 最小路径
   - pipe/pipe2 - 最小管道语义（读写/关闭/错误路径）
   - getpid/getppid/gettid - 进程/线程 ID 查询
   - exit/exit_group - 进程退出
-  - execve - ELF 加载、PT_LOAD 映射、ring3 切换（最小镜像后端）
+  - execve - ELF 加载、PT_LOAD 映射、ring3 切换（镜像读取已切换到 VFS 路径）
   - wait4 - 等待子进程（支持 PID/PGRP 过滤、WNOHANG/WUNTRACED/WCONTINUED、__WNOTHREAD/__WCLONE/__WALL、rusage 运行时统计）
   - write - 控制台输出 + pipe/fd 写路径
 
@@ -309,7 +317,7 @@ january_os 当前开发状态与功能完成情况。
 ### 系统调用扩展
 - [x] fork/clone - 进程创建（最小语义）
 - [x] execve - 程序执行（最小闭环）
-- [ ] 文件 I/O 系统调用（已完成 `open/read/close` 子集）
+- [ ] 文件 I/O 系统调用（`v0.3.0` 已完成 VFS 主链路最小子集，完整 POSIX 语义继续推进）
 - [ ] 内存管理系统调用（已完成匿名 `mmap/munmap` 子集）
 - [ ] 网络系统调用（socket/bind/listen）
 - [ ] syscall 全量完备与 Linux 兼容收口（目标版本：`v1.0.0`）
@@ -320,8 +328,8 @@ january_os 当前开发状态与功能完成情况。
 
 ### 文件系统 (v0.3.0)
 - VFS 虚拟文件系统（已最小落地）
-- ext4 / FAT32 支持（已只读落地，待增强与真实磁盘镜像接入）
-- procfs / sysfs
+- ext4 / FAT32 支持（已只读落地；当前通过手工挂载分区或 `/mnt/*.img` 验证）
+- procfs / sysfs（下放 `v0.3.1/0.3.2`）
 - 文件描述符管理（已最小落地）
 - 目录操作（已最小落地）
 

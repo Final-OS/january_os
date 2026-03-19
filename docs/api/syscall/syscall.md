@@ -84,6 +84,7 @@ pub fn syscall_table() -> &'static [SyscallDef];
 - 当前还没有通用 `mount(2)` / `umount(2)` syscall
 - 文件系统挂载生命周期目前仍由 `ksh` 内建 `mount/umount/remount` 承接
 - `open/read/getdents64/chdir/getcwd` 已可透过 VFS 访问手工挂载的 FAT32/ext4 后端
+- `statfs/fstatfs/dup3/fchdir/open flags/access` 仍不在 `v0.3.0` 完成口径内
 
 ### `mm::syscall`
 
@@ -104,6 +105,17 @@ pub fn syscall_table() -> &'static [SyscallDef];
 
 - 镜像读取来源已切换到 VFS 路径，而不是旧的静态文件注册表
 - 用户栈已写入最小 `argv/envp/auxv`，但 `AT_RANDOM`、`AT_EXECFN` 等扩展项仍未提供
+- 当前 `/bin/init` 与 `ksh` 都依赖这条最小 `execve` 主链路；动态链接、`PT_INTERP`、TLS 不属于 `v0.3.0`
+
+## v0.3.0 发布前最小验证
+
+- `make build`
+- `make run`
+- `test vfs`
+- `test fs fat32`
+- `test fs ext4`
+- `test task usermode`
+- 手工 `mount` FAT32/ext4 source 或 `/mnt/*.img`，并执行挂载后的 `HELLO.ELF`
 
 ## 当前边界原则
 
