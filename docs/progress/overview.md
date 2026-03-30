@@ -8,11 +8,36 @@ january_os 当前开发状态与功能完成情况。
 
 ## 最近更新 🆕
 
+**2026-03-23 - virtio-scsi 最小链路落地**
+- ✅ 新增 `virtio-scsi-pci` 最小 PCI 驱动，支持 LUN0 容量探测与单块只读读取
+- ✅ 块层与文件系统磁盘发现现在会在 `virtio-blk` 不存在时回退到 `virtio-scsi`
+- ⚠️ 当前仅覆盖只读 LUN0 主链路；多 LUN、event/control queue 完整使用与写路径仍属后续增强
+
+**2026-03-23 - open flags/access 最小补齐**
+- ✅ `open` 现在接受只读主链路所需的 `O_CLOEXEC` / `O_DIRECTORY`
+- ✅ 新增最小 `access()`，当前按只读 VFS 语义处理存在性、读/执行检查，并对写访问返回只读拒绝
+- ⚠️ 更完整 `open` 标志（`O_CREAT/O_TRUNC/O_EXCL/O_RDWR` 等）与 `faccessat*` 仍留在后续阶段
+
+**2026-03-23 - dup3/fchdir 补齐**
+- ✅ 新增 `dup3(292)` / `fchdir(81)` syscall dispatch 与最小语义
+- ✅ 目录 fd 现在保留解析后的目录路径，`fchdir` 可把 cwd 切换回已打开目录；`dup3` 支持 `O_CLOEXEC`
+- ⚠️ 更完整 `dup3/open` 旗标语义与更广 ABI 收口仍留在后续阶段
+
+**2026-03-23 - statfs/fstatfs 补齐**
+- ✅ 新增 `statfs(138)` / `fstatfs(139)` syscall 入口与最小 ABI 输出结构
+- ✅ FAT32/ext4/initramfs/procfs 现可导出最小文件系统容量信息，`fstatfs` 可通过已打开 fd 回到所属挂载点
+- ⚠️ 更完整 ABI/权限/挂载语义仍留在后续阶段
+
+**2026-03-23 - procfs 基础落地**
+- ✅ 挂载最小 `procfs`，默认提供 `/proc/self`、`/proc/cpuinfo`、`/proc/meminfo`
+- ✅ `/proc/self` 会在路径解析阶段映射到当前 PID，对外可读取 `status` / `cmdline`
+- ⚠️ 更完整的 `/proc/[pid]/*` 视图仍留在后续阶段
+
 **2026-03-19 - v0.3.0 严格口径审计**
 - ✅ 按冻结范围核对后，`v0.3.0` 主链路已经具备“块设备/分区 -> VFS -> FAT32/ext4 只读 -> ELF 执行”的最小可运行闭环
 - ✅ 代码与文档现在统一采用严格口径：`v0.3.0` 接近收口，但整个 `v0.3.x` 系列尚未完成
 - ⚠️ 当前 rootfs 仍固定为 `initramfs`，磁盘文件系统只作为手工 `mount` 验证路径，不应表述为“磁盘 rootfs 已完成”
-- ⚠️ `procfs/statfs/fstatfs/dup3/virtio-scsi` 以及更完整 mount/ABI 语义仍留在 `v0.3.1+`
+- ⚠️ 更完整 mount/ABI 语义、动态链接与后续文件系统增强仍留在 `v0.3.1+`
 - 📋 `docs/progress/v0.3-plan.md` 新增发布阻塞项清单，作为 `v0.3.0` 收口验收基线
 
 **2026-03-18 - 挂载语义收口**

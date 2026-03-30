@@ -82,11 +82,7 @@ fn active_cpu_slots() -> usize {
 #[inline]
 fn runqueue_slot_index(cpu_id: usize) -> usize {
     let slots = active_cpu_slots();
-    if cpu_id < slots {
-        cpu_id
-    } else {
-        0
-    }
+    if cpu_id < slots { cpu_id } else { 0 }
 }
 
 #[inline]

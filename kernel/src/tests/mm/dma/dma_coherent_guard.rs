@@ -1,6 +1,6 @@
 use super::{fail, mm_step, pass};
 use crate::mm;
-use crate::mm::iommu::{dma_alloc_coherent, dma_coherent_guard_stats, dma_free_coherent, DmaAddr};
+use crate::mm::iommu::{DmaAddr, dma_alloc_coherent, dma_coherent_guard_stats, dma_free_coherent};
 
 pub(super) fn run() {
     const SIZE: usize = mm::PAGE_SIZE as usize;

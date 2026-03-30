@@ -6,9 +6,17 @@ pub fn run() {
     );
     match crate::virt::create_vm() {
         Err(crate::virt::error::VirtError::Unsupported) => {
-            kprintln!("[test/virt/vm] step=create-result expected=unsupported actual=unsupported location=virt::vm::lifecycle::create_vm");
+            kprintln!(
+                "[test/virt/vm] step=create-result expected=unsupported actual=unsupported location=virt::vm::lifecycle::create_vm"
+            );
         }
-        Ok(vm_id) => warn!("[test/virt/vm] step=create-result expected=unsupported actual=ok({:?}) location=virt::vm::lifecycle::create_vm", vm_id),
-        Err(err) => warn!("[test/virt/vm] step=create-result expected=unsupported actual={:?} location=virt::vm::lifecycle::create_vm", err),
+        Ok(vm_id) => warn!(
+            "[test/virt/vm] step=create-result expected=unsupported actual=ok({:?}) location=virt::vm::lifecycle::create_vm",
+            vm_id
+        ),
+        Err(err) => warn!(
+            "[test/virt/vm] step=create-result expected=unsupported actual={:?} location=virt::vm::lifecycle::create_vm",
+            err
+        ),
     }
 }

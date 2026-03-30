@@ -4,8 +4,8 @@
 // 减少 Zone 锁竞争，加速单页分配/释放
 // ============================================================================
 
-use super::page::{max_pfn, page_to_pfn, vmemmap_base_ptr, ListHead, Page, PageOwner};
-use super::zone::{get_zone, GfpFlags, Zone, ZoneType, NR_ZONES};
+use super::page::{ListHead, Page, PageOwner, max_pfn, page_to_pfn, vmemmap_base_ptr};
+use super::zone::{GfpFlags, NR_ZONES, Zone, ZoneType, get_zone};
 use crate::config;
 use crate::interrupt::local_apic_id;
 use crate::sync::IrqSpinLock;

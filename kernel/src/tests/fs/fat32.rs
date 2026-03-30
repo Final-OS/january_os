@@ -48,7 +48,8 @@ fn run_case() -> Result<(), alloc::string::String> {
     if &sub[..sub_n] != b"nested fat32\n" {
         return Err(format!("NEST.TXT mismatch: {:?}", &sub[..sub_n]));
     }
-    fs::runtime::close_for_pid(pid, sub_fd).map_err(|errno| format!("close nested errno={}", errno))?;
+    fs::runtime::close_for_pid(pid, sub_fd)
+        .map_err(|errno| format!("close nested errno={}", errno))?;
 
     let elf = fs::runtime::read_all_for_pid(pid, format!("{}/APP.ELF", mount).as_str())
         .map_err(|errno| format!("read APP.ELF errno={}", errno))?;

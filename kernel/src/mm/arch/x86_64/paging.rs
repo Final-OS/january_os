@@ -7,7 +7,7 @@
 use crate::config;
 use crate::interrupt;
 use crate::mm::buddy::{alloc_pages, free_page};
-use crate::mm::page::{max_pfn, page_to_pfn, pfn_to_page, PageFlags, PageOwner};
+use crate::mm::page::{PageFlags, PageOwner, max_pfn, page_to_pfn, pfn_to_page};
 use crate::mm::zone::GFP_KERNEL_ZERO;
 use crate::sync::{IrqSpinLock, SpinLock};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};

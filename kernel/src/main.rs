@@ -27,6 +27,7 @@ pub mod config {
 
 // 导入内核库模块
 mod arch;
+mod common;
 mod component;
 mod drivers;
 mod errno;
@@ -43,7 +44,6 @@ mod sync;
 mod syscall;
 mod task;
 mod tests;
-mod common;
 mod virt;
 
 // 新增模块

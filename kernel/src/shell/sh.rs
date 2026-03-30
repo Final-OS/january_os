@@ -470,13 +470,14 @@ fn execute_command(cmd: &[u8]) {
                 kprintln!("usage: exec <path>");
                 return;
             };
-            let path = match crate::fs::resolve_path_for_pid(super::coreutils::SHELL_FS_PID, path_input) {
-                Ok(path) => path,
-                Err(errno) => {
-                    kprintln!("exec: {} (errno={})", path_input, errno);
-                    return;
-                }
-            };
+            let path =
+                match crate::fs::resolve_path_for_pid(super::coreutils::SHELL_FS_PID, path_input) {
+                    Ok(path) => path,
+                    Err(errno) => {
+                        kprintln!("exec: {} (errno={})", path_input, errno);
+                        return;
+                    }
+                };
             match super::bootstrap::run_user_session_until_exit(path.as_str()) {
                 Some(exit_code) => {
                     kprintln!("exec: {} exited with code {}", path, exit_code);
@@ -559,7 +560,7 @@ fn execute_command(cmd: &[u8]) {
 
 fn print_mount_usage() {
     kprintln!("usage: mount");
-    kprintln!("usage: mount -t <fat32|ext4> <source> <target>");
+    kprintln!("usage: mount -t <fat32|ext4|procfs> <source> <target>");
     kprintln!("source can be a discovered block partition or an image path like /mnt/fat32.img");
 }
 
@@ -580,7 +581,10 @@ fn execute_mount_command(args: &[&str]) {
         for source in crate::fs::list_available_mount_sources() {
             kprintln!(
                 "  {} type {} start_lba={} blocks={}",
-                source.source, source.fs_type, source.start_lba, source.block_count
+                source.source,
+                source.fs_type,
+                source.start_lba,
+                source.block_count
             );
         }
         return;
@@ -594,7 +598,8 @@ fn execute_mount_command(args: &[&str]) {
     let fs_type = args[1];
     let source = args[2];
     let target_input = args[3];
-    let target = match crate::fs::resolve_path_for_pid(super::coreutils::SHELL_FS_PID, target_input) {
+    let target = match crate::fs::resolve_path_for_pid(super::coreutils::SHELL_FS_PID, target_input)
+    {
         Ok(path) => path,
         Err(errno) => {
             kprintln!("mount: {} (errno={})", target_input, errno);
@@ -614,7 +619,12 @@ fn execute_mount_command(args: &[&str]) {
         }
     }
 
-    match crate::fs::mount_source_for_pid(super::coreutils::SHELL_FS_PID, source, target.as_str(), fs_type) {
+    match crate::fs::mount_source_for_pid(
+        super::coreutils::SHELL_FS_PID,
+        source,
+        target.as_str(),
+        fs_type,
+    ) {
         Ok(()) => kprintln!("mount: {} mounted on {}", source, target),
         Err(errno) => kprintln!("mount: failed (errno={})", errno),
     }

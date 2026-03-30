@@ -5,7 +5,7 @@
 // ============================================================================
 
 use crate::interrupt::arch::x86_64::trap::idt::{InterruptFrame, InterruptFrameWithError};
-use crate::mm::fault::{handle_page_fault, FaultContext, FaultResult};
+use crate::mm::fault::{FaultContext, FaultResult, handle_page_fault};
 use core::arch::asm;
 
 // ============================================================================

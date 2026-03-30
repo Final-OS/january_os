@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 
 use crate::drivers::block::BlockDevice;
 use crate::fs::api::{DirEntry, FileType, FsError, Metadata};
+use crate::fs::runtime::manager::FsStatFs;
 use crate::fs::vfs::{FileSystem, Inode};
 
 const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
@@ -20,6 +21,10 @@ const EXT4_S_IFREG: u16 = 0x8000;
 pub struct Ext4FileSystem {
     device: Arc<dyn BlockDevice>,
     block_size: u32,
+    blocks_count: u64,
+    free_blocks_count: u64,
+    inodes_count: u64,
+    free_inodes_count: u64,
     inode_size: u16,
     inodes_per_group: u32,
     group_desc_size: u16,
@@ -68,13 +73,23 @@ impl Ext4FileSystem {
         }
 
         let log_block_size = le_u32(&superblock[24..28]);
-        let block_size = 1024u32.checked_shl(log_block_size).ok_or(FsError::InvalidInput)?;
+        let block_size = 1024u32
+            .checked_shl(log_block_size)
+            .ok_or(FsError::InvalidInput)?;
         if block_size != 4096 {
             return Err(FsError::NotSupported);
         }
 
         let inode_size = le_u16(&superblock[88..90]);
         let inodes_per_group = le_u32(&superblock[40..44]);
+        let blocks_lo = le_u32(&superblock[4..8]) as u64;
+        let free_blocks_lo = le_u32(&superblock[12..16]) as u64;
+        let free_inodes_lo = le_u32(&superblock[16..20]) as u64;
+        let blocks_hi = le_u32(&superblock[336..340]) as u64;
+        let free_blocks_hi = le_u32(&superblock[344..348]) as u64;
+        let blocks_count = blocks_lo | (blocks_hi << 32);
+        let free_blocks_count = free_blocks_lo | (free_blocks_hi << 32);
+        let inodes_count = le_u32(&superblock[0..4]) as u64;
         let desc_size = {
             let raw = le_u16(&superblock[254..256]);
             if raw == 0 { 32 } else { raw.max(32) }
@@ -87,6 +102,10 @@ impl Ext4FileSystem {
         Ok(Arc::new(Self {
             device,
             block_size,
+            blocks_count,
+            free_blocks_count,
+            inodes_count,
+            free_inodes_count: free_inodes_lo,
             inode_size,
             inodes_per_group,
             group_desc_size: desc_size,
@@ -105,11 +124,7 @@ impl Ext4FileSystem {
     fn read_group_desc(&self, group: u32) -> Result<Vec<u8>, FsError> {
         let offset = self.group_desc_block as usize * self.block_size as usize
             + group as usize * self.group_desc_size as usize;
-        read_bytes(
-            self.device.clone(),
-            offset,
-            self.group_desc_size as usize,
-        )
+        read_bytes(self.device.clone(), offset, self.group_desc_size as usize)
     }
 
     fn read_inode_raw(&self, ino: u32) -> Result<Vec<u8>, FsError> {
@@ -124,11 +139,7 @@ impl Ext4FileSystem {
             .checked_mul(self.block_size as usize)
             .and_then(|base| base.checked_add(index as usize * self.inode_size as usize))
             .ok_or(FsError::InvalidInput)?;
-        read_bytes(
-            self.device.clone(),
-            inode_offset,
-            self.inode_size as usize,
-        )
+        read_bytes(self.device.clone(), inode_offset, self.inode_size as usize)
     }
 
     fn read_inode(&self, ino: u32) -> Result<Ext4Node, FsError> {
@@ -220,7 +231,12 @@ impl Ext4FileSystem {
         for index in indices {
             let child = self.read_block(index.phys)?;
             let child_extents = self.extent_map_from_bytes(child.as_slice())?;
-            if child_extents.first().map(|extent| extent.logical).unwrap_or(index.logical) < index.logical {
+            if child_extents
+                .first()
+                .map(|extent| extent.logical)
+                .unwrap_or(index.logical)
+                < index.logical
+            {
                 return Err(FsError::InvalidInput);
             }
             out.extend(child_extents);
@@ -229,7 +245,12 @@ impl Ext4FileSystem {
         Ok(out)
     }
 
-    fn read_node_at(&self, node: &Ext4Node, offset: usize, out: &mut [u8]) -> Result<usize, FsError> {
+    fn read_node_at(
+        &self,
+        node: &Ext4Node,
+        offset: usize,
+        out: &mut [u8],
+    ) -> Result<usize, FsError> {
         if matches!(Self::inode_file_type(node)?, FileType::Directory) {
             return Err(FsError::IsDirectory);
         }
@@ -345,6 +366,21 @@ impl FileSystem for Ext4FileSystem {
     fn sync(&self) -> Result<(), FsError> {
         Ok(())
     }
+
+    fn statfs(&self) -> Result<FsStatFs, FsError> {
+        Ok(FsStatFs {
+            f_type: EXT4_SUPER_MAGIC as i64,
+            f_bsize: self.block_size as i64,
+            f_blocks: self.blocks_count,
+            f_bfree: self.free_blocks_count,
+            f_bavail: self.free_blocks_count,
+            f_files: self.inodes_count,
+            f_ffree: self.free_inodes_count,
+            f_namelen: 255,
+            f_frsize: self.block_size as i64,
+            f_flags: if self.device.is_read_only() { 1 } else { 0 },
+        })
+    }
 }
 
 impl Inode for Ext4Inode {
@@ -354,7 +390,10 @@ impl Inode for Ext4Inode {
             file_type: Ext4FileSystem::inode_file_type(&self.node)?,
             mode: self.node.mode as u32,
             size: self.node.size,
-            nlink: if matches!(Ext4FileSystem::inode_file_type(&self.node)?, FileType::Directory) {
+            nlink: if matches!(
+                Ext4FileSystem::inode_file_type(&self.node)?,
+                FileType::Directory
+            ) {
                 2
             } else {
                 1
@@ -397,7 +436,9 @@ fn read_bytes(device: Arc<dyn BlockDevice>, offset: usize, len: usize) -> Result
     let mut written = 0usize;
 
     for lba in start_lba..end_lba {
-        device.read_block(lba as u64, &mut block).map_err(|_| FsError::Io)?;
+        device
+            .read_block(lba as u64, &mut block)
+            .map_err(|_| FsError::Io)?;
         let block_start = lba * block_size;
         let copy_start = offset.saturating_sub(block_start);
         let copy_end = (end - block_start).min(block_size);

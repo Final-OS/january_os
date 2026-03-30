@@ -49,19 +49,19 @@ pub struct TtyInitReport {
 
 // 导出串口接口
 pub use serial::{
-    serial_enable_rx_interrupt, serial_has_input, serial_interrupt_handler, serial_read,
-    serial_read_char, serial_try_read, serial_write, Serial, SerialWriter, COM1_PORT,
+    COM1_PORT, Serial, SerialWriter, serial_enable_rx_interrupt, serial_has_input,
+    serial_interrupt_handler, serial_read, serial_read_char, serial_try_read, serial_write,
 };
 
 // 导出控制台接口
 pub use console::{
-    ansi_to_rgb, VtAction, VtParser, VtState, ANSI_COLORS, DEFAULT_BG, DEFAULT_FG, MAX_CONSOLES,
+    ANSI_COLORS, DEFAULT_BG, DEFAULT_FG, MAX_CONSOLES, VtAction, VtParser, VtState, ansi_to_rgb,
 };
 
 // 导出 PTY 接口
 pub use pty::{
-    ControlChar, InputFlags, LocalFlags, OutputFlags, PtyManager, PtyPair, RingBuffer, Termios,
-    WinSize, MAX_PTYS, PTY_BUFFER_SIZE,
+    ControlChar, InputFlags, LocalFlags, MAX_PTYS, OutputFlags, PTY_BUFFER_SIZE, PtyManager,
+    PtyPair, RingBuffer, Termios, WinSize,
 };
 
 /// 初始化 TTY 子系统

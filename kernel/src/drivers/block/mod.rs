@@ -8,10 +8,11 @@ pub mod gpt;
 pub mod mbr;
 pub mod partition;
 pub mod virtio_blk;
+pub mod virtio_scsi;
 pub use file_backed::ReadonlyFileBlockDevice;
 pub use partition::{
-    discover_partitions, Partition, PartitionBlockDevice, PartitionError, PartitionTableKind,
-    PartitionType, PartitionedDevice,
+    Partition, PartitionBlockDevice, PartitionError, PartitionTableKind, PartitionType,
+    PartitionedDevice, discover_partitions,
 };
 
 /// Block device error types
@@ -134,4 +135,19 @@ impl BlockManager {
 /// Initialize block device subsystem - registers drivers with PCI
 pub fn init() {
     virtio_blk::init();
+    virtio_scsi::init();
+}
+
+pub fn boot_device() -> Option<Arc<dyn BlockDevice>> {
+    if let Some(dev) = virtio_blk::get_device() {
+        return Some(Arc::new(StaticBlockDeviceRef::new(
+            dev as &'static dyn BlockDevice,
+        )));
+    }
+    if let Some(dev) = virtio_scsi::get_device() {
+        return Some(Arc::new(StaticBlockDeviceRef::new(
+            dev as &'static dyn BlockDevice,
+        )));
+    }
+    None
 }

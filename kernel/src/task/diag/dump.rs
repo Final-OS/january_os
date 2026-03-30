@@ -1,7 +1,7 @@
 use alloc::format;
 use alloc::string::String;
 
-use crate::task::{current_pid, current_tid, stats, COMPONENT};
+use crate::task::{COMPONENT, current_pid, current_tid, stats};
 
 pub fn dump_state() -> String {
     format!(

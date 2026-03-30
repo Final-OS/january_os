@@ -15,9 +15,7 @@ macro_rules! container_of {
 /// 根据链表节点指针获取宿主结构体指针。
 #[macro_export]
 macro_rules! list_entry {
-    ($ptr:expr, $type:ty, $field:ident) => {{
-        $crate::container_of!($ptr, $type, $field)
-    }};
+    ($ptr:expr, $type:ty, $field:ident) => {{ $crate::container_of!($ptr, $type, $field) }};
 }
 
 /// 正向遍历链表。

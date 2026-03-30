@@ -2,7 +2,7 @@
 # Configuration: os_cfg.toml + vm_cfg.toml
 # Tools: tools/cfg + tools/vmcfg
 
-.PHONY: all build build-boot build-kernel build-userland build-tools run run-gui run-ksh run-gui-ksh debug debug-ksh prepare-virtio-blk prepare-initramfs clean config vm-config help iso install-deps
+.PHONY: all build build-boot build-kernel build-userland build-tools run run-gui run-ksh run-gui-ksh run-scsi run-scsi-ksh debug debug-ksh debug-scsi debug-scsi-ksh prepare-virtio-blk prepare-initramfs clean config vm-config help iso install-deps
 
 # ==============================================================================
 # 工具路径
@@ -142,6 +142,20 @@ QEMU_OPTS = -m $(QEMU_MEMORY) -smp $(QEMU_SMP) $(if $(QEMU_CPU),-cpu $(QEMU_CPU)
             -drive format=raw,file=fat:rw:$(ESP_DIR) \
             -drive id=blk0,file=$(VIRTIO_BLK_IMG),format=raw,if=none \
             -device virtio-blk-pci,drive=blk0
+
+QEMU_OPTS_NO_BLK = -m $(QEMU_MEMORY) -smp $(QEMU_SMP) $(if $(QEMU_CPU),-cpu $(QEMU_CPU),) $(USE_KVM) \
+            $(MACHINE_OPTS) $(IOMMU_OPTS) \
+            $(QEMU_NUMA_ARGS) \
+            $(QEMU_EXTRA_ARGS) \
+            -device qemu-xhci,id=xhci \
+            -device usb-mouse,bus=xhci.0 \
+            -device usb-kbd,bus=xhci.0 \
+            -drive if=pflash,format=raw,readonly=on,file=$(OVMF) \
+            -drive format=raw,file=fat:rw:$(ESP_DIR)
+
+QEMU_SCSI_DISK_OPTS = -device virtio-scsi-pci,id=scsi0 \
+            -drive id=scsidisk0,file=$(VIRTIO_BLK_IMG),format=raw,if=none \
+            -device scsi-hd,drive=scsidisk0,bus=scsi0.0
 
 # ==============================================================================
 # Rust 编译选项 (使用 = 延迟求值，因为依赖 LINKER)
@@ -301,12 +315,27 @@ run-gui: $(VMCFG) build prepare-virtio-blk
 run-gui-ksh: $(KSH_OS_CFG)
 	@$(MAKE) BASE_OS_CFG_PATH=$(BASE_OS_CFG_PATH) OS_CFG_PATH=$(KSH_OS_CFG) run-gui
 
+run-scsi: $(VMCFG) build prepare-virtio-blk
+	@echo "==> $(QEMU_CMD) (virtio-scsi): $(QEMU_SMP) CPUs, $(QEMU_MEMORY) RAM, CPU='$(QEMU_CPU)', KVM=$(if $(USE_KVM),on,off), NUMA=$(if $(strip $(QEMU_NUMA_ARGS)),on,off)"
+	@echo "==> Serial console with virtio-scsi-only boot disk path (Ctrl+A X to exit QEMU)"
+	@$(QEMU_CMD) $(QEMU_OPTS_NO_BLK) $(QEMU_SCSI_DISK_OPTS) -nographic
+
+run-scsi-ksh: $(KSH_OS_CFG)
+	@$(MAKE) BASE_OS_CFG_PATH=$(BASE_OS_CFG_PATH) OS_CFG_PATH=$(KSH_OS_CFG) run-scsi
+
 debug: $(VMCFG) build prepare-virtio-blk
 	@echo "==> GDB server on :1234 (Ctrl+A X to exit QEMU)"
 	@$(QEMU_CMD) $(QEMU_OPTS) -nographic -s -S
 
 debug-ksh: $(KSH_OS_CFG)
 	@$(MAKE) BASE_OS_CFG_PATH=$(BASE_OS_CFG_PATH) OS_CFG_PATH=$(KSH_OS_CFG) debug
+
+debug-scsi: $(VMCFG) build prepare-virtio-blk
+	@echo "==> GDB server on :1234 with virtio-scsi disk (Ctrl+A X to exit QEMU)"
+	@$(QEMU_CMD) $(QEMU_OPTS_NO_BLK) $(QEMU_SCSI_DISK_OPTS) -nographic -s -S
+
+debug-scsi-ksh: $(KSH_OS_CFG)
+	@$(MAKE) BASE_OS_CFG_PATH=$(BASE_OS_CFG_PATH) OS_CFG_PATH=$(KSH_OS_CFG) debug-scsi
 
 # ==============================================================================
 # 清理

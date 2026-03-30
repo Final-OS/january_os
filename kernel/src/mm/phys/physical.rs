@@ -12,7 +12,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use crate::mm::vm::address::{PhysAddr, PhysFrame};
-use crate::mm::vm::layout::{page_align_up, PAGE_SIZE};
+use crate::mm::vm::layout::{PAGE_SIZE, page_align_up};
 use core::cell::UnsafeCell;
 use core::ptr;
 

@@ -36,14 +36,13 @@ fn exec_current_user_program(path: &str) -> Result<(), i32> {
     }
 
     let auxv = task::proc::exec::minimal_auxv(&load_plan);
-    let stack_rsp =
-        task::setup_initial_user_stack(
-            load_plan.stack_top,
-            load_plan.stack_pages,
-            &[path],
-            &[],
-            auxv.as_slice(),
-        )?;
+    let stack_rsp = task::setup_initial_user_stack(
+        load_plan.stack_top,
+        load_plan.stack_pages,
+        &[path],
+        &[],
+        auxv.as_slice(),
+    )?;
     let frame = task::arch::build_user_enter_frame(load_plan.entry, stack_rsp);
     unsafe {
         task::arch::enter_user_mode_iret(&frame);

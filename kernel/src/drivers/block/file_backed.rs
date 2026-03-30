@@ -6,10 +6,7 @@ use crate::fs::vfs::{self, Inode};
 
 enum FileBacking {
     Static(&'static [u8]),
-    Vfs {
-        inode: Arc<dyn Inode>,
-        size: usize,
-    },
+    Vfs { inode: Arc<dyn Inode>, size: usize },
 }
 
 pub struct ReadonlyFileBlockDevice {
@@ -101,9 +98,7 @@ impl BlockDevice for ReadonlyFileBlockDevice {
                 if end > *size {
                     return Err(BlockError::InvalidAddress);
                 }
-                let n = inode
-                    .read_at(start, buf)
-                    .map_err(|_| BlockError::IoError)?;
+                let n = inode.read_at(start, buf).map_err(|_| BlockError::IoError)?;
                 if n != buf.len() {
                     return Err(BlockError::IoError);
                 }

@@ -4,7 +4,7 @@ use core::cmp;
 use crate::errno::{E2BIG, EBADF, EBUSY, EINVAL, ENOMEM, ESRCH};
 use crate::fs;
 use crate::mm;
-use crate::syscall::{err, ok, SyscallArgs, SyscallRet};
+use crate::syscall::{SyscallArgs, SyscallRet, err, ok};
 use crate::task;
 
 const MMAP_PROT_ALLOWED: u32 =

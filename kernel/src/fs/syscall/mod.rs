@@ -2,13 +2,14 @@ use crate::drivers;
 use crate::drivers::input::hid::keyboard;
 use crate::drivers::tty::serial_read_char;
 use crate::errno::{
-    EAGAIN, EBADF, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOSYS, ENOTDIR, ENOTTY, ERANGE, ESRCH,
+    EACCES, EAGAIN, EBADF, EFAULT, EINVAL, ENAMETOOLONG, ENOENT, ENOSYS, ENOTDIR, ENOTTY, ERANGE,
+    EROFS, ESRCH,
 };
 use crate::fs;
 use crate::interrupt;
 use crate::libs::wait_queue::{WaitMode, WaitQueue};
 use crate::sync::IrqSpinLock;
-use crate::syscall::{err, ok, SyscallArgs, SyscallRet};
+use crate::syscall::{SyscallArgs, SyscallRet, err, ok};
 use crate::task;
 use alloc::string::String;
 use alloc::vec;
@@ -20,7 +21,12 @@ const READ_IO_MAX: usize = 64 * 1024;
 const WRITE_IO_MAX: usize = 64 * 1024;
 const O_ACCMODE: u32 = 0o3;
 const O_RDONLY: u32 = 0;
+const O_DIRECTORY: u32 = 0o200000;
 const O_NONBLOCK: u32 = 0o4000;
+const O_CLOEXEC: u32 = 0o2000000;
+const R_OK: u32 = 4;
+const W_OK: u32 = 2;
+const X_OK: u32 = 1;
 const FD_CLOEXEC: u32 = 1;
 
 const SEEK_SET: u32 = 0;
@@ -75,6 +81,23 @@ struct LinuxStat {
     st_mtim: LinuxTimespec,
     st_ctim: LinuxTimespec,
     __glibc_reserved: [i64; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct LinuxStatfs {
+    f_type: i64,
+    f_bsize: i64,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [i32; 2],
+    f_namelen: i64,
+    f_frsize: i64,
+    f_flags: i64,
+    f_spare: [i64; 4],
 }
 
 #[repr(C)]
@@ -145,8 +168,9 @@ mod stdin;
 mod uaccess;
 
 pub(crate) use file::{
-    sys_chdir, sys_close, sys_dup, sys_dup2, sys_fcntl, sys_fstat, sys_getcwd, sys_getdents64,
-    sys_lseek, sys_lstat, sys_open, sys_read, sys_stat, sys_write,
+    sys_access, sys_chdir, sys_close, sys_dup, sys_dup2, sys_dup3, sys_fchdir, sys_fcntl,
+    sys_fstat, sys_fstatfs, sys_getcwd, sys_getdents64, sys_lseek, sys_lstat, sys_open, sys_read,
+    sys_stat, sys_statfs, sys_write,
 };
 pub(crate) use pipe::{sys_ioctl, sys_pipe, sys_pipe2};
 pub(crate) use poll::{sys_poll, sys_select};
@@ -155,6 +179,6 @@ pub(crate) use stdin::{
     stdin_has_pending_input, wake_stdin_waiters_if_ready,
 };
 pub(crate) use uaccess::{
-    current_pid_raw, linux_stat_from_fs, read_user_cstring, read_user_struct, validate_user_range,
-    write_user_struct,
+    current_pid_raw, linux_stat_from_fs, linux_statfs_from_fs, read_user_cstring, read_user_struct,
+    validate_user_range, write_user_struct,
 };

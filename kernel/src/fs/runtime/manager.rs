@@ -7,16 +7,19 @@ use crate::drivers::block::{
 };
 use crate::fs::syscall;
 use crate::fs::vfs;
+use crate::task;
 use alloc::format;
 
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
-use crate::errno::{E2BIG, EAGAIN, EBADF, EINVAL, EISDIR, ENOENT, ENOTDIR, EPIPE, ESPIPE};
+use crate::errno::{
+    E2BIG, EACCES, EAGAIN, EBADF, EINVAL, EISDIR, ENOENT, ENOTDIR, EPIPE, EROFS, ESPIPE,
+};
 use crate::sync::Mutex;
 
 const FIRST_USER_FD: i32 = 3;
@@ -51,6 +54,8 @@ pub const COMPONENT: ComponentDescriptor = ComponentDescriptor {
 struct DirOpenFile {
     cursor: usize,
     cloexec: bool,
+    fs: Arc<dyn vfs::FileSystem>,
+    path: String,
     inode: Arc<dyn vfs::Inode>,
     ino: u64,
     mode: u32,
@@ -58,6 +63,7 @@ struct DirOpenFile {
 
 #[derive(Clone)]
 struct VfsOpenFile {
+    fs: Arc<dyn vfs::FileSystem>,
     inode: Arc<dyn vfs::Inode>,
     ino: u64,
     mode: u32,
@@ -67,6 +73,7 @@ struct VfsOpenFile {
 }
 
 struct VfsOpenHint {
+    fs: Arc<dyn vfs::FileSystem>,
     inode: Arc<dyn vfs::Inode>,
     meta: vfs::Metadata,
     static_data: Option<&'static [u8]>,
@@ -140,6 +147,20 @@ pub struct FsStat {
     pub blocks: i64,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FsStatFs {
+    pub f_type: i64,
+    pub f_bsize: i64,
+    pub f_blocks: u64,
+    pub f_bfree: u64,
+    pub f_bavail: u64,
+    pub f_files: u64,
+    pub f_ffree: u64,
+    pub f_namelen: i64,
+    pub f_frsize: i64,
+    pub f_flags: i64,
+}
+
 #[derive(Clone)]
 pub struct FsDirEntry {
     pub ino: u64,
@@ -148,6 +169,26 @@ pub struct FsDirEntry {
 }
 
 impl FsState {
+    fn proc_self_target_pid(pid: usize) -> Option<usize> {
+        if task::find_process_by_pid(crate::task::ProcessId(pid)).is_some() {
+            return Some(pid);
+        }
+        task::current_pid().map(|pid| pid.0)
+    }
+
+    fn rewrite_proc_self_path(pid: usize, path: &str) -> String {
+        let Some(target_pid) = Self::proc_self_target_pid(pid) else {
+            return String::from(path);
+        };
+        if path == "/proc/self" {
+            return format!("/proc/{}", target_pid);
+        }
+        if let Some(rest) = path.strip_prefix("/proc/self/") {
+            return format!("/proc/{}/{}", target_pid, rest);
+        }
+        String::from(path)
+    }
+
     const fn new() -> Self {
         Self {
             open_files: BTreeMap::new(),
@@ -239,7 +280,8 @@ impl FsState {
 
     fn resolve_path_for_pid(&mut self, pid: usize, input: &str) -> Result<String, i32> {
         let cwd = self.cwd_for_pid(pid);
-        Self::normalize_path(cwd.as_str(), input)
+        let normalized = Self::normalize_path(cwd.as_str(), input)?;
+        Ok(Self::rewrite_proc_self_path(pid, normalized.as_str()))
     }
 
     fn open_for_pid(
@@ -251,11 +293,15 @@ impl FsState {
         hint: VfsOpenHint,
     ) -> Result<i32, i32> {
         let _resolved = self.resolve_path_for_pid(pid, path)?;
+        let allowed = O_ACCMODE | O_CLOEXEC | O_DIRECTORY;
+        if (flags & !allowed) != 0 {
+            return Err(EINVAL);
+        }
         let cloexec = (flags & O_CLOEXEC) != 0;
         let wants_dir = (flags & O_DIRECTORY) != 0;
         let accmode = flags & O_ACCMODE;
-        if accmode != O_RDONLY && accmode != O_WRONLY {
-            return Err(EINVAL);
+        if accmode != O_RDONLY {
+            return Err(EROFS);
         }
 
         let open_file = match hint.meta.file_type {
@@ -266,6 +312,8 @@ impl FsState {
                 OpenFile::Dir(DirOpenFile {
                     cursor: 0,
                     cloexec,
+                    fs: hint.fs,
+                    path: path.to_string(),
                     inode: hint.inode,
                     ino: hint.meta.ino,
                     mode: hint.meta.mode,
@@ -276,6 +324,7 @@ impl FsState {
                     return Err(ENOTDIR);
                 }
                 OpenFile::Vfs(VfsOpenFile {
+                    fs: hint.fs,
                     inode: hint.inode,
                     ino: hint.meta.ino,
                     mode: hint.meta.mode,
@@ -719,8 +768,45 @@ impl FsState {
         Ok(())
     }
 
+    fn fchdir_for_pid(&mut self, pid: usize, fd: i32) -> Result<(), i32> {
+        let path = {
+            let table = self.open_files.get(&pid).ok_or(EBADF)?;
+            let open_file = table.get(&fd).ok_or(EBADF)?;
+            match open_file {
+                OpenFile::Dir(dir) => dir.path.clone(),
+                _ => return Err(ENOTDIR),
+            }
+        };
+        let cwd = self.ensure_cwd_mut(pid);
+        *cwd = path;
+        Ok(())
+    }
+
     fn getcwd_for_pid(&mut self, pid: usize) -> String {
         self.cwd_for_pid(pid)
+    }
+
+    fn access_path_for_pid(&mut self, pid: usize, path: &str, mode: u32) -> Result<(), i32> {
+        let resolved = self.resolve_path_for_pid(pid, path)?;
+        let inode = vfs::lookup_path(resolved.as_str()).map_err(|e| e.errno())?;
+        let meta = inode.metadata().map_err(|e| e.errno())?;
+        let file_type = meta.file_type;
+        let perm_bits = meta.mode & 0o777;
+        let check = mode & 0o7;
+
+        if check & 0b010 != 0 {
+            return Err(EROFS);
+        }
+        if check & 0b100 != 0 && (perm_bits & 0o444) == 0 {
+            return Err(EACCES);
+        }
+        if check & 0b001 != 0 {
+            let exec_ok = matches!(file_type, vfs::FileType::Directory) || (perm_bits & 0o111) != 0;
+            if !exec_ok {
+                return Err(EACCES);
+            }
+        }
+        Ok(())
     }
 
     fn peek_dir_entry_for_pid(&self, pid: usize, fd: i32) -> Result<Option<FsDirEntry>, i32> {
@@ -854,6 +940,47 @@ impl FsState {
                     .unwrap_or(0);
                 Ok(Self::make_pipe_stat(*pipe_id, size))
             }
+        }
+    }
+
+    fn statfs_fd(&self, pid: usize, fd: i32) -> Result<FsStatFs, i32> {
+        if (0..=2).contains(&fd) {
+            return Ok(FsStatFs {
+                f_type: 0x0000_1cd1,
+                f_bsize: 4096,
+                f_blocks: 0,
+                f_bfree: 0,
+                f_bavail: 0,
+                f_files: 1,
+                f_ffree: 0,
+                f_namelen: 255,
+                f_frsize: 4096,
+                f_flags: 0,
+            });
+        }
+
+        let Some(table) = self.open_files.get(&pid) else {
+            return Err(EBADF);
+        };
+        let Some(open_file) = table.get(&fd) else {
+            return Err(EBADF);
+        };
+
+        match open_file {
+            OpenFile::Vfs(file) => file.fs.statfs().map_err(|e| e.errno()),
+            OpenFile::Dir(dir) => dir.fs.statfs().map_err(|e| e.errno()),
+            OpenFile::PipeRead { .. } | OpenFile::PipeWrite { .. } => Ok(FsStatFs {
+                f_type: 0x5049_5045,
+                f_bsize: 4096,
+                f_blocks: 0,
+                f_bfree: 0,
+                f_bavail: 0,
+                f_files: 1,
+                f_ffree: 0,
+                f_namelen: 255,
+                f_frsize: 4096,
+                f_flags: 0,
+            }),
         }
     }
 
@@ -1106,6 +1233,11 @@ pub fn init_runtime(initramfs: Option<(u64, u64)>) -> FsInitReport {
         }
     }
     vfs::mount_root(Arc::new(vfs::initramfs::InitramfsFileSystem::new()));
+    let _ = vfs::mount_fs_with_source(
+        "/proc",
+        "proc",
+        Arc::new(vfs::procfs::ProcfsFileSystem::new()),
+    );
     discover_disk_mount_sources();
 
     FsInitReport {
@@ -1116,12 +1248,10 @@ pub fn init_runtime(initramfs: Option<(u64, u64)>) -> FsInitReport {
 }
 
 fn discover_disk_mount_sources() {
-    let Some(dev) = block::virtio_blk::get_device() else {
+    let Some(block_dev) = block::boot_device() else {
         FS_STATE.lock().mount_sources.clear();
         return;
     };
-    let block_dev: Arc<dyn BlockDevice> =
-        Arc::new(StaticBlockDeviceRef::new(dev as &'static dyn BlockDevice));
     let partitioned = match block::discover_partitions(block_dev) {
         Ok(parts) => parts,
         Err(err) => {
@@ -1211,10 +1341,9 @@ fn mount_partition_source(
         return Err(crate::fs::api::FsError::NotDirectory);
     }
 
-    let dev = block::virtio_blk::get_device().ok_or(crate::fs::api::FsError::NotFound)?;
-    let block_dev: Arc<dyn BlockDevice> =
-        Arc::new(StaticBlockDeviceRef::new(dev as &'static dyn BlockDevice));
-    let partitioned = block::discover_partitions(block_dev).map_err(|_| crate::fs::api::FsError::Io)?;
+    let block_dev = block::boot_device().ok_or(crate::fs::api::FsError::NotFound)?;
+    let partitioned =
+        block::discover_partitions(block_dev).map_err(|_| crate::fs::api::FsError::Io)?;
     let part_dev = partitioned
         .open_partition(record.partition.index)
         .map_err(|_| crate::fs::api::FsError::NotFound)?;
@@ -1224,6 +1353,7 @@ fn mount_partition_source(
             .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
         "ext4" => crate::fs::backing::Ext4FileSystem::mount(part_dev)
             .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
+        "procfs" => Arc::new(crate::fs::backing::ProcfsFileSystem::new()),
         _ => return Err(crate::fs::api::FsError::NotSupported),
     };
 
@@ -1243,18 +1373,17 @@ fn mount_file_source(
 
     let source_size =
         usize::try_from(source_meta.size).map_err(|_| crate::fs::api::FsError::InvalidInput)?;
-    let block_dev: Arc<dyn BlockDevice> =
-        if let Some(data) = vfs::initramfs::read_file(source) {
-            Arc::new(
-                ReadonlyFileBlockDevice::from_initramfs(source, data, 512)
-                    .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
-            )
-        } else {
-            Arc::new(
-                ReadonlyFileBlockDevice::from_inode(source, source_inode, source_size, 512)
-                    .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
-            )
-        };
+    let block_dev: Arc<dyn BlockDevice> = if let Some(data) = vfs::initramfs::read_file(source) {
+        Arc::new(
+            ReadonlyFileBlockDevice::from_initramfs(source, data, 512)
+                .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
+        )
+    } else {
+        Arc::new(
+            ReadonlyFileBlockDevice::from_inode(source, source_inode, source_size, 512)
+                .map_err(|_| crate::fs::api::FsError::InvalidInput)?,
+        )
+    };
 
     let target_inode = vfs::lookup_path(target)?;
     let target_meta = target_inode.metadata()?;
@@ -1273,7 +1402,26 @@ fn mount_file_source(
     vfs::mount_fs_with_source(target, source, fs_obj)
 }
 
-pub fn mount_source_for_pid(pid: usize, source: &str, target: &str, fs_type: &str) -> Result<(), i32> {
+pub fn mount_source_for_pid(
+    pid: usize,
+    source: &str,
+    target: &str,
+    fs_type: &str,
+) -> Result<(), i32> {
+    if fs_type == "procfs" {
+        let target = resolve_path_for_pid(pid, target)?;
+        let target_inode = vfs::lookup_path(target.as_str()).map_err(|e| e.errno())?;
+        let target_meta = target_inode.metadata().map_err(|e| e.errno())?;
+        if target_meta.file_type != vfs::FileType::Directory {
+            return Err(ENOTDIR);
+        }
+        return vfs::mount_fs_with_source(
+            target.as_str(),
+            if source.is_empty() { "proc" } else { source },
+            Arc::new(crate::fs::backing::ProcfsFileSystem::new()),
+        )
+        .map_err(|e| e.errno());
+    }
     if source.contains('/') {
         let resolved = resolve_path_for_pid(pid, source)?;
         mount_file_source(resolved.as_str(), target, fs_type).map_err(|e| e.errno())
@@ -1295,11 +1443,26 @@ pub fn remount_target(target: &str) -> Result<(), i32> {
     let source = entry.source.ok_or(EINVAL)?;
     vfs::umount_fs(target_norm.as_str()).map_err(|e| e.errno())?;
     if source.contains('/') {
-        mount_file_source(source.as_str(), target_norm.as_str(), entry.fs_type.as_str())
-            .map_err(|e| e.errno())
+        mount_file_source(
+            source.as_str(),
+            target_norm.as_str(),
+            entry.fs_type.as_str(),
+        )
+        .map_err(|e| e.errno())
+    } else if entry.fs_type == "procfs" {
+        vfs::mount_fs_with_source(
+            target_norm.as_str(),
+            source.as_str(),
+            Arc::new(crate::fs::backing::ProcfsFileSystem::new()),
+        )
+        .map_err(|e| e.errno())
     } else {
-        mount_partition_source(source.as_str(), target_norm.as_str(), entry.fs_type.as_str())
-            .map_err(|e| e.errno())
+        mount_partition_source(
+            source.as_str(),
+            target_norm.as_str(),
+            entry.fs_type.as_str(),
+        )
+        .map_err(|e| e.errno())
     }
 }
 
@@ -1309,11 +1472,15 @@ pub fn open_for_pid(pid: usize, path: &str, flags: u32, mode: u16) -> Result<i32
         state.resolve_path_for_pid(pid, path)?
     };
 
+    let fs = vfs::resolve_mount(resolved.as_str())
+        .map(|(_, fs)| fs)
+        .ok_or(ENOENT)?;
     let inode = vfs::lookup_path(resolved.as_str()).map_err(|e| e.errno())?;
     let meta = inode.metadata().map_err(|e| e.errno())?;
     let static_data = vfs::initramfs::read_file(resolved.as_str());
 
     let hint = VfsOpenHint {
+        fs,
         inode,
         meta,
         static_data,
@@ -1380,8 +1547,16 @@ pub fn chdir_for_pid(pid: usize, path: &str) -> Result<(), i32> {
     FS_STATE.lock().chdir_for_pid(pid, path)
 }
 
+pub fn fchdir_for_pid(pid: usize, fd: i32) -> Result<(), i32> {
+    FS_STATE.lock().fchdir_for_pid(pid, fd)
+}
+
 pub fn getcwd_for_pid(pid: usize) -> String {
     FS_STATE.lock().getcwd_for_pid(pid)
+}
+
+pub fn access_path_for_pid(pid: usize, path: &str, mode: u32) -> Result<(), i32> {
+    FS_STATE.lock().access_path_for_pid(pid, path, mode)
 }
 
 pub fn peek_dir_entry_for_pid(pid: usize, fd: i32) -> Result<Option<FsDirEntry>, i32> {
@@ -1398,9 +1573,19 @@ pub fn stat_path(path: &str) -> Result<FsStat, i32> {
     Ok(FsState::stat_from_meta(meta))
 }
 
+pub fn statfs_path(path: &str) -> Result<FsStatFs, i32> {
+    let (_mount_target, fs) = vfs::resolve_mount(path).ok_or(ENOENT)?;
+    fs.statfs().map_err(|e| e.errno())
+}
+
 pub fn stat_path_for_pid(pid: usize, path: &str) -> Result<FsStat, i32> {
     let resolved = resolve_path_for_pid(pid, path)?;
     stat_path(resolved.as_str())
+}
+
+pub fn statfs_path_for_pid(pid: usize, path: &str) -> Result<FsStatFs, i32> {
+    let resolved = resolve_path_for_pid(pid, path)?;
+    statfs_path(resolved.as_str())
 }
 
 pub fn resolve_path_for_pid(pid: usize, path: &str) -> Result<String, i32> {
@@ -1410,6 +1595,10 @@ pub fn resolve_path_for_pid(pid: usize, path: &str) -> Result<String, i32> {
 
 pub fn stat_fd(pid: usize, fd: i32) -> Result<FsStat, i32> {
     FS_STATE.lock().stat_fd(pid, fd)
+}
+
+pub fn statfs_fd(pid: usize, fd: i32) -> Result<FsStatFs, i32> {
+    FS_STATE.lock().statfs_fd(pid, fd)
 }
 
 pub fn poll_revents_for_pid(pid: usize, fd: i32, events: i16) -> Result<i16, i32> {

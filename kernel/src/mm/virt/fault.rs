@@ -9,7 +9,7 @@ use super::paging::PageTableManager;
 use super::vma::{Mm, VmFlags};
 use crate::fs;
 use crate::mm::page::buddy::{alloc_page, free_page};
-use crate::mm::page::page::{page_to_pfn, pfn_to_page, PageFlags};
+use crate::mm::page::page::{PageFlags, page_to_pfn, pfn_to_page};
 use crate::mm::page::zone::GfpFlags;
 use core::sync::atomic::{AtomicU64, Ordering};
 

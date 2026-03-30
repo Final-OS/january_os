@@ -3,10 +3,10 @@
 //! 负责按顺序初始化各个子系统。
 
 use crate::arch;
-use crate::boot::{BootInfo, BOOTINFO_MAGIC, MAX_MEMORY_REGIONS};
+use crate::boot::{BOOTINFO_MAGIC, BootInfo, MAX_MEMORY_REGIONS};
 use crate::component::{
-    run_component, ComponentDescriptor as KernelComponentDescriptor,
-    ComponentRegistry as KernelComponentRegistry, ComponentStage as KernelComponentStage,
+    ComponentDescriptor as KernelComponentDescriptor, ComponentRegistry as KernelComponentRegistry,
+    ComponentStage as KernelComponentStage, run_component,
 };
 use crate::config;
 use crate::drivers::tty::{self, SerialWriter};
@@ -15,6 +15,7 @@ use crate::fs;
 use crate::interrupt;
 #[cfg(target_arch = "x86_64")]
 use crate::interrupt::arch::x86_64::{InterruptInitInfo, IrqRouteOverride};
+use crate::mm::MemoryRegion;
 use crate::mm::arch as mm_arch;
 use crate::mm::iommu as mm_iommu;
 use crate::mm::page::numa as mm_numa;
@@ -23,7 +24,6 @@ use crate::mm::vm::layout as mm_layout;
 use crate::mm::vm::layout_runtime as mm_runtime;
 use crate::mm::vm::paging as mm_paging;
 use crate::mm::vm::vma as mm_vma;
-use crate::mm::MemoryRegion;
 use crate::mm::{self, component_report};
 use crate::net;
 use crate::security;

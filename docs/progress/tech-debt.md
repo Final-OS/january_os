@@ -154,7 +154,7 @@
 | 驱动 | 状态 | 说明 | 归属版本 |
 |------|------|------|----------|
 | virtio-blk | 🟡 | 基础读写已完成，缺请求层/恢复与完整错误语义 | v0.3.2/v0.4 |
-| virtio-scsi | 🔴 | 未接入；缺 SCSI 传输层最小链路（INQUIRY/READ/WRITE） | v0.3.1/v0.4 |
+| virtio-scsi | 🟡 | 最小 LUN0 只读链路已落地；仍缺多 LUN、写路径、事件队列与完整错误恢复 | v0.3.1/v0.4 |
 | VMware PVSCSI | 🔴 | 未接入；VMware 环境缺可用块存储主链路 | v0.3.2/v0.4 |
 | virtio-net | 🔴 | 网络驱动 | v0.5 |
 | AHCI/NVMe | 🔴 | 原生块设备最小链路未接入 | v0.3.2/v0.4 |
@@ -378,7 +378,7 @@
 | 块设备抽象 | 🟡 | trait、`virtio-blk`、MBR/GPT 已落地，缺统一注册/请求层/恢复与多控制器收口 | v0.3.1/v0.4 |
 | FAT32 | 🟡 | 只读挂载与读取主链路已落地，LFN 已补齐；仍缺写路径、一致性校验与更多镜像覆盖 | v0.3.1/v0.4 |
 | ext4 | 🟡 | 只读挂载与读取主链路已落地，depth>0 与基础 htree-root 兼容已补齐；仍缺更多特性、完整 htree 语义与稳健性完善 | v0.3.2/v0.4 |
-| procfs | 🔴 | 最小 `/proc` 能力（下放子版本） | v0.3.1 |
+| procfs | 🟡 | 最小 `/proc/self`、`/proc/cpuinfo`、`/proc/meminfo` 已落地；仍缺更完整 `/proc/[pid]/*` 视图 | v0.3.1/v0.4 |
 | 可写文件系统 | 🔴 | 文件创建/删除/修改 | v0.4 |
 | initramfs 完善 | 🟡 | 基础启动 rootfs 已落地，缺切换/挂载策略与后续与磁盘 rootfs 的收口 | v0.4 |
 | page cache | 🔴 | 页缓存 | v0.4 |
@@ -470,7 +470,7 @@
 | 领域 | v0.3.0 最小集现状 | 完整目标 | 偿还版本 |
 |------|-------------------|----------|----------|
 | Block Layer | 设备可直接读写，缺请求队列抽象 | 请求队列/合并/调度/flush 语义完整 | v0.3.2/v0.4 |
-| virtio-scsi | 未接入 | SCSI 传输最小可用（LUN0 识别 + 读写 + 分区接入）并通过回归 | v0.3.1 |
+| virtio-scsi | 已落地最小只读链路 | LUN0 识别 + 读取 + 块发现回退路径已完成；仍需多 LUN/写路径/恢复 | v0.3.1/v0.4 |
 | VMware PVSCSI | 未接入 | VMware 环境最小主链路（识别 + 读写 + 分区接入）并通过回归 | v0.3.2 |
 | NVMe/AHCI | 未接入 | QEMU 环境最小主链路（识别 + 读写 + 分区接入）并通过回归 | v0.3.2/v0.4 |
 | 分区解析 | MBR/GPT 基础解析 | GPT 健壮性、边界与异常恢复完整 | v0.3.2 |
@@ -478,8 +478,9 @@
 | FAT32 | 已落地只读主链路，当前支持短文件名 + LFN 与基础目录/文件读取 | FAT32 只读能力补齐一致性校验，并规划写路径 | v0.3.1/v0.4 |
 | ext4 | 已落地只读主链路，当前支持 4KiB block、extent tree 读取与基础 htree-root 兼容目录遍历 | ext4 只读能力补齐更多特性、完整 htree 语义与稳健性完善 | v0.3.2/v0.4 |
 | execve | 已切到 VFS 路径并构建最小 auxv；默认构建已可通过 FAT32 数据盘手工挂载后完成端到端执行 | auxv 完整、动态链接、错误语义与 ABI 兼容完善 | v0.3.0/v0.4 |
-| Syscall 文件子集 | `lseek/getdents64/dup/dup2/fcntl/chdir/getcwd` 最小子集 | `dup3/fchdir/statfs/fstatfs/open flags/access` 与语义收口 | v0.3.1 |
+| Syscall 文件子集 | `lseek/getdents64/dup/dup2/dup3/fcntl/chdir/fchdir/getcwd/statfs/fstatfs/access` 最小子集，`open` 已接受 `O_CLOEXEC/O_DIRECTORY` | `O_CREAT/O_TRUNC/O_EXCL/O_RDWR`、`faccessat*` 与更完整语义收口 | v0.3.1 |
 | procfs | 最小节点（`/proc/self/cpuinfo/meminfo`） | `/proc/[pid]/*` 进程视图完善 | v0.3.1/v0.4 |
+| virtio-scsi | 已落地最小 LUN0 只读链路，并接入块发现回退路径 | 多 LUN、event/control queue、写路径与更完整错误恢复 | v0.3.1/v0.4 |
 | sysfs | 未实现 | 设备模型与属性导出 | v0.3.2 |
 
 ---

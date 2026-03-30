@@ -1,8 +1,8 @@
 use alloc::format;
 use alloc::string::String;
 
-use crate::net::diag::stats;
 use crate::net::COMPONENT;
+use crate::net::diag::stats;
 
 pub fn dump_state() -> String {
     let runtime_stats = stats::component_stats();

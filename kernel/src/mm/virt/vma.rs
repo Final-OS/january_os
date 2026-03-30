@@ -11,9 +11,9 @@ use super::layout::{
 };
 use crate::fs;
 use crate::libs::mptree::MapleTree;
-use crate::mm::arch::{level_index, PageTable, PageTableEntry, PageTableManager};
+use crate::mm::arch::{PageTable, PageTableEntry, PageTableManager, level_index};
 use crate::mm::page::buddy::{alloc_page, free_page};
-use crate::mm::page::page::{max_pfn, page_to_pfn, pfn_to_page, PageFlags, PageOwner};
+use crate::mm::page::page::{PageFlags, PageOwner, max_pfn, page_to_pfn, pfn_to_page};
 use crate::mm::page::zone::{GFP_KERNEL_ZERO, GFP_USER};
 use crate::sync::IrqSpinLock;
 use alloc::boxed::Box;
@@ -1069,11 +1069,7 @@ pub unsafe fn mm_release(mm: *mut Mm) {
     let _ = (*mm)
         .mm_users
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
-            if v > 0 {
-                Some(v - 1)
-            } else {
-                Some(0)
-            }
+            if v > 0 { Some(v - 1) } else { Some(0) }
         });
 
     if prev <= 1 {

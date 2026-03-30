@@ -18,14 +18,13 @@ pub use runtime::{init_core, init_early, init_late};
 
 #[cfg(target_arch = "x86_64")]
 pub use arch::x86_64::controller::apic::{
-    apic_initialized, apic_timer_frequency, calibrate_timer, init_apic_timer, init_ioapic,
-    init_local_apic, ioapic_mask_irq, ioapic_read_irq_route, ioapic_set_irq, ioapic_unmask_irq,
-    local_apic_eoi, local_apic_id, send_init_ipi, send_ipi, send_sipi, stop_apic_timer,
-    wait_for_ipi_delivery, IoApicIrqRoute, ICR_DELIVERY_FIXED, ICR_DELIVERY_INIT,
-    ICR_DELIVERY_LOWEST, ICR_DELIVERY_NMI, ICR_DELIVERY_SMI, ICR_DELIVERY_STARTUP,
-    ICR_DEST_LOGICAL, ICR_DEST_PHYSICAL, ICR_LEVEL_ASSERT, ICR_LEVEL_DEASSERT, ICR_SHORTHAND_ALL,
-    ICR_SHORTHAND_ALL_BUT_SELF, ICR_SHORTHAND_NONE, ICR_SHORTHAND_SELF, ICR_TRIGGER_EDGE,
-    ICR_TRIGGER_LEVEL,
+    ICR_DELIVERY_FIXED, ICR_DELIVERY_INIT, ICR_DELIVERY_LOWEST, ICR_DELIVERY_NMI, ICR_DELIVERY_SMI,
+    ICR_DELIVERY_STARTUP, ICR_DEST_LOGICAL, ICR_DEST_PHYSICAL, ICR_LEVEL_ASSERT,
+    ICR_LEVEL_DEASSERT, ICR_SHORTHAND_ALL, ICR_SHORTHAND_ALL_BUT_SELF, ICR_SHORTHAND_NONE,
+    ICR_SHORTHAND_SELF, ICR_TRIGGER_EDGE, ICR_TRIGGER_LEVEL, IoApicIrqRoute, apic_initialized,
+    apic_timer_frequency, calibrate_timer, init_apic_timer, init_ioapic, init_local_apic,
+    ioapic_mask_irq, ioapic_read_irq_route, ioapic_set_irq, ioapic_unmask_irq, local_apic_eoi,
+    local_apic_id, send_init_ipi, send_ipi, send_sipi, stop_apic_timer, wait_for_ipi_delivery,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -36,13 +35,13 @@ pub use arch::x86_64::timer::tsc::{calibrate_tsc, rdtsc, rdtscp, tsc_frequency};
 
 #[cfg(target_arch = "x86_64")]
 pub use arch::x86_64::trap::idt::{
+    ALIGNMENT_CHECK, BOUND_RANGE, BREAKPOINT, CONTROL_PROTECTION, DEBUG, DEVICE_NOT_AVAILABLE,
+    DIVIDE_ERROR, DOUBLE_FAULT, GENERAL_PROTECTION, GateType, INVALID_OPCODE, INVALID_TSS,
+    IPI_TLB_PROBE, IPI_TLB_SHOOTDOWN, IRQ_BASE, IRQ_COM1, IRQ_KEYBOARD, IRQ_MOUSE, IRQ_SPURIOUS,
+    IRQ_TIMER, IRQ_XHCI, IdtEntry, InterruptFrame, MACHINE_CHECK, NMI, OVERFLOW, PAGE_FAULT,
+    SEGMENT_NOT_PRESENT, SIMD_EXCEPTION, STACK_FAULT, VIRTUALIZATION, X87_FPU_ERROR,
     disable_interrupts, enable_interrupts, halt, halt_with_interrupts, interrupts_enabled,
-    without_interrupts, GateType, IdtEntry, InterruptFrame, ALIGNMENT_CHECK, BOUND_RANGE,
-    BREAKPOINT, CONTROL_PROTECTION, DEBUG, DEVICE_NOT_AVAILABLE, DIVIDE_ERROR, DOUBLE_FAULT,
-    GENERAL_PROTECTION, INVALID_OPCODE, INVALID_TSS, IPI_TLB_PROBE, IPI_TLB_SHOOTDOWN, IRQ_BASE,
-    IRQ_COM1, IRQ_KEYBOARD, IRQ_MOUSE, IRQ_SPURIOUS, IRQ_TIMER, IRQ_XHCI, MACHINE_CHECK, NMI,
-    OVERFLOW, PAGE_FAULT, SEGMENT_NOT_PRESENT, SIMD_EXCEPTION, STACK_FAULT, VIRTUALIZATION,
-    X87_FPU_ERROR,
+    without_interrupts,
 };
 
 pub use crate::drivers::input::{

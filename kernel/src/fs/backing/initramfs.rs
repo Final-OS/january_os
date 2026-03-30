@@ -7,6 +7,7 @@ use core::slice;
 use crate::sync::Mutex;
 
 use crate::fs::api::{DirEntry, FileType, FsError, Metadata};
+use crate::fs::runtime::manager::FsStatFs;
 use crate::fs::vfs::{FileSystem, Inode};
 
 const CPIO_HEADER_LEN: usize = 110;
@@ -342,6 +343,30 @@ impl FileSystem for InitramfsFileSystem {
 
     fn sync(&self) -> Result<(), FsError> {
         Ok(())
+    }
+
+    fn statfs(&self) -> Result<FsStatFs, FsError> {
+        let store = INITRAMFS.lock();
+        let files = store.entries.len() as u64;
+        let blocks = store
+            .entries
+            .iter()
+            .map(|entry| entry.data.map(|data| data.len() as u64).unwrap_or(0))
+            .sum::<u64>()
+            .saturating_add(4095)
+            / 4096;
+        Ok(FsStatFs {
+            f_type: 0x8584_58f6,
+            f_bsize: 4096,
+            f_blocks: blocks,
+            f_bfree: 0,
+            f_bavail: 0,
+            f_files: files,
+            f_ffree: 0,
+            f_namelen: 255,
+            f_frsize: 4096,
+            f_flags: 1,
+        })
     }
 }
 

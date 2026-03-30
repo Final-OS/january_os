@@ -109,9 +109,11 @@ pub fn run(name: &str) {
             kprintln!("  sync           - Synchronization skeleton tests");
             kprintln!("  syscall        - Syscall skeleton tests");
             kprintln!("  fs [name]      - File system tests");
-            kprintln!("                   Available: path, mount, fd_bridge, fat32, ext4");
+            kprintln!(
+                "                   Available: path, mount, fd_bridge, fd_ops, open_access, procfs, statfs, fat32, ext4"
+            );
             kprintln!("  block [name]   - Block device tests");
-            kprintln!("                   Available: virtio, partition");
+            kprintln!("                   Available: virtio, virtio-scsi, partition");
             kprintln!("  virt           - Virtualization skeleton tests");
             kprintln!("  vfs [name]     - VFS core tests");
             kprintln!("                   Available: path, mount, fd_bridge");

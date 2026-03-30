@@ -34,15 +34,15 @@
 
 use crate::error::{KernelError, KernelResult};
 #[cfg(target_arch = "x86_64")]
-use crate::mm::arch::{read_cr3, PageTable, PTE_ADDR_MASK};
+use crate::mm::arch::{PTE_ADDR_MASK, PageTable, read_cr3};
 use crate::mm::page::buddy::init_zone_buddy;
 use crate::mm::page::memblock::{
     memblock_add, memblock_alloc, memblock_for_each_free_region, memblock_init,
     memblock_initialized, memblock_phys_mem_size, memblock_reserve, memblock_reserved_region,
     memblock_reserved_region_count,
 };
-use crate::mm::page::page::{init_vmemmap, Page, PAGE_STRUCT_SIZE};
-use crate::mm::page::zone::{get_zone, mark_zones_initialized, Zone, ZoneType};
+use crate::mm::page::page::{PAGE_STRUCT_SIZE, Page, init_vmemmap};
+use crate::mm::page::zone::{Zone, ZoneType, get_zone, mark_zones_initialized};
 use crate::mm::slub::init_kmalloc_caches;
 use crate::mm::vm::layout::PAGE_SIZE;
 use core::sync::atomic::{AtomicU8, Ordering};

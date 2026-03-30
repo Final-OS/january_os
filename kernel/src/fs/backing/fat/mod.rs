@@ -7,6 +7,7 @@ use core::char;
 
 use crate::drivers::block::BlockDevice;
 use crate::fs::api::{DirEntry, FileType, FsError, Metadata};
+use crate::fs::runtime::manager::FsStatFs;
 use crate::fs::vfs::{FileSystem, Inode};
 
 const FAT32_SIGNATURE0: u8 = 0x55;
@@ -139,7 +140,10 @@ impl Fat32FileSystem {
         })
     }
 
-    fn read_fat(device: Arc<dyn BlockDevice>, bpb: &BiosParameterBlock) -> Result<Vec<u32>, FsError> {
+    fn read_fat(
+        device: Arc<dyn BlockDevice>,
+        bpb: &BiosParameterBlock,
+    ) -> Result<Vec<u32>, FsError> {
         let block_size = bpb.bytes_per_sector as usize;
         let mut fat_bytes = vec![0u8; bpb.fat_size_sectors as usize * block_size];
         let mut sector = vec![0u8; block_size];
@@ -164,8 +168,7 @@ impl Fat32FileSystem {
         if cluster < 2 || cluster >= self.cluster_count + 2 {
             return Err(FsError::InvalidInput);
         }
-        Ok(self.first_data_sector
-            + (cluster as u64 - 2) * self.bpb.sectors_per_cluster as u64)
+        Ok(self.first_data_sector + (cluster as u64 - 2) * self.bpb.sectors_per_cluster as u64)
     }
 
     fn read_cluster(&self, cluster: u32) -> Result<Vec<u8>, FsError> {
@@ -362,6 +365,30 @@ impl FileSystem for Fat32FileSystem {
 
     fn sync(&self) -> Result<(), FsError> {
         Ok(())
+    }
+
+    fn statfs(&self) -> Result<FsStatFs, FsError> {
+        let total_clusters = self.cluster_count as u64;
+        let free_clusters = self
+            .fat
+            .iter()
+            .skip(2)
+            .take(self.cluster_count as usize)
+            .filter(|entry| **entry == 0)
+            .count() as u64;
+        let cluster_size = self.bpb.cluster_size() as i64;
+        Ok(FsStatFs {
+            f_type: 0x0000_4d44,
+            f_bsize: cluster_size,
+            f_blocks: total_clusters,
+            f_bfree: free_clusters,
+            f_bavail: free_clusters,
+            f_files: total_clusters,
+            f_ffree: free_clusters,
+            f_namelen: 255,
+            f_frsize: cluster_size,
+            f_flags: if self.device.is_read_only() { 1 } else { 0 },
+        })
     }
 }
 

@@ -1,7 +1,7 @@
 use alloc::format;
 use alloc::string::String;
 
-use crate::mm::{component_report, stats, COMPONENT};
+use crate::mm::{COMPONENT, component_report, stats};
 
 pub fn dump_state() -> String {
     let report = component_report();

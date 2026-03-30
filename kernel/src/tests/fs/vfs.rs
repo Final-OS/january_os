@@ -186,6 +186,21 @@ impl vfs::FileSystem for MockFs {
     fn sync(&self) -> Result<(), vfs::FsError> {
         Ok(())
     }
+
+    fn statfs(&self) -> Result<fs::FsStatFs, vfs::FsError> {
+        Ok(fs::FsStatFs {
+            f_type: 0x6d6f_636b,
+            f_bsize: 4096,
+            f_blocks: 1,
+            f_bfree: 0,
+            f_bavail: 0,
+            f_files: 1,
+            f_ffree: 0,
+            f_namelen: 255,
+            f_frsize: 4096,
+            f_flags: 1,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -202,6 +217,21 @@ impl vfs::FileSystem for MockBridgeFs {
 
     fn sync(&self) -> Result<(), vfs::FsError> {
         Ok(())
+    }
+
+    fn statfs(&self) -> Result<fs::FsStatFs, vfs::FsError> {
+        Ok(fs::FsStatFs {
+            f_type: 0x6272_6964,
+            f_bsize: 4096,
+            f_blocks: 1,
+            f_bfree: 0,
+            f_bavail: 0,
+            f_files: 1,
+            f_ffree: 0,
+            f_namelen: 255,
+            f_frsize: 4096,
+            f_flags: 1,
+        })
     }
 }
 

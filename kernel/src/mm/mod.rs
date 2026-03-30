@@ -6,9 +6,9 @@ use ::alloc::string::String;
 
 use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
 
+pub mod alloc;
 pub mod api;
 pub mod arch;
-pub mod alloc;
 pub mod boot;
 pub mod diag;
 pub mod dma;
@@ -37,27 +37,27 @@ pub use phys::memblock::{
     memblock_reserved_region, memblock_reserved_region_count, memblock_reserved_size,
 };
 pub use phys::numa;
-pub use phys::numa::{init_numa, init_uma, NumaNodeInfo};
+pub use phys::numa::{NumaNodeInfo, init_numa, init_uma};
+pub use phys::page::{
+    MAX_PFN, Page, PageFlags, PageOwner, VMEMMAP_BASE, max_pfn, page_guard_stats, page_to_pfn,
+    pfn_to_page, vmemmap_base_ptr,
+};
 pub use phys::pcp;
 pub use phys::pcp::{drain_all_pcps, init_pcp, pcp_initialized, pcp_stats};
-pub use phys::page::{
-    max_pfn, page_guard_stats, page_to_pfn, pfn_to_page, vmemmap_base_ptr, Page, PageFlags,
-    PageOwner, MAX_PFN, VMEMMAP_BASE,
-};
 pub use phys::physical::{MemoryRegion, MemoryRegionType};
 pub use phys::zone;
 pub use phys::zone::{
-    get_order, get_zone, GfpFlags, ZoneType, GFP_DMA32, GFP_KERNEL, GFP_KERNEL_ZERO, GFP_USER,
-    MAX_ORDER,
+    GFP_DMA32, GFP_KERNEL, GFP_KERNEL_ZERO, GFP_USER, GfpFlags, MAX_ORDER, ZoneType, get_order,
+    get_zone,
 };
 
 pub use api::layout::{
-    is_user_addr, page_align_down, page_align_up, phys_to_virt, virt_to_phys, DIRECT_MAP_OFFSET,
-    KERNEL_BASE, PAGE_SIZE, USER_MMAP_BASE, USER_SPACE_END, USER_SPACE_START, USER_STACK_SIZE,
-    USER_STACK_TOP,
+    DIRECT_MAP_OFFSET, KERNEL_BASE, PAGE_SIZE, USER_MMAP_BASE, USER_SPACE_END, USER_SPACE_START,
+    USER_STACK_SIZE, USER_STACK_TOP, is_user_addr, page_align_down, page_align_up, phys_to_virt,
+    virt_to_phys,
 };
 pub use virt::fault;
-pub use virt::fault::{get_fault_stats, handle_page_fault, FaultContext, FaultResult};
+pub use virt::fault::{FaultContext, FaultResult, get_fault_stats, handle_page_fault};
 pub use virt::layout_runtime::{
     boot_reported_page_levels, boot_reported_root_phys, boot_reported_va_bits, direct_map_end,
     direct_map_offset, hardware_page_levels, hardware_root_phys, hardware_va_bits,
@@ -67,18 +67,21 @@ pub use virt::layout_runtime::{
 pub use virt::paging;
 pub use virt::paging::{pt_reclaim_stats, register_tlb_shootdown_cpu, run_tlb_probe_on_other_cpus};
 pub use virt::vma::{
-    get_init_mm, init_mm_ptr, init_vma, mm_clone, mm_release, mm_retain, mmap_flags,
-    mmap_flags_to_vm_flags, prot_flags, Mm, VmaInfo, VmFlags,
+    Mm, VmFlags, VmaInfo, get_init_mm, init_mm_ptr, init_vma, mm_clone, mm_release, mm_retain,
+    mmap_flags, mmap_flags_to_vm_flags, prot_flags,
 };
 
-pub use arch::{level_index, PageTableManager, PTE_ADDR_MASK, PTE_NO_EXECUTE, PTE_PRESENT, PTE_USER, PTE_WRITABLE};
+pub use arch::{
+    PTE_ADDR_MASK, PTE_NO_EXECUTE, PTE_PRESENT, PTE_USER, PTE_WRITABLE, PageTableManager,
+    level_index,
+};
 
 pub use alloc::heap::{heap_stats, init_heap};
-pub use dma::{init_iommu, iommu_stats, IommuType, TranslationMode};
+pub use dma::{IommuType, TranslationMode, init_iommu, iommu_stats};
 
 pub use boot::setup::{
-    finish_mm_init, init_buddy_system, init_memblock, init_slub, init_stage, MemoryRegionInfo,
-    MmInitStage,
+    MemoryRegionInfo, MmInitStage, finish_mm_init, init_buddy_system, init_memblock, init_slub,
+    init_stage,
 };
 
 #[derive(Debug, Clone, Copy)]

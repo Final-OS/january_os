@@ -29,3 +29,21 @@ pub(crate) fn linux_stat_from_fs(meta: fs::FsStat) -> LinuxStat {
         __glibc_reserved: [0; 3],
     }
 }
+
+#[inline]
+pub(crate) fn linux_statfs_from_fs(stat: fs::FsStatFs) -> LinuxStatfs {
+    LinuxStatfs {
+        f_type: stat.f_type,
+        f_bsize: stat.f_bsize,
+        f_blocks: stat.f_blocks,
+        f_bfree: stat.f_bfree,
+        f_bavail: stat.f_bavail,
+        f_files: stat.f_files,
+        f_ffree: stat.f_ffree,
+        f_fsid: [0, 0],
+        f_namelen: stat.f_namelen,
+        f_frsize: stat.f_frsize,
+        f_flags: stat.f_flags,
+        f_spare: [0; 4],
+    }
+}

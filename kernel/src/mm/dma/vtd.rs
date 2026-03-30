@@ -4,7 +4,7 @@
 // 基于 Intel VT-d Specification 3.0
 // ============================================================================
 
-use super::{DmaAddr, TranslationMode, PAGE_SIZE};
+use super::{DmaAddr, PAGE_SIZE, TranslationMode};
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 

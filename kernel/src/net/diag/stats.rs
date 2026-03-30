@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use crate::component::{ComponentState, ComponentStats};
 use crate::net::device::registry;

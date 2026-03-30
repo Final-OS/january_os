@@ -5,8 +5,13 @@ pub(crate) fn sys_open(args: &SyscallArgs) -> SyscallRet {
     let flags = args.arg1 as u32;
     let mode = args.arg2 as u16;
 
-    if (flags & O_ACCMODE) != O_RDONLY {
+    let allowed = O_ACCMODE | O_CLOEXEC | O_DIRECTORY;
+    if (flags & !allowed) != 0 {
         return err(EINVAL);
+    }
+
+    if (flags & O_ACCMODE) != O_RDONLY {
+        return err(EROFS);
     }
 
     let path = match unsafe { read_user_cstring(path_ptr, PATH_MAX) } {
@@ -21,6 +26,28 @@ pub(crate) fn sys_open(args: &SyscallArgs) -> SyscallRet {
 
     match fs::runtime::open_for_pid(pid, path.as_str(), flags, mode) {
         Ok(fd) => ok(fd as usize),
+        Err(errno) => err(errno),
+    }
+}
+
+pub(crate) fn sys_access(args: &SyscallArgs) -> SyscallRet {
+    let path_ptr = args.arg0;
+    let mode = args.arg1 as u32;
+    let allowed = R_OK | W_OK | X_OK;
+    if (mode & !allowed) != 0 {
+        return err(EINVAL);
+    }
+
+    let path = match unsafe { read_user_cstring(path_ptr, PATH_MAX) } {
+        Ok(path) => path,
+        Err(errno) => return err(errno),
+    };
+    let pid = match current_pid_raw() {
+        Ok(pid) => pid,
+        Err(errno) => return err(errno),
+    };
+    match fs::runtime::access_path_for_pid(pid, path.as_str(), mode) {
+        Ok(()) => ok(0),
         Err(errno) => err(errno),
     }
 }
@@ -74,6 +101,56 @@ pub(crate) fn sys_fstat(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => return err(errno),
     };
     let st = linux_stat_from_fs(meta);
+    match write_user_struct(statbuf_ptr, &st) {
+        Ok(()) => ok(0),
+        Err(errno) => err(errno),
+    }
+}
+
+pub(crate) fn sys_statfs(args: &SyscallArgs) -> SyscallRet {
+    let path_ptr = args.arg0;
+    let statbuf_ptr = args.arg1;
+    if statbuf_ptr == 0 {
+        return err(EFAULT);
+    }
+
+    let path = match unsafe { read_user_cstring(path_ptr, PATH_MAX) } {
+        Ok(path) => path,
+        Err(errno) => return err(errno),
+    };
+    let pid = match current_pid_raw() {
+        Ok(pid) => pid,
+        Err(errno) => return err(errno),
+    };
+    let stat = match fs::runtime::statfs_path_for_pid(pid, path.as_str()) {
+        Ok(stat) => stat,
+        Err(errno) => return err(errno),
+    };
+    let st = linux_statfs_from_fs(stat);
+    match write_user_struct(statbuf_ptr, &st) {
+        Ok(()) => ok(0),
+        Err(errno) => err(errno),
+    }
+}
+
+pub(crate) fn sys_fstatfs(args: &SyscallArgs) -> SyscallRet {
+    let fd = args.arg0 as i32;
+    let statbuf_ptr = args.arg1;
+    if fd < 0 {
+        return err(EBADF);
+    }
+    if statbuf_ptr == 0 {
+        return err(EFAULT);
+    }
+    let pid = match current_pid_raw() {
+        Ok(pid) => pid,
+        Err(errno) => return err(errno),
+    };
+    let stat = match fs::runtime::statfs_fd(pid, fd) {
+        Ok(stat) => stat,
+        Err(errno) => return err(errno),
+    };
+    let st = linux_statfs_from_fs(stat);
     match write_user_struct(statbuf_ptr, &st) {
         Ok(()) => ok(0),
         Err(errno) => err(errno),
@@ -222,6 +299,29 @@ pub(crate) fn sys_dup2(args: &SyscallArgs) -> SyscallRet {
     }
 }
 
+pub(crate) fn sys_dup3(args: &SyscallArgs) -> SyscallRet {
+    let oldfd = args.arg0 as i32;
+    let newfd = args.arg1 as i32;
+    let flags = args.arg2 as u32;
+    if oldfd < 0 || newfd < 0 {
+        return err(EBADF);
+    }
+    if oldfd == newfd {
+        return err(EINVAL);
+    }
+    if (flags & !O_CLOEXEC) != 0 {
+        return err(EINVAL);
+    }
+    let pid = match current_pid_raw() {
+        Ok(pid) => pid,
+        Err(errno) => return err(errno),
+    };
+    match fs::runtime::dup2_for_pid(pid, oldfd, newfd, (flags & O_CLOEXEC) != 0) {
+        Ok(fd) => ok(fd as usize),
+        Err(errno) => err(errno),
+    }
+}
+
 pub(crate) fn sys_fcntl(args: &SyscallArgs) -> SyscallRet {
     let fd = args.arg0 as i32;
     let cmd = args.arg1;
@@ -296,6 +396,21 @@ pub(crate) fn sys_chdir(args: &SyscallArgs) -> SyscallRet {
         Err(errno) => return err(errno),
     };
     match fs::runtime::chdir_for_pid(pid, path.as_str()) {
+        Ok(()) => ok(0),
+        Err(errno) => err(errno),
+    }
+}
+
+pub(crate) fn sys_fchdir(args: &SyscallArgs) -> SyscallRet {
+    let fd = args.arg0 as i32;
+    if fd < 0 {
+        return err(EBADF);
+    }
+    let pid = match current_pid_raw() {
+        Ok(pid) => pid,
+        Err(errno) => return err(errno),
+    };
+    match fs::runtime::fchdir_for_pid(pid, fd) {
         Ok(()) => ok(0),
         Err(errno) => err(errno),
     }

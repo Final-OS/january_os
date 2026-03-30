@@ -496,11 +496,7 @@ impl<V> RadixTree<V> {
             return None;
         }
         let (key, val) = self.lower_bound(start)?;
-        if key <= end {
-            Some((key, val))
-        } else {
-            None
-        }
+        if key <= end { Some((key, val)) } else { None }
     }
 
     /// 返回 [start, end] 范围内最后一个项
@@ -509,11 +505,7 @@ impl<V> RadixTree<V> {
             return None;
         }
         let (key, val) = self.floor(end)?;
-        if key >= start {
-            Some((key, val))
-        } else {
-            None
-        }
+        if key >= start { Some((key, val)) } else { None }
     }
 
     /// 有序迭代

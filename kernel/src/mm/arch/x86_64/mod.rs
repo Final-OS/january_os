@@ -7,10 +7,10 @@ pub mod tlb;
 
 // 重新导出常用类型
 pub use paging::{
-    level_index, page_offset, pd_index, pdpt_index, pml4_index, pml5_index, pt_index,
-    sync_kernel_root_entries_from_init, PageTable, PageTableEntry, PageTableLevel,
-    PageTableManager, PTE_ACCESSED, PTE_ADDR_MASK, PTE_DIRTY, PTE_GLOBAL, PTE_HUGE, PTE_NO_CACHE,
-    PTE_NO_EXECUTE, PTE_PRESENT, PTE_USER, PTE_WRITABLE, PTE_WRITE_THROUGH,
+    PTE_ACCESSED, PTE_ADDR_MASK, PTE_DIRTY, PTE_GLOBAL, PTE_HUGE, PTE_NO_CACHE, PTE_NO_EXECUTE,
+    PTE_PRESENT, PTE_USER, PTE_WRITABLE, PTE_WRITE_THROUGH, PageTable, PageTableEntry,
+    PageTableLevel, PageTableManager, level_index, page_offset, pd_index, pdpt_index, pml4_index,
+    pml5_index, pt_index, sync_kernel_root_entries_from_init,
 };
 
 pub use tlb::{

@@ -1,6 +1,6 @@
 use crate::task::api::{ProcessId, TaskId};
 use crate::task::arch::TaskContext;
-use alloc::alloc::{alloc, dealloc, Layout};
+use alloc::alloc::{Layout, alloc, dealloc};
 use alloc::string::String;
 use core::ptr::NonNull;
 

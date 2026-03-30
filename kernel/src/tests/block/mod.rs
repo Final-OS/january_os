@@ -24,6 +24,8 @@ pub fn run_with_filter(filter: Option<&str>) {
         None | Some("all") => {
             block_step("run case=virtio");
             test_virtio_blk();
+            block_step("run case=virtio-scsi");
+            test_virtio_scsi();
             block_step("run case=partition");
             test_partition();
         }
@@ -35,9 +37,13 @@ pub fn run_with_filter(filter: Option<&str>) {
             block_step("run case=partition");
             test_partition();
         }
+        Some("virtio-scsi") => {
+            block_step("run case=virtio-scsi");
+            test_virtio_scsi();
+        }
         Some(name) => {
             error!("Unknown block test: {}", name);
-            kprintln!("Available block tests: virtio, partition");
+            kprintln!("Available block tests: virtio, virtio-scsi, partition");
         }
     }
 
@@ -105,6 +111,56 @@ fn test_virtio_blk() {
     } else {
         pass("virtio_init_skipped");
         warn!("virtio-blk device not available (this is OK if no virtio disk attached)");
+    }
+}
+
+fn test_virtio_scsi() {
+    block_step("check virtio-scsi device");
+
+    if let Some(dev) = block::virtio_scsi::get_device() {
+        pass("virtio_scsi_device_found");
+
+        let block_size = dev.block_size();
+        let block_count = dev.block_count();
+        kprintln!(
+            "[test/block] virtio-scsi block_size={} block_count={}",
+            block_size,
+            block_count
+        );
+
+        if block_size >= 512 {
+            pass("virtio_scsi_block_size");
+        } else {
+            fail("virtio_scsi_block_size", "expected >= 512");
+        }
+
+        if block_count > 0 {
+            pass("virtio_scsi_capacity");
+            let mut buf = [0u8; 512];
+            match dev.read_block(0, &mut buf) {
+                Ok(()) => {
+                    pass("virtio_scsi_read");
+                    kprintln!(
+                        "[test/block] virtio-scsi first 16 bytes: {:02x?}",
+                        &buf[..16]
+                    );
+                }
+                Err(_) => fail("virtio_scsi_read", "read failed"),
+            }
+            if dev.is_read_only() {
+                pass("virtio_scsi_readonly_check");
+            } else {
+                fail(
+                    "virtio_scsi_readonly_check",
+                    "expected readonly minimal chain",
+                );
+            }
+        } else {
+            fail("virtio_scsi_capacity", "zero capacity");
+        }
+    } else {
+        pass("virtio_scsi_init_skipped");
+        warn!("virtio-scsi device not available (this is OK if no virtio-scsi disk attached)");
     }
 }
 

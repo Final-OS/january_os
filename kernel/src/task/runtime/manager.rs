@@ -6,7 +6,7 @@ use crate::fs;
 use crate::libs::rdtree::RadixTree;
 use crate::sync::Mutex;
 use crate::task::api::{ProcessId, TaskId};
-use crate::task::proc::exec::{rollback_exec_mappings, ExecMappedPage};
+use crate::task::proc::exec::{ExecMappedPage, rollback_exec_mappings};
 use crate::task::proc::{Process, ProcessStatus};
 use crate::task::sched::SCHEDULER;
 use crate::task::thread::{Task, TaskStatus};

@@ -8,7 +8,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 
-use crate::mm::{self, alloc_pages, free_pages, page_to_pfn, PAGE_SIZE};
+use crate::mm::{self, PAGE_SIZE, alloc_pages, free_pages, page_to_pfn};
 use crate::sync::SpinLock;
 
 // ============================================================================
@@ -337,10 +337,7 @@ unsafe fn kfree_aligned(ptr: *mut u8, layout: Layout) -> bool {
         return false;
     }
 
-    let expected_user = align_up(
-        raw_addr.saturating_add(header_size),
-        layout.align(),
-    );
+    let expected_user = align_up(raw_addr.saturating_add(header_size), layout.align());
     if expected_user != user_addr {
         return false;
     }

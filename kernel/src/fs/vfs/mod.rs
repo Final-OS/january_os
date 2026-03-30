@@ -1,6 +1,7 @@
 //! Minimal VFS core interfaces for v0.3 bring-up.
 
 pub mod initramfs;
+pub mod procfs;
 
 mod filesystem;
 mod inode;
@@ -14,8 +15,8 @@ pub use crate::fs::fd::file::File;
 pub use filesystem::FileSystem;
 pub use inode::Inode;
 pub use mount::{
-    mount_fs, mount_fs_with_source, mount_root, mount_snapshot, resolve_mount, umount_fs,
-    MountEntry,
+    MountEntry, mount_fs, mount_fs_with_source, mount_root, mount_snapshot, resolve_mount,
+    umount_fs,
 };
 pub use path::{normalize_path, split_parent};
 

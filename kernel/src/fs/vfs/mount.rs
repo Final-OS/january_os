@@ -33,10 +33,8 @@ impl MountTable {
     }
 
     fn mount_root(&mut self, fs: Arc<dyn FileSystem>) {
-        self.mounts.insert(
-            String::from("/"),
-            MountRecord { fs, source: None },
-        );
+        self.mounts
+            .insert(String::from("/"), MountRecord { fs, source: None });
     }
 
     fn mount(

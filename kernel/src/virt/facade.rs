@@ -1,6 +1,6 @@
 use super::error::VirtResult;
 use super::types::{VcpuId, VmId};
-use super::{irq, memory, platform, vcpu, vm, VirtInfo};
+use super::{VirtInfo, irq, memory, platform, vcpu, vm};
 
 pub fn detect() -> VirtInfo {
     platform::detect()

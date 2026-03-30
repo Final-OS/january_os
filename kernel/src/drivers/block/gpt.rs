@@ -1,7 +1,7 @@
 //! GPT partition parser with CRC32 validation.
 
-use super::partition::{Partition, PartitionError, PartitionType};
 use super::BlockDevice;
+use super::partition::{Partition, PartitionError, PartitionType};
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;

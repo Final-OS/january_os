@@ -12,6 +12,8 @@ pub fn run() {
         info.hypervisor,
     );
     if info.vendor_str().is_empty() {
-        warn!("[test/virt/detect] step=detect-result expected=non-empty-vendor actual=empty fallback=allowed-on-bare-metal");
+        warn!(
+            "[test/virt/detect] step=detect-result expected=non-empty-vendor actual=empty fallback=allowed-on-bare-metal"
+        );
     }
 }

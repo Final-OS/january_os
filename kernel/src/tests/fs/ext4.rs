@@ -50,7 +50,11 @@ fn run_case() -> Result<(), alloc::string::String> {
         .map_err(|errno| format!("read deep.txt errno={}", errno))?;
     let expected = super::image::build_deep_ext4_payload();
     if deep != expected {
-        return Err(format!("deep.txt mismatch: got={} want={}", deep.len(), expected.len()));
+        return Err(format!(
+            "deep.txt mismatch: got={} want={}",
+            deep.len(),
+            expected.len()
+        ));
     }
 
     fs::runtime::drop_process_fds(pid);

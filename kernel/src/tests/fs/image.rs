@@ -73,14 +73,17 @@ impl BlockDevice for MemBlockDevice {
         if buf.len() != MOCK_BLOCK_SIZE {
             return Err(BlockError::InvalidBufferSize);
         }
-        let off = self.block_offset(lba).map_err(|_| BlockError::InvalidAddress)?;
+        let off = self
+            .block_offset(lba)
+            .map_err(|_| BlockError::InvalidAddress)?;
         let data = self.data.lock();
         buf.copy_from_slice(&data[off..off + MOCK_BLOCK_SIZE]);
         Ok(())
     }
 
     fn write_block(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
-        self.write_block_raw(lba, buf).map_err(|_| BlockError::IoError)
+        self.write_block_raw(lba, buf)
+            .map_err(|_| BlockError::IoError)
     }
 }
 
@@ -125,7 +128,13 @@ pub fn build_fat32_device() -> Result<Arc<dyn BlockDevice>, &'static str> {
     dev.write_block_raw(1, &fat)?;
 
     let mut root = [0u8; MOCK_BLOCK_SIZE];
-    write_fat_dirent(&mut root[0..32], b"HELLO   TXT", 3, b"hello from fat32\n", false);
+    write_fat_dirent(
+        &mut root[0..32],
+        b"HELLO   TXT",
+        3,
+        b"hello from fat32\n",
+        false,
+    );
     write_fat_dirent(&mut root[32..64], b"SUBDIR     ", 4, &[], true);
     write_fat_dirent(&mut root[64..96], b"APP     ELF", 6, elf.as_slice(), false);
     write_fat_lfn_dirents(
@@ -145,7 +154,13 @@ pub fn build_fat32_device() -> Result<Arc<dyn BlockDevice>, &'static str> {
     let mut subdir = [0u8; MOCK_BLOCK_SIZE];
     write_fat_dirent(&mut subdir[0..32], b".          ", 4, &[], true);
     write_fat_dirent(&mut subdir[32..64], b"..         ", 2, &[], true);
-    write_fat_dirent(&mut subdir[64..96], b"NEST    TXT", 5, b"nested fat32\n", false);
+    write_fat_dirent(
+        &mut subdir[64..96],
+        b"NEST    TXT",
+        5,
+        b"nested fat32\n",
+        false,
+    );
     dev.write_block_raw(4, &subdir)?;
 
     let mut nested = [0u8; MOCK_BLOCK_SIZE];
@@ -333,7 +348,13 @@ fn write_fat_lfn_dirents(
         write_lfn_chunk(entry, chunk);
     }
 
-    write_fat_dirent(&mut slots[entry_count * 32..entry_count * 32 + 32], alias, cluster, data, is_dir);
+    write_fat_dirent(
+        &mut slots[entry_count * 32..entry_count * 32 + 32],
+        alias,
+        cluster,
+        data,
+        is_dir,
+    );
     Ok(())
 }
 

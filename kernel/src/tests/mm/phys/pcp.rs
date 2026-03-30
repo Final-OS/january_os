@@ -8,8 +8,8 @@ fn stats_sum(per_zone: &[u64]) -> u64 {
 
 pub(super) fn run() {
     use crate::mm::{
-        alloc_page, drain_all_pcps, free_page, page_to_pfn, pcp_initialized, pcp_stats, GFP_KERNEL,
-        GFP_KERNEL_ZERO,
+        GFP_KERNEL, GFP_KERNEL_ZERO, alloc_page, drain_all_pcps, free_page, page_to_pfn,
+        pcp_initialized, pcp_stats,
     };
 
     mm_step("pcp: case=init_state_check");

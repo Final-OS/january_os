@@ -3,7 +3,7 @@ use alloc::collections::BTreeMap;
 use crate::common::uaccess::{read_user_struct, read_user_u64, write_user_struct, write_user_u64};
 use crate::errno::{EINVAL, ENOSYS, ESRCH};
 use crate::sync::Mutex;
-use crate::syscall::{err, ok, SyscallArgs, SyscallRet};
+use crate::syscall::{SyscallArgs, SyscallRet, err, ok};
 use crate::task;
 
 const MAX_SIGNAL: usize = 64;

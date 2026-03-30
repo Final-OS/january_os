@@ -2,7 +2,7 @@
 //!
 //! 提供 MSI-X 的配置和启用功能
 
-use crate::drivers::pci::{find_capability, read_config_32, write_config_32, PciAddress};
+use crate::drivers::pci::{PciAddress, find_capability, read_config_32, write_config_32};
 use crate::warn;
 
 /// 启用 MSI-X 中断

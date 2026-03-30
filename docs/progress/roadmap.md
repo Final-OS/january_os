@@ -217,13 +217,13 @@ v0.5.0   网络栈基础          v1.0.0   正式发布
 | | fcntl(72) | ✅ | 最小子集 |
 | | chdir(80) | ✅ | 最小实现 |
 | | getcwd(79) | ✅ | 最小实现 |
-| | statfs(138) | 🔴 | v0.3.1 |
-| | fstatfs(139) | 🔴 | v0.3.1 |
-| | dup3(292) | 🔴 | v0.3.1 |
-| | fchdir(81) | 🔴 | v0.3.1 |
-| **procfs** | /proc/self | 🔴 | v0.3.1 |
-| | /proc/cpuinfo | 🔴 | v0.3.1 |
-| | /proc/meminfo | 🔴 | v0.3.1 |
+| | statfs(138) | ✅ | v0.3.1 |
+| | fstatfs(139) | ✅ | v0.3.1 |
+| | dup3(292) | ✅ | v0.3.1 |
+| | fchdir(81) | ✅ | v0.3.1 |
+| **procfs** | /proc/self | ✅ | v0.3.1 |
+| | /proc/cpuinfo | ✅ | v0.3.1 |
+| | /proc/meminfo | ✅ | v0.3.1 |
 
 ### v0.3 子版本规划
 
@@ -242,10 +242,10 @@ v0.5.0   网络栈基础          v1.0.0   正式发布
 
 | 任务 | 优先级 |
 |------|--------|
-| procfs 基础 | 🔴 P0 |
-| statfs/fstatfs | 🔴 P0 |
-| dup3/fchdir | 🔴 P0 |
-| virtio-scsi 最小链路 | 🟡 P1 |
+| procfs 基础 | ✅ P0 |
+| statfs/fstatfs | ✅ P0 |
+| dup3/fchdir | ✅ P0 |
+| virtio-scsi 最小链路 | ✅ P1 |
 
 #### v0.3.2
 
@@ -732,14 +732,14 @@ capget, capset
 - ✅ Batch 4B: ext4 只读
 - ✅ Batch 5: VFS syscall 接入
 - ✅ Batch 6: ELF 加载完善
-- 🔴 Batch 7: procfs (下放 v0.3.1)
-- 🔴 Batch 8: 集成测试 (阻塞: 默认镜像无数据盘)
-- 🔴 Batch 9: 文档收口
+- ✅ Batch 7: procfs (已在 v0.3.1 完成)
+- ✅ Batch 8: 集成测试 (默认镜像数据盘已补齐)
+- 🟡 Batch 9: 文档收口 (持续进行)
 
 **下一步行动**:
-1. 补齐默认数据盘镜像
-2. v0.3.1: procfs + 扩展 syscall + virtio-scsi
-3. v0.3.2: 动态链接器 + sysfs + ext4 增强
+1. 收口 `v0.3.1` 文档与回归口径
+2. v0.3.2: 动态链接器 + sysfs + ext4 增强
+3. v0.4: 可写路径、更多块控制器与挂载语义完善
 
 ---
 

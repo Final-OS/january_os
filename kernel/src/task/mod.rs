@@ -14,25 +14,24 @@ use crate::component::{ComponentDescriptor, ComponentStage, ComponentStats};
 
 pub use api::{Context, Pid, ProcessId, TaskContext, TaskId};
 pub use proc::exec::{
-    build_elf_load_plan, install_current_exec_vmas, preview_pt_load_mapping,
-    remap_exec_mappings, restore_current_exec_vmas, rollback_exec_mappings,
-    setup_initial_user_stack, stage_pt_load_mappings, unmap_exec_mappings, ExecLoadPlan,
-    ExecMapPreview, ExecMappedPage, ExecMappedPageKind, ExecVmaRestorePoint,
+    ExecLoadPlan, ExecMapPreview, ExecMappedPage, ExecMappedPageKind, ExecVmaRestorePoint,
+    build_elf_load_plan, install_current_exec_vmas, preview_pt_load_mapping, remap_exec_mappings,
+    restore_current_exec_vmas, rollback_exec_mappings, setup_initial_user_stack,
+    stage_pt_load_mappings, unmap_exec_mappings,
 };
 pub use proc::fork::{clone_current, fork_current, vfork_current};
 pub use proc::signal::{collect_kill_targets, send_signal};
 pub use proc::wait::WaitEvent;
 pub use runtime::manager::{
-    current_mm_ptr, find_process_by_pid, find_task_by_pid, find_task_by_tid,
-    lookup_current_exec_mapping, record_current_exec_request, set_current_exec_mappings,
-    spawn_kernel_thread, spawn_kernel_thread_with_mm_mode, take_current_exec_mappings,
-    spawn_kernel_thread_with_mm_mode_checked, SpawnMmMode, WaitChildConsumeEvent,
-    WaitChildObserveResult, WaitChildOptions, WaitChildResult, WaitCloneFilter, WaitRusageSnapshot,
-    WaitTarget,
+    SpawnMmMode, WaitChildConsumeEvent, WaitChildObserveResult, WaitChildOptions, WaitChildResult,
+    WaitCloneFilter, WaitRusageSnapshot, WaitTarget, current_mm_ptr, find_process_by_pid,
+    find_task_by_pid, find_task_by_tid, lookup_current_exec_mapping, record_current_exec_request,
+    set_current_exec_mappings, spawn_kernel_thread, spawn_kernel_thread_with_mm_mode,
+    spawn_kernel_thread_with_mm_mode_checked, take_current_exec_mappings,
 };
-pub use sched::snapshot_stats as scheduler_snapshot_stats;
 pub use sched::SchedulerStats;
-pub use thread::{current_task, Task, TaskStatus};
+pub use sched::snapshot_stats as scheduler_snapshot_stats;
+pub use thread::{Task, TaskStatus, current_task};
 
 #[derive(Debug, Clone, Copy)]
 pub struct TaskInitReport {

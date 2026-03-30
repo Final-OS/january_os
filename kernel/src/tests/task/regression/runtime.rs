@@ -151,8 +151,7 @@ pub(super) fn run() {
     else {
         error!(
             "task: regression FAIL (VMEMMAP_BASE symbol not covered by reserved memblock region: sym={:#x} phys={:#x})",
-            vmemmap_sym,
-            vmemmap_phys
+            vmemmap_sym, vmemmap_phys
         );
         return;
     };
@@ -160,8 +159,7 @@ pub(super) fn run() {
     else {
         error!(
             "task: regression FAIL (MAX_PFN symbol not covered by reserved memblock region: sym={:#x} phys={:#x})",
-            max_pfn_sym,
-            max_pfn_phys
+            max_pfn_sym, max_pfn_phys
         );
         return;
     };

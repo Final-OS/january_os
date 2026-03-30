@@ -1,6 +1,6 @@
 //! x86_64 Linux ABI 系统调用表
 
-use crate::syscall::{abi::SyscallDomain, SyscallDef};
+use crate::syscall::{SyscallDef, abi::SyscallDomain};
 
 macro_rules! sc {
     ($nr:expr, $name:expr) => {

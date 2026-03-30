@@ -159,7 +159,8 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
                     staged_count,
                 );
             }
-            if let Err(restore_errno) = restore_previous_exec_state(previous_mappings, Some(vma_restore))
+            if let Err(restore_errno) =
+                restore_previous_exec_state(previous_mappings, Some(vma_restore))
             {
                 return err(restore_errno);
             }
@@ -198,7 +199,8 @@ pub(crate) fn sys_execve(args: &SyscallArgs) -> SyscallRet {
     if task::record_current_exec_request(path.as_str(), argv.len(), envp.len()).is_none() {
         let installed_mappings = task::take_current_exec_mappings().unwrap_or_default();
         task::rollback_exec_mappings(&installed_mappings);
-        if let Err(restore_errno) = restore_previous_exec_state(previous_mappings, Some(vma_restore))
+        if let Err(restore_errno) =
+            restore_previous_exec_state(previous_mappings, Some(vma_restore))
         {
             return err(restore_errno);
         }

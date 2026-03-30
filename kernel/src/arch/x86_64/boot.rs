@@ -1,4 +1,4 @@
-use alloc::alloc::{alloc, Layout};
+use alloc::alloc::{Layout, alloc};
 
 const RUNTIME_BOOT_STACK_SIZE: usize = 64 * 1024;
 const RUNTIME_BOOT_STACK_ALIGN: usize = 4096;
